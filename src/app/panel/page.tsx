@@ -74,7 +74,6 @@ function labelRanking(k: string) {
   if (key === "repite_pct") return "Repite %";
   if (key === "minutes") return "Minutos";
   if (key === "team_win") return "Equipo ganador (central)";
-  if (key === "team_winner") return "Equipo ganador (extra)";
   return k;
 }
 
@@ -134,7 +133,6 @@ export default function PanelPage() {
   }, []);
 
   const me = data?.user?.worker || null;
-
   const ranks = data?.rankings?.[rankType] || [];
 
   const myRank = useMemo(() => {
@@ -174,7 +172,7 @@ export default function PanelPage() {
     if (rt === "captadas") return (data?.rankings?.captadas?.[0]?.name as string) || null;
     if (rt === "cliente_pct") return (data?.rankings?.cliente_pct?.[0]?.name as string) || null;
     if (rt === "repite_pct") return (data?.rankings?.repite_pct?.[0]?.name as string) || null;
-    return null; // minutes no se premia
+    return null;
   }
 
   function valueOf(k: RankKey, r: any) {
@@ -185,7 +183,6 @@ export default function PanelPage() {
     return "";
   }
 
-  // agrupamos reglas, pero EXCLUIMOS minutos (no hay bono por minutos)
   const bonusRulesGrouped = useMemo(() => {
     const rules = (data?.bonusRules || []).filter((r) => String(r.ranking_type || "").toLowerCase() !== "minutes");
     const map = new Map<string, any[]>();
@@ -229,7 +226,6 @@ export default function PanelPage() {
         <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10, marginBottom: 12 }}>{err}</div>
       ) : null}
 
-      {/* Cabecera */}
       <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <div style={{ color: "#666" }}>
           Mes: <b>{data?.month_date || "—"}</b>
@@ -239,7 +235,6 @@ export default function PanelPage() {
         </div>
       </div>
 
-      {/* TOP 3 */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Top 3 del mes</h2>
 
@@ -290,7 +285,6 @@ export default function PanelPage() {
         </div>
       </div>
 
-      {/* Ganado */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Ganado este mes</h2>
 
@@ -317,18 +311,11 @@ export default function PanelPage() {
         )}
       </div>
 
-      {/* Bonos (reglas + líderes) */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Bonos (reglas + quién va ganando)</h2>
 
         <div style={{ color: "#666", marginBottom: 10 }}>
           Aquí se ve <b>qué bono existe</b> y <b>quién va líder</b> ahora mismo. Los bonos finales se capan a <b>20€</b> por persona.
-        </div>
-
-        <div style={{ padding: 10, border: "1px solid #fff0c2", background: "#fff8df", borderRadius: 10, marginBottom: 12 }}>
-          <b>Aclaración centrales:</b> <br />
-          • <b>team_win</b> = bono para el <b>central</b> cuyo equipo queda #1 (recomendado). <br />
-          • <b>team_winner</b> = bono “extra/antiguo”. Si no tienes claro para qué es, lo normal es <b>no usarlo</b> (dejarlo inactivo).
         </div>
 
         {[...bonusRulesGrouped.keys()].length === 0 ? (
@@ -349,7 +336,7 @@ export default function PanelPage() {
                 if (wt?.team_name) {
                   leaderLine = `Gana ahora: ${wt.team_name} (Central: ${wt.central_name || "—"})`;
                 } else {
-                  leaderLine = "Gana ahora: — (no hay equipos o no hay datos)";
+                  leaderLine = "Gana ahora: —";
                 }
               } else {
                 leaderLine = "Líder actual: —";
@@ -399,7 +386,6 @@ export default function PanelPage() {
         )}
       </div>
 
-      {/* Rankings completos */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Rankings (tabla completa)</h2>
 
@@ -452,7 +438,6 @@ export default function PanelPage() {
         </table>
       </div>
 
-      {/* Admin: Ganado por todos */}
       {data?.user?.isAdmin && data?.allEarnings ? (
         <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
