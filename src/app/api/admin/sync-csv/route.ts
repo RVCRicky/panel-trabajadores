@@ -9,12 +9,33 @@ function getEnv(name: string) {
   return v;
 }
 
-// CSV parser con comillas y separador coma o tab
+function stripBOM(s: string) {
+  return s.replace(/^\uFEFF/, "");
+}
+
+function normalizeKey(s: string) {
+  // quita BOM, espacios, acentos y pone en MAYÚSCULAS
+  return stripBOM(String(s ?? ""))
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // acentos
+    .toUpperCase();
+}
+
+function detectSeparator(headerLine: string) {
+  const line = headerLine || "";
+  // preferimos tab > ; > ,
+  if (line.includes("\t")) return "\t";
+  if (line.includes(";")) return ";";
+  return ",";
+}
+
+// CSV parser: comillas + separador auto (tab/;/,)
 function parseCSV(text: string) {
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length < 2) return [];
+  if (lines.length < 2) return { rows: [], sep: ",", headersRaw: [], headersNorm: [] };
 
-  const sep = lines[0].includes("\t") ? "\t" : ",";
+  const sep = detectSeparator(lines[0]);
 
   const parseLine = (line: string) => {
     const out: string[] = [];
@@ -46,14 +67,18 @@ function parseCSV(text: string) {
     return out.map((s) => s.trim());
   };
 
-  const headers = parseLine(lines[0]);
+  const headersRaw = parseLine(lines[0]).map(stripBOM);
+  const headersNorm = headersRaw.map(normalizeKey);
 
-  return lines.slice(1).map((line) => {
+  const rows = lines.slice(1).map((line) => {
     const cols = parseLine(line);
     const row: any = {};
-    headers.forEach((h, i) => (row[h] = (cols[i] ?? "").trim()));
+    // guardamos por clave NORMALIZADA para no depender de acentos/espacios
+    headersNorm.forEach((h, i) => (row[h] = (cols[i] ?? "").trim()));
     return row;
   });
+
+  return { rows, sep, headersRaw, headersNorm };
 }
 
 function toBool(v: any) {
@@ -107,7 +132,6 @@ export async function POST(req: Request) {
     const anonKey = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
     const serviceKey = getEnv("SUPABASE_SERVICE_ROLE_KEY");
 
-    // exigir token del usuario
     const auth = req.headers.get("authorization") || "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
     if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
@@ -116,7 +140,7 @@ export async function POST(req: Request) {
     const csvUrl = (body.csvUrl || "").trim();
     if (!csvUrl) return NextResponse.json({ ok: false, error: "MISSING_CSV_URL" }, { status: 400 });
 
-    // comprobar admin (app_admins) via RLS con ANON + token
+    // comprobar admin
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
     });
@@ -138,7 +162,8 @@ export async function POST(req: Request) {
     if (!r.ok) return NextResponse.json({ ok: false, error: `CSV_FETCH_FAILED_${r.status}` }, { status: 400 });
 
     const text = await r.text();
-    const rows = parseCSV(text);
+    const parsed = parseCSV(text);
+    const rows = parsed.rows;
 
     const adminClient = createClient(supabaseUrl, serviceKey);
 
@@ -146,20 +171,20 @@ export async function POST(req: Request) {
     const del = await adminClient.from("attendance_rows").delete().neq("id", 0);
     if (del.error) return NextResponse.json({ ok: false, error: del.error.message }, { status: 400 });
 
-    // Columnas reales:
-    // FECHA | ... | TELEFONISTA | ... | TAROTISTA | TIEMPO | ... | Codigo | ... | CAPTADO | ...
+    // Claves NORMALIZADAS que esperamos:
+    // FECHA | TELEFONISTA | TAROTISTA | TIEMPO | CODIGO | CAPTADO
     let inserted = 0;
     let skippedNoWorker = 0;
     let skippedBad = 0;
 
     for (const row of rows) {
       const tarotista = String(row["TAROTISTA"] ?? "").trim();
-      const telefonista = String(row["TELEFONISTA"] ?? "").trim(); // central (lo guardamos en raw)
-      const codigo = String(row["Codigo"] ?? "").trim().toLowerCase();
+      const telefonista = String(row["TELEFONISTA"] ?? "").trim(); // central (guardamos en raw)
+      const codigo = String(row["CODIGO"] ?? "").trim().toLowerCase();
       const captado = toBool(row["CAPTADO"]);
       const minutes = timeToMinutes(row["TIEMPO"]);
 
-      // Llamadas no las usamos: dejamos calls=0
+      // no usamos llamadas
       const calls = 0;
 
       const fecha = String(row["FECHA"] ?? "").trim();
@@ -175,7 +200,7 @@ export async function POST(req: Request) {
         continue;
       }
 
-      // buscamos worker por external_ref = TAROTISTA
+      // worker por external_ref = TAROTISTA
       const { data: worker, error: wFindErr } = await adminClient
         .from("workers")
         .select("id")
@@ -188,7 +213,6 @@ export async function POST(req: Request) {
         continue;
       }
 
-      // guardamos también TELEFONISTA en raw para poder sacar estadísticas por central más adelante
       const raw = { ...row, TELEFONISTA: telefonista };
 
       const ins = await adminClient.from("attendance_rows").insert({
@@ -206,14 +230,22 @@ export async function POST(req: Request) {
       inserted++;
     }
 
+    // Debug útil: qué headers ha detectado y un ejemplo de primera fila
+    const example = rows[0] ? rows[0] : null;
+
     return NextResponse.json({
       ok: true,
       inserted,
       skippedNoWorker,
       skippedBad,
       totalRows: rows.length,
-      note:
-        "Para que inserte: workers.external_ref debe coincidir EXACTO con el texto de la columna TAROTISTA.",
+      debug: {
+        separatorDetected: parsed.sep === "\t" ? "TAB" : parsed.sep,
+        headersRaw: parsed.headersRaw,
+        headersNormalized: parsed.headersNorm,
+        firstRowExample: example,
+      },
+      note: "Para insertar filas: workers.external_ref debe coincidir EXACTO con el texto de TAROTISTA en tu hoja.",
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
