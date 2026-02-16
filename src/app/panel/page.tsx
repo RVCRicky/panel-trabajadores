@@ -4,14 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabaseClient";
 
-type WorkerRole = "admin" | "central" | "tarotista";
 type RankingType = "minutes" | "repite_pct" | "cliente_pct" | "captadas";
+type WorkerRole = "admin" | "central" | "tarotista";
 
 function fmt(n: number) {
   return (Number(n) || 0).toLocaleString("es-ES");
-}
-function fmtMoney(n: number) {
-  return (Number(n) || 0).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 function medal(rank: number) {
   if (rank === 1) return "🥇";
@@ -20,34 +17,16 @@ function medal(rank: number) {
   return "";
 }
 
-function rankingLabel(t: RankingType) {
-  if (t === "minutes") return "Minutos";
-  if (t === "repite_pct") return "% Repite";
-  if (t === "cliente_pct") return "% Cliente";
-  return "Captadas";
-}
-
 export default function PanelPage() {
   const router = useRouter();
 
+  const [rankingType, setRankingType] = useState<RankingType>("minutes");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const [worker, setWorker] = useState<any>(null);
-  const [periods, setPeriods] = useState<any[]>([]);
-  const [month, setMonth] = useState<string>("");
+  const [dash, setDash] = useState<any>(null);
 
-  const [rankingType, setRankingType] = useState<RankingType>("minutes");
-
-  const [my, setMy] = useState<any>(null);
-  const [myRanks, setMyRanks] = useState<any>(null);
-  const [myBonuses, setMyBonuses] = useState<any[]>([]);
-
-  const [rankings, setRankings] = useState<any>(null);
-  const [teamStats, setTeamStats] = useState<any[]>([]);
-  const [teamWinner, setTeamWinner] = useState<any>(null);
-
-  async function getTokenOrRedirect() {
+  async function getTokenOrRedirect(): Promise<string | null> {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token || null;
     if (!token) {
@@ -57,64 +36,45 @@ export default function PanelPage() {
     return token;
   }
 
-  async function loadDashboard(targetMonth?: string) {
+  async function loadDashboard() {
     setErr(null);
     setLoading(true);
-
     try {
       const token = await getTokenOrRedirect();
       if (!token) return;
 
-      const m = targetMonth || month || "";
-      const qs = m ? `?month=${encodeURIComponent(m)}` : "";
-      const r = await fetch(`/api/dashboard/full${qs}`, {
+      const r = await fetch(`/api/dashboard/full`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const j = await r.json();
-
       if (!j.ok) {
         setErr(j.error || "Error dashboard");
         return;
       }
-
-      setWorker(j.worker);
-      setPeriods(j.periods || []);
-      setMonth(j.month || "");
-      setMy(j.my || null);
-      setMyRanks(j.myRanks || null);
-      setMyBonuses(j.myBonuses || []);
-
-      setRankings(j.tarotistasRankings || null);
-      setTeamStats(j.teamStats || []);
-      setTeamWinner(j.teamWinner || null);
+      setDash(j);
     } catch (e: any) {
-      setErr(e?.message || "Error");
+      setErr(e?.message || "Error dashboard");
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    (async () => {
-      await loadDashboard();
-    })();
+    loadDashboard();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router]);
+  }, []);
 
-  const rows = useMemo(() => {
-    if (!rankings) return [];
-    return rankings[rankingType] || [];
-  }, [rankings, rankingType]);
+  const me = dash?.user?.worker || null;
+  const myStats = dash?.myStats || null;
 
-  const myRankNow = useMemo(() => {
-    if (!worker) return null;
-    const idx = rows.findIndex((r: any) => r.worker_id === worker.id);
-    return idx === -1 ? null : idx + 1;
-  }, [rows, worker]);
+  const rows = (dash?.rankings?.[rankingType] || []) as any[];
 
-  const myBonusTotal = useMemo(() => {
-    return (myBonuses || []).reduce((acc, b) => acc + (Number(b.amount) || 0), 0);
-  }, [myBonuses]);
+  const myRank = useMemo(() => {
+    if (!me?.display_name) return null;
+    const idx = rows.findIndex((r) => r.name === me.display_name);
+    if (idx === -1) return null;
+    return idx + 1;
+  }, [me?.display_name, rows]);
 
   function valueForRow(r: any) {
     if (rankingType === "minutes") return fmt(r.minutes);
@@ -124,9 +84,28 @@ export default function PanelPage() {
     return "";
   }
 
+  async function logout() {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  }
+
   return (
-    <div style={{ padding: 18, maxWidth: 1100 }}>
-      <h1 style={{ marginTop: 0 }}>Panel de Trabajadores</h1>
+    <div style={{ padding: 20, maxWidth: 1100 }}>
+      <h1 style={{ marginTop: 0 }}>Panel</h1>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        <button onClick={loadDashboard} disabled={loading} style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 800 }}>
+          {loading ? "Actualizando..." : "Actualizar"}
+        </button>
+        <button onClick={logout} style={{ padding: 10, borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", fontWeight: 800 }}>
+          Cerrar sesión
+        </button>
+        {dash?.user?.isAdmin ? (
+          <a href="/admin" style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}>
+            Ir a Admin →
+          </a>
+        ) : null}
+      </div>
 
       {err ? (
         <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10, marginBottom: 12 }}>
@@ -134,163 +113,107 @@ export default function PanelPage() {
         </div>
       ) : null}
 
-      <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 14, marginBottom: 12 }}>
-        {worker ? (
-          <div style={{ color: "#444" }}>
-            Usuario: <b>{worker.display_name}</b> · Rol: <b>{worker.role}</b>
+      <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
+        <div style={{ color: "#666" }}>Mes: <b>{dash?.month_date || "—"}</b></div>
+        <div style={{ marginTop: 6 }}>
+          Usuario: <b>{me?.display_name || "—"}</b> · Rol: <b>{me?.role || "—"}</b>
+        </div>
+        <div style={{ marginTop: 6, color: "#666" }}>
+          Filas del mes: <b>{fmt(dash?.meta?.totalRowsMonth || 0)}</b>
+        </div>
+      </div>
+
+      {/* MIS ESTADÍSTICAS */}
+      <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>Mis estadísticas (mes)</h2>
+        {myStats ? (
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", color: "#111" }}>
+            <div><b>Minutos:</b> {fmt(myStats.minutes)}</div>
+            <div><b>Captadas:</b> {fmt(myStats.captadas)}</div>
+            <div><b>% Repite:</b> {myStats.repite_pct} %</div>
+            <div><b>% Cliente:</b> {myStats.cliente_pct} %</div>
+            <div><b>Desglose:</b> free {fmt(myStats.free)} · rueda {fmt(myStats.rueda)} · cliente {fmt(myStats.cliente)} · repite {fmt(myStats.repite)}</div>
+            <div><b>Mi posición:</b> {myRank ? `${medal(myRank)} #${myRank}` : "—"}</div>
           </div>
         ) : (
-          <div>Cargando usuario…</div>
+          <div style={{ color: "#666" }}>Sin datos.</div>
         )}
       </div>
 
-      {/* Controles */}
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
-        <div>
-          <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>Mes</div>
-          <select
-            value={month}
-            onChange={(e) => {
-              const m = e.target.value;
-              setMonth(m);
-              loadDashboard(m);
-            }}
-            style={{ padding: 8, borderRadius: 10, border: "1px solid #ddd" }}
-          >
-            {periods?.length ? (
-              periods.map((p: any) => (
-                <option key={p.month_date} value={p.month_date}>
-                  {p.month_date} · {p.label}
-                </option>
-              ))
-            ) : (
-              <option value={month || ""}>{month || "—"}</option>
-            )}
-          </select>
+      {/* EQUIPO CENTRAL */}
+      {me?.role === "central" ? (
+        <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
+          <h2 style={{ marginTop: 0, fontSize: 18 }}>Mi equipo</h2>
+          {dash?.myTeam?.team ? (
+            <>
+              <div><b>Equipo:</b> {dash.myTeam.team.name}</div>
+              {dash?.myTeam?.stats ? (
+                <div style={{ marginTop: 6, color: "#111" }}>
+                  <b>Minutos equipo:</b> {fmt(dash.myTeam.stats.total_minutes)} ·{" "}
+                  <b>Captadas equipo:</b> {fmt(dash.myTeam.stats.total_captadas)} ·{" "}
+                  <b>% Cliente equipo:</b> {dash.myTeam.stats.total_cliente_pct} %
+                </div>
+              ) : (
+                <div style={{ color: "#666", marginTop: 6 }}>Tu equipo aún no tiene datos este mes.</div>
+              )}
+            </>
+          ) : (
+            <div style={{ color: "#666" }}>
+              No tienes equipo creado/asignado aún. (Admin debe crear tu equipo y asignar tarotistas)
+            </div>
+          )}
         </div>
+      ) : null}
 
-        <div>
-          <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>Ranking</div>
-          <select
-            value={rankingType}
-            onChange={(e) => setRankingType(e.target.value as RankingType)}
-            style={{ padding: 8, borderRadius: 10, border: "1px solid #ddd" }}
-          >
-            <option value="minutes">Minutos</option>
-            <option value="repite_pct">% Repite</option>
-            <option value="cliente_pct">% Cliente</option>
-            <option value="captadas">Captadas</option>
-          </select>
-        </div>
-
-        <button
-          onClick={() => loadDashboard(month)}
-          disabled={loading}
-          style={{
-            padding: "10px 12px",
-            borderRadius: 10,
-            border: "1px solid #111",
-            background: loading ? "#eee" : "#fff",
-            cursor: loading ? "not-allowed" : "pointer",
-            fontWeight: 800,
-            height: 40,
-            alignSelf: "flex-end",
-          }}
-        >
-          {loading ? "Actualizando..." : "Actualizar"}
-        </button>
+      {/* GANADOR DE EQUIPO */}
+      <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>Ganador de equipos (mes)</h2>
+        {dash?.winnerTeam ? (
+          <div>
+            <b>{dash.winnerTeam.team_name}</b> — minutos: <b>{fmt(dash.winnerTeam.total_minutes)}</b> · captadas:{" "}
+            <b>{fmt(dash.winnerTeam.total_captadas)}</b> · % cliente: <b>{dash.winnerTeam.total_cliente_pct} %</b>
+          </div>
+        ) : (
+          <div style={{ color: "#666" }}>Aún no hay equipos o no hay datos.</div>
+        )}
       </div>
 
-      {/* Mis datos */}
-      <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 14, marginBottom: 12 }}>
-        <h2 style={{ margin: "0 0 10px 0", fontSize: 18 }}>Mi resumen del mes</h2>
+      {/* BONOS */}
+      <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>Bonos del mes (auto)</h2>
 
-        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-          <div style={{ minWidth: 200 }}>
-            <div style={{ color: "#666", fontSize: 12 }}>Minutos</div>
-            <div style={{ fontSize: 24, fontWeight: 900 }}>{fmt(my?.minutes || 0)}</div>
-          </div>
-
-          <div style={{ minWidth: 200 }}>
-            <div style={{ color: "#666", fontSize: 12 }}>Captadas</div>
-            <div style={{ fontSize: 24, fontWeight: 900 }}>{fmt(my?.captadas || 0)}</div>
-          </div>
-
-          <div style={{ minWidth: 240 }}>
-            <div style={{ color: "#666", fontSize: 12 }}>Mi posición ({rankingLabel(rankingType)})</div>
-            <div style={{ fontSize: 24, fontWeight: 900 }}>
-              {myRankNow ? `${medal(myRankNow)} #${myRankNow}` : "—"}
-            </div>
-            <div style={{ color: "#666", fontSize: 12, marginTop: 4 }}>
-              También: Minutos #{myRanks?.minutes ?? "—"} · %Repite #{myRanks?.repite_pct ?? "—"} · %Cliente #{myRanks?.cliente_pct ?? "—"} · Captadas #{myRanks?.captadas ?? "—"}
-            </div>
-          </div>
-
-          <div style={{ minWidth: 240 }}>
-            <div style={{ color: "#666", fontSize: 12 }}>Bonos del mes (auto)</div>
-            <div style={{ fontSize: 24, fontWeight: 900 }}>{fmtMoney(myBonusTotal)} €</div>
-            <div style={{ color: "#666", fontSize: 12, marginTop: 4 }}>
-              {myBonuses?.length ? `${myBonuses.length} bono(s) aplicado(s)` : "Sin bonos por ahora"}
-            </div>
-          </div>
+        <div style={{ color: "#666", marginBottom: 8 }}>
+          (Los importes se cambian en Supabase → tabla <b>bonus_rules</b>)
         </div>
-
-        {/* detalle bonos */}
-        {myBonuses?.length ? (
-          <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
-            <div style={{ fontWeight: 800, marginBottom: 6 }}>Detalle bonos</div>
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {myBonuses.map((b: any, i: number) => (
-                <li key={i}>
-                  {b.ranking_type} · puesto #{b.position} · <b>{fmtMoney(b.amount)} €</b>
-                  {b.team_name ? ` · equipo: ${b.team_name}` : ""}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-      </div>
-
-      {/* Ranking */}
-      <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 14, marginBottom: 12 }}>
-        <h2 style={{ margin: "0 0 10px 0", fontSize: 18 }}>Ranking ({rankingLabel(rankingType)})</h2>
 
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
             <thead>
               <tr>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>{rankingLabel(rankingType)}</th>
+                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Ranking</th>
+                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Pos</th>
+                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Persona</th>
+                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Bono</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r: any, idx: number) => {
-                const rank = idx + 1;
-                const isMe = worker?.id === r.worker_id;
-
-                return (
-                  <tr
-                    key={r.worker_id}
-                    style={{
-                      background: isMe ? "#e8f4ff" : "transparent",
-                      fontWeight: isMe ? 800 : 400,
-                    }}
-                  >
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
-                      {medal(rank)} {rank}
-                    </td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>
-                      {valueForRow(r)}
-                    </td>
-                  </tr>
-                );
-              })}
-              {!rows.length ? (
+              {(dash?.bonuses?.tarotistas || []).map((b: any, i: number) => (
+                <tr key={i}>
+                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{b.ranking_type}</td>
+                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{b.position}</td>
+                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{b.name}</td>
+                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(b.amount)}</td>
+                </tr>
+              ))}
+              {dash?.bonuses?.centralWinner ? (
                 <tr>
-                  <td colSpan={3} style={{ padding: 10, color: "#666" }}>
-                    Sin datos este mes.
+                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>team_win</td>
+                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>1</td>
+                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
+                    Central del equipo: {dash.bonuses.centralWinner.team_name}
+                  </td>
+                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>
+                    {fmt(dash.bonuses.centralWinner.amount)}
                   </td>
                 </tr>
               ) : null}
@@ -299,55 +222,48 @@ export default function PanelPage() {
         </div>
       </div>
 
-      {/* Equipos (central/admin) */}
-      {worker?.role === "central" || worker?.role === "admin" ? (
-        <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-          <h2 style={{ margin: "0 0 10px 0", fontSize: 18 }}>Equipos (centrales)</h2>
+      {/* RANKING SELECTOR */}
+      <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>Rankings (mes)</h2>
 
-          {teamWinner ? (
-            <div style={{ marginBottom: 10, padding: 10, borderRadius: 10, border: "1px solid #d7f0d7", background: "#f3fff3" }}>
-              Ganador del mes: <b>{teamWinner.team_name}</b> (central: <b>{teamWinner.central_name}</b>) · minutos: <b>{fmt(teamWinner.total_minutes)}</b>
-            </div>
-          ) : (
-            <div style={{ color: "#666", marginBottom: 10 }}>Aún no hay equipos configurados.</div>
-          )}
-
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Equipo</th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Central</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Minutos equipo</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Captadas</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>% Cliente</th>
-                </tr>
-              </thead>
-              <tbody>
-                {teamStats.map((t: any) => {
-                  const isWinner = teamWinner && t.team_id === teamWinner.team_id;
-                  return (
-                    <tr key={t.team_id} style={{ background: isWinner ? "#fff7e6" : "transparent", fontWeight: isWinner ? 800 : 400 }}>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{isWinner ? "🏆 " : ""}{t.team_name}</td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{t.central_name}</td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(t.total_minutes)}</td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(t.total_captadas)}</td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{t.team_cliente_pct} %</td>
-                    </tr>
-                  );
-                })}
-                {!teamStats.length ? (
-                  <tr>
-                    <td colSpan={5} style={{ padding: 10, color: "#666" }}>
-                      No hay equipos aún. (Admin debe crear teams y asignar tarotistas)
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
+        <div style={{ marginBottom: 10 }}>
+          <select value={rankingType} onChange={(e) => setRankingType(e.target.value as RankingType)} style={{ padding: 8 }}>
+            <option value="minutes">1) Ranking por Minutos</option>
+            <option value="repite_pct">2) Ranking por % Repite</option>
+            <option value="cliente_pct">3) Ranking por % Cliente</option>
+            <option value="captadas">4) Ranking por Captadas</option>
+          </select>
         </div>
-      ) : null}
+
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
+              <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
+              <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Valor</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r: any, idx: number) => {
+              const rank = idx + 1;
+              const isMe = me?.display_name === r.name;
+              return (
+                <tr key={r.worker_id} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 800 : 400 }}>
+                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
+                    {medal(rank)} {rank}
+                  </td>
+                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
+                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{valueForRow(r)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
+        <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
+          Nota: % Repite = minutos repite / minutos totales del mes. % Cliente igual.
+        </div>
+      </div>
     </div>
   );
 }
