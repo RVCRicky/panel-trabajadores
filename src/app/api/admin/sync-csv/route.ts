@@ -21,11 +21,16 @@ function normalizeKey(s: string) {
     .toUpperCase();
 }
 
-// Normaliza el valor TAROTISTA para comparar mappings
-function normalizeTarotistaValue(s: string) {
+// Normaliza valores para comparar:
+// - quita acentos
+// - quita espacios
+// - minúsculas
+function normalizeValue(s: string) {
   return String(s ?? "")
     .trim()
-    .replace(/\s+/g, "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // sin acentos
+    .replace(/\s+/g, "") // sin espacios
     .toLowerCase();
 }
 
@@ -36,6 +41,7 @@ function detectSeparator(headerLine: string) {
   return ",";
 }
 
+// CSV parser con comillas y separador auto
 function parseCSV(text: string) {
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (lines.length < 2) return { rows: [], sep: ",", headersRaw: [], headersNorm: [] };
@@ -119,18 +125,15 @@ function timeToMinutes(v: any) {
   return Number.isFinite(n) ? Math.round(n) : 0;
 }
 
-// Convierte FECHA:
+// FECHA:
 // - "13/02/2026" -> "2026-02-13"
-// - si ya viene "2026-02-13" lo deja
-// - si no puede, devuelve null
+// - "2026-02-13" -> ok
 function normalizeDate(v: any): string | null {
   const s = String(v ?? "").trim();
   if (!s) return null;
 
-  // ya ISO
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
 
-  // dd/mm/yyyy
   const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (m) {
     const dd = m[1].padStart(2, "0");
@@ -154,6 +157,7 @@ export async function POST(req: Request) {
     const anonKey = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
     const serviceKey = getEnv("SUPABASE_SERVICE_ROLE_KEY");
 
+    // token usuario
     const auth = req.headers.get("authorization") || "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
     if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
@@ -162,7 +166,7 @@ export async function POST(req: Request) {
     const csvUrl = (body.csvUrl || "").trim();
     if (!csvUrl) return NextResponse.json({ ok: false, error: "MISSING_CSV_URL" }, { status: 400 });
 
-    // comprobar admin
+    // comprobar admin (RLS)
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
     });
@@ -187,29 +191,36 @@ export async function POST(req: Request) {
     const parsed = parseCSV(text);
     const rows = parsed.rows;
 
+    // service role
     const adminClient = createClient(supabaseUrl, serviceKey);
 
-    // cargar mappings
+    // cargar mappings una vez
     const { data: maps, error: mapsErr } = await adminClient
       .from("call_mappings")
       .select("csv_tarotista, worker_id");
-
     if (mapsErr) return NextResponse.json({ ok: false, error: mapsErr.message }, { status: 400 });
 
     const mapDict = new Map<string, string>();
     for (const m of (maps as any[]) || []) {
-      const k = normalizeTarotistaValue(m.csv_tarotista);
+      const k = normalizeValue(m.csv_tarotista);
       if (k) mapDict.set(k, m.worker_id);
     }
 
-    // cargar workers.external_ref
-    const { data: ws, error: wsErr } = await adminClient.from("workers").select("id, external_ref");
+    // cargar workers una vez
+    const { data: ws, error: wsErr } = await adminClient
+      .from("workers")
+      .select("id, external_ref, display_name");
     if (wsErr) return NextResponse.json({ ok: false, error: wsErr.message }, { status: 400 });
 
     const workersByExt = new Map<string, string>();
+    const workersByName = new Map<string, string>();
+
     for (const w of (ws as any[]) || []) {
-      const k = normalizeTarotistaValue(w.external_ref || "");
-      if (k) workersByExt.set(k, w.id);
+      const kExt = normalizeValue(w.external_ref || "");
+      if (kExt) workersByExt.set(kExt, w.id);
+
+      const kName = normalizeValue(w.display_name || "");
+      if (kName) workersByName.set(kName, w.id);
     }
 
     // reset import
@@ -219,13 +230,15 @@ export async function POST(req: Request) {
     let inserted = 0;
     let skippedNoWorker = 0;
     let skippedBad = 0;
+    let skippedBadDate = 0;
+
     let mappedByCallMappings = 0;
     let mappedByWorkersExternalRef = 0;
-    let skippedBadDate = 0;
+    let mappedByWorkersName = 0;
 
     for (const row of rows) {
       const tarotistaRaw = String(row["TAROTISTA"] ?? "").trim();
-      const tarotistaKey = normalizeTarotistaValue(tarotistaRaw);
+      const tarotistaKey = normalizeValue(tarotistaRaw);
 
       const telefonista = String(row["TELEFONISTA"] ?? "").trim();
       const codigo = String(row["CODIGO"] ?? "").trim().toLowerCase();
@@ -234,14 +247,17 @@ export async function POST(req: Request) {
       const minutes = timeToMinutes(row["TIEMPO"]);
       const calls = 0;
 
-      const source_date = normalizeDate(row["FECHA"]); // ✅ arreglado
+      const source_date = normalizeDate(row["FECHA"]);
 
       if (!tarotistaKey) {
         skippedBad++;
         continue;
       }
 
+      // si CODIGO vacío pero LLAMADA CALL TRUE => ignorar
       if (!codigo && llamadaCall) continue;
+
+      // CODIGO vacío y no llamada => malo
       if (!codigo && !llamadaCall) {
         skippedBad++;
         continue;
@@ -254,12 +270,12 @@ export async function POST(req: Request) {
         continue;
       }
 
-      // Si la fecha es rara, la saltamos (para no romper import entero)
       if (row["FECHA"] && !source_date) {
         skippedBadDate++;
         continue;
       }
 
+      // resolver worker
       let workerId: string | null = null;
 
       const fromMap = mapDict.get(tarotistaKey);
@@ -271,6 +287,12 @@ export async function POST(req: Request) {
         if (fromExt) {
           workerId = fromExt;
           mappedByWorkersExternalRef++;
+        } else {
+          const fromName = workersByName.get(tarotistaKey);
+          if (fromName) {
+            workerId = fromName;
+            mappedByWorkersName++;
+          }
         }
       }
 
@@ -303,13 +325,20 @@ export async function POST(req: Request) {
       skippedBad,
       skippedBadDate,
       totalRows: rows.length,
-      stats: { mappedByCallMappings, mappedByWorkersExternalRef, totalMappingsLoaded: mapDict.size },
+      stats: {
+        mappedByCallMappings,
+        mappedByWorkersExternalRef,
+        mappedByWorkersName,
+        totalMappingsLoaded: mapDict.size,
+      },
       debug: {
         separatorDetected: parsed.sep === "\t" ? "TAB" : parsed.sep,
         headersRaw: parsed.headersRaw,
         headersNormalized: parsed.headersNorm,
         firstRowExample: rows[0] ? rows[0] : null,
       },
+      note:
+        "Ahora también casamos TAROTISTA con workers.display_name (ignorando acentos/espacios). Si siguen faltando, es que esas tarotistas no existen aún en workers.",
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
