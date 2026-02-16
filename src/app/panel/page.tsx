@@ -58,6 +58,25 @@ type DashboardResp = {
 type AdminSortKey = "total" | "minutes" | "captadas" | "base" | "bonus";
 type RankKey = "minutes" | "repite_pct" | "cliente_pct" | "captadas";
 
+function labelRanking(k: string) {
+  const key = String(k || "").toLowerCase();
+  if (key === "captadas") return "Captadas";
+  if (key === "cliente_pct") return "Clientes %";
+  if (key === "repite_pct") return "Repite %";
+  if (key === "minutes") return "Minutos";
+  if (key === "team_win") return "Equipo ganador (central)";
+  if (key === "team_winner") return "Equipo ganador (extra)";
+  return k;
+}
+
+function labelRole(r: string) {
+  const key = String(r || "").toLowerCase();
+  if (key === "tarotista") return "Tarotista";
+  if (key === "central") return "Central";
+  if (key === "admin") return "Admin";
+  return r;
+}
+
 export default function PanelPage() {
   const router = useRouter();
 
@@ -141,6 +160,15 @@ export default function PanelPage() {
     return list.slice(0, 3);
   }
 
+  function leaderNameForRankingType(ranking_type: string): string | null {
+    const rt = String(ranking_type || "").toLowerCase();
+    if (rt === "captadas") return (data?.rankings?.captadas?.[0]?.name as string) || null;
+    if (rt === "cliente_pct") return (data?.rankings?.cliente_pct?.[0]?.name as string) || null;
+    if (rt === "repite_pct") return (data?.rankings?.repite_pct?.[0]?.name as string) || null;
+    // minutes NO se premia (y tampoco lo enseñamos aquí)
+    return null;
+  }
+
   function valueOf(k: RankKey, r: any) {
     if (k === "minutes") return fmt(r.minutes);
     if (k === "captadas") return fmt(r.captadas);
@@ -149,8 +177,9 @@ export default function PanelPage() {
     return "";
   }
 
+  // ✅ agrupamos reglas, pero EXCLUIMOS minutos (no hay bono por minutos)
   const bonusRulesGrouped = useMemo(() => {
-    const rules = data?.bonusRules || [];
+    const rules = (data?.bonusRules || []).filter((r) => String(r.ranking_type || "").toLowerCase() !== "minutes");
     const map = new Map<string, any[]>();
     for (const r of rules) {
       const key = `${r.role}::${r.ranking_type}`;
@@ -161,36 +190,18 @@ export default function PanelPage() {
     return map;
   }, [data?.bonusRules]);
 
-  const rankTitle: Record<RankKey, string> = {
-    minutes: "Minutos",
-    repite_pct: "% Repite",
-    cliente_pct: "% Cliente",
-    captadas: "Captadas",
-  };
-
   return (
     <div style={{ padding: 20, maxWidth: 1100 }}>
       <h1 style={{ marginTop: 0 }}>Panel</h1>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-        <button
-          onClick={load}
-          disabled={loading}
-          style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 800 }}
-        >
+        <button onClick={load} disabled={loading} style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 800 }}>
           {loading ? "Actualizando..." : "Actualizar"}
         </button>
 
         <button
           onClick={logout}
-          style={{
-            padding: 10,
-            borderRadius: 10,
-            border: "1px solid #111",
-            background: "#111",
-            color: "#fff",
-            fontWeight: 800,
-          }}
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", fontWeight: 800 }}
         >
           Cerrar sesión
         </button>
@@ -207,9 +218,7 @@ export default function PanelPage() {
       </div>
 
       {err ? (
-        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10, marginBottom: 12 }}>
-          {err}
-        </div>
+        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10, marginBottom: 12 }}>{err}</div>
       ) : null}
 
       {/* Cabecera */}
@@ -218,18 +227,28 @@ export default function PanelPage() {
           Mes: <b>{data?.month_date || "—"}</b>
         </div>
         <div style={{ marginTop: 6 }}>
-          Usuario: <b>{me?.display_name || "—"}</b> · Rol: <b>{me?.role || "—"}</b>
+          Usuario: <b>{me?.display_name || "—"}</b> · Rol: <b>{labelRole(me?.role || "—")}</b>
         </div>
       </div>
 
       {/* TOP 3 */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <h2 style={{ marginTop: 0, fontSize: 18 }}>Top 3 del mes (por categoría)</h2>
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>Top 3 del mes</h2>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
           {(["minutes", "repite_pct", "cliente_pct", "captadas"] as RankKey[]).map((k) => (
             <div key={k} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-              <div style={{ fontWeight: 900, marginBottom: 8 }}>{rankTitle[k]}</div>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>{labelRanking(k)}</div>
+              {k === "minutes" ? (
+                <div style={{ color: "#666", fontSize: 12, marginBottom: 8 }}>
+                  (Este ranking es informativo. <b>No tiene bono</b>.)
+                </div>
+              ) : (
+                <div style={{ color: "#666", fontSize: 12, marginBottom: 8 }}>
+                  (Este ranking <b>sí</b> tiene bono si hay regla activa.)
+                </div>
+              )}
+
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <tbody>
                   {top3For(k).map((r: any, idx: number) => (
@@ -252,12 +271,14 @@ export default function PanelPage() {
                   ) : null}
                 </tbody>
               </table>
+
+              {(k === "repite_pct" || k === "cliente_pct") && (
+                <div style={{ marginTop: 8, color: "#666", fontSize: 12 }}>
+                  % = minutos de ese tipo / minutos totales del mes
+                </div>
+              )}
             </div>
           ))}
-        </div>
-
-        <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
-          Nota: % Repite = minutos repite / minutos totales del mes. % Cliente igual.
         </div>
       </div>
 
@@ -284,15 +305,22 @@ export default function PanelPage() {
             </div>
           </div>
         ) : (
-          <div style={{ color: "#666" }}>Sin cálculo todavía (admin debe recalcular mes).</div>
+          <div style={{ color: "#666" }}>Sin cálculo todavía.</div>
         )}
       </div>
 
-      {/* Reglas de bonos */}
+      {/* Reglas de bonos + líderes */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <h2 style={{ marginTop: 0, fontSize: 18 }}>Reglas de bonos (lo que paga cada ranking)</h2>
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>Bonos (reglas + quién va ganando)</h2>
+
         <div style={{ color: "#666", marginBottom: 10 }}>
-          Estas reglas las define Admin (tabla <b>bonus_rules</b>). Los bonos finales se capan a <b>20€</b> por persona.
+          Aquí se ve <b>qué bono existe</b> y <b>quién va líder</b> ahora mismo. Los bonos finales se capan a <b>20€</b> por persona.
+        </div>
+
+        <div style={{ padding: 10, border: "1px solid #fff0c2", background: "#fff8df", borderRadius: 10, marginBottom: 12 }}>
+          <b>Aclaración centrales:</b> <br />
+          • <b>team_win</b> = bono para el <b>central</b> cuyo equipo queda #1 (recomendado). <br />
+          • <b>team_winner</b> = bono “extra/antiguo”. Si no tienes claro para qué es, lo normal es <b>no usarlo</b> (dejarlo inactivo).
         </div>
 
         {[...bonusRulesGrouped.keys()].length === 0 ? (
@@ -301,11 +329,26 @@ export default function PanelPage() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
             {[...bonusRulesGrouped.entries()].map(([key, rules]) => {
               const [role, ranking_type] = key.split("::");
+              const leader = role === "tarotista" ? leaderNameForRankingType(ranking_type) : null;
+
               return (
                 <div key={key} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
                   <div style={{ fontWeight: 900, marginBottom: 6 }}>
-                    Rol: {role} · Ranking: {ranking_type}
+                    {labelRole(role)} · {labelRanking(ranking_type)}
                   </div>
+
+                  {leader ? (
+                    <div style={{ marginBottom: 10, color: "#111" }}>
+                      Líder actual: <b>{leader}</b> ✅
+                    </div>
+                  ) : role === "tarotista" ? (
+                    <div style={{ marginBottom: 10, color: "#666" }}>Líder actual: —</div>
+                  ) : (
+                    <div style={{ marginBottom: 10, color: "#666" }}>
+                      Líder actual: (esto depende de equipos; lo conectamos en el siguiente paso)
+                    </div>
+                  )}
+
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead>
                       <tr>
@@ -333,16 +376,16 @@ export default function PanelPage() {
         )}
       </div>
 
-      {/* Rankings (tabla completa) */}
+      {/* Rankings completos */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <h2 style={{ marginTop: 0, fontSize: 18 }}>Rankings (mes)</h2>
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>Rankings (tabla completa)</h2>
 
         <div style={{ marginBottom: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <select value={rankType} onChange={(e) => setRankType(e.target.value as RankKey)} style={{ padding: 8 }}>
-            <option value="minutes">1) Ranking por Minutos</option>
-            <option value="repite_pct">2) Ranking por % Repite</option>
-            <option value="cliente_pct">3) Ranking por % Cliente</option>
-            <option value="captadas">4) Ranking por Captadas</option>
+            <option value="minutes">Ranking por Minutos (sin bono)</option>
+            <option value="repite_pct">Ranking por Repite %</option>
+            <option value="cliente_pct">Ranking por Clientes %</option>
+            <option value="captadas">Ranking por Captadas</option>
           </select>
 
           <div style={{ color: "#666" }}>
@@ -386,7 +429,7 @@ export default function PanelPage() {
         </table>
       </div>
 
-      {/* Admin: Ganado por todos + ordenar */}
+      {/* Admin: Ganado por todos */}
       {data?.user?.isAdmin && data?.allEarnings ? (
         <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
@@ -423,7 +466,7 @@ export default function PanelPage() {
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
                       <b>{x.name}</b>
                     </td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", color: "#666" }}>{x.role}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", color: "#666" }}>{labelRole(x.role)}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(x.minutes_total)}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(x.captadas)}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{eur(x.amount_base_eur)}</td>
@@ -437,9 +480,7 @@ export default function PanelPage() {
             </table>
           </div>
 
-          <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
-            Los bonos están capados a 20€ por persona.
-          </div>
+          <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>Los bonos están capados a 20€ por persona.</div>
         </div>
       ) : null}
     </div>
