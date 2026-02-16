@@ -4,10 +4,22 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabaseClient";
 
-type MeResp =
-  | { ok: true; userId: string; worker: null }
-  | { ok: true; userId: string; worker: { id: string; role: "admin" | "central" | "tarotista"; display_name: string; is_active: boolean } }
-  | { ok: false; error: string };
+type WorkerRole = "admin" | "central" | "tarotista";
+
+type MeOk = {
+  ok: true;
+  userId: string;
+  worker: null | {
+    id: string;
+    role: WorkerRole;
+    display_name: string;
+    is_active: boolean;
+  };
+};
+
+type MeErr = { ok: false; error: string };
+
+type MeResp = MeOk | MeErr;
 
 export default function PanelPage() {
   const router = useRouter();
@@ -31,13 +43,13 @@ export default function PanelPage() {
 
       const json = (await res.json()) as MeResp;
 
-      if (!json || (json as any).ok === false) {
-        setStatus("Error leyendo tu perfil. Ve a Supabase y crea tu worker.");
+      if (!json.ok) {
+        setStatus(`Error /api/me: ${json.error}`);
         return;
       }
 
       if (json.worker === null) {
-        setStatus("No tienes perfil creado en workers. (Admin debe crear tu ficha)");
+        setStatus("No tienes perfil en workers. (Admin debe crear tu ficha)");
         return;
       }
 
