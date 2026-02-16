@@ -36,12 +36,12 @@ export default function AdminPage() {
   const [csvUrl, setCsvUrl] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [syncDebug, setSyncDebug] = useState<string | null>(null);
 
   const [loadingRank, setLoadingRank] = useState(false);
   const [rankMsg, setRankMsg] = useState<string | null>(null);
   const [rows, setRows] = useState<AttRow[]>([]);
 
-  // Auth + comprobar admin
   useEffect(() => {
     (async () => {
       const { data } = await supabase.auth.getSession();
@@ -88,8 +88,32 @@ export default function AdminPage() {
     router.replace("/login");
   }
 
+  async function loadRankings() {
+    setRankMsg(null);
+    setLoadingRank(true);
+    try {
+      const { data: att, error } = await supabase
+        .from("attendance_rows")
+        .select("minutes,calls,codigo,captado,worker:workers(id,display_name,role)")
+        .order("id", { ascending: false })
+        .limit(50000);
+
+      if (error) {
+        setRankMsg(`Error leyendo attendance_rows: ${error.message}`);
+        return;
+      }
+
+      setRows((att as any) || []);
+    } catch (e: any) {
+      setRankMsg(e?.message || "Error inesperado");
+    } finally {
+      setLoadingRank(false);
+    }
+  }
+
   async function runSync() {
     setSyncMsg(null);
+    setSyncDebug(null);
     setSyncing(true);
     try {
       const { data } = await supabase.auth.getSession();
@@ -109,12 +133,16 @@ export default function AdminPage() {
       });
 
       const raw = await r.text();
+
       let j: any = null;
       try {
         j = raw ? JSON.parse(raw) : null;
       } catch {
         j = null;
       }
+
+      // MOSTRAR DEBUG SIEMPRE (aunque ok)
+      setSyncDebug(raw || "(respuesta vacía)");
 
       if (!r.ok || !j?.ok) {
         setSyncMsg(`Error HTTP ${r.status}. ${j?.error || raw || "(vacío)"}`);
@@ -125,46 +153,13 @@ export default function AdminPage() {
         `✅ Sync OK. Insertadas: ${j.inserted}. Saltadas sin worker: ${j.skippedNoWorker}. Filas malas: ${j.skippedBad}. Total CSV: ${j.totalRows}`
       );
 
-      // refrescar rankings automáticamente después del sync
       await loadRankings();
     } finally {
       setSyncing(false);
     }
   }
 
-  async function loadRankings() {
-    setRankMsg(null);
-    setLoadingRank(true);
-    try {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-      if (!token) {
-        router.replace("/login");
-        return;
-      }
-
-      // Pedimos datos con join básico
-      const { data: att, error } = await supabase
-        .from("attendance_rows")
-        .select("minutes,calls,codigo,captado,worker:workers(id,display_name,role)")
-        .order("id", { ascending: false })
-        .limit(50000); // MVP: si crece mucho, lo optimizamos con vistas/agrupación server
-
-      if (error) {
-        setRankMsg(`Error leyendo attendance_rows: ${error.message}`);
-        return;
-      }
-
-      setRows((att as any) || []);
-    } catch (e: any) {
-      setRankMsg(e?.message || "Error inesperado");
-    } finally {
-      setLoadingRank(false);
-    }
-  }
-
   const ranking = useMemo(() => {
-    // agregamos por worker
     const m = new Map<
       string,
       {
@@ -208,12 +203,8 @@ export default function AdminPage() {
     }
 
     const arr = Array.from(m.values());
-
-    // solo tarotistas para ranking principal (luego hacemos ranking central/equipos)
     const tarotistas = arr.filter((x) => x.role === "tarotista");
-
     tarotistas.sort((a, b) => b.minutes - a.minutes);
-
     return tarotistas.slice(0, 20);
   }, [rows]);
 
@@ -233,7 +224,10 @@ export default function AdminPage() {
       </div>
 
       <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <a href="/admin/workers" style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}>
+        <a
+          href="/admin/workers"
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}
+        >
           Gestionar trabajadores →
         </a>
 
@@ -290,6 +284,13 @@ export default function AdminPage() {
               {syncMsg}
             </div>
           ) : null}
+
+          {syncDebug ? (
+            <div style={{ padding: 10, borderRadius: 10, background: "#fff", border: "1px solid #e5e5e5" }}>
+              <b>DEBUG (cópialo y pégamelo):</b>
+              <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{syncDebug}</pre>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -327,7 +328,6 @@ export default function AdminPage() {
                 <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
                 <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
                 <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Minutos</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Llamadas</th>
                 <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Captadas</th>
                 <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>free</th>
                 <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>rueda</th>
@@ -338,8 +338,8 @@ export default function AdminPage() {
             <tbody>
               {ranking.length === 0 ? (
                 <tr>
-                  <td colSpan={9} style={{ padding: 10, color: "#666" }}>
-                    Aún no hay datos. Pega tu CSV y pulsa “Sync ahora”.
+                  <td colSpan={8} style={{ padding: 10, color: "#666" }}>
+                    Aún no hay datos. Pulsa “Sync ahora”.
                   </td>
                 </tr>
               ) : (
@@ -348,11 +348,11 @@ export default function AdminPage() {
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.minutes}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.calls}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.captadas}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.free}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.rueda}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.cliente}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.repite}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.repite}</td>
                   </tr>
                 ))
@@ -360,10 +360,6 @@ export default function AdminPage() {
             </tbody>
           </table>
         </div>
-
-        <p style={{ marginTop: 10, color: "#666" }}>
-          Nota: este ranking es MVP. Si el CSV tiene muchísimas filas, en el siguiente paso lo optimizamos con agregación en servidor.
-        </p>
       </div>
     </div>
   );
