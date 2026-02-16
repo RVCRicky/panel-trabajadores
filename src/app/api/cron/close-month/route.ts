@@ -33,14 +33,16 @@ function nextMonthISO(month_date: string) {
   return monthStartISO(dt);
 }
 
-async function closeMonth(db: any, month_date: string) {
+type CloseResult = { alreadyClosed: boolean };
+
+async function closeMonth(db: any, month_date: string): Promise<CloseResult> {
   const { data: closure } = await db
     .from("period_closures")
     .select("month_date,is_closed")
     .eq("month_date", month_date)
     .maybeSingle();
 
-  if (closure?.is_closed) return { ok: true, alreadyClosed: true };
+  if (closure?.is_closed) return { alreadyClosed: true };
 
   await db.from("periods").upsert({ month_date, label: month_date }, { onConflict: "month_date" });
 
@@ -150,7 +152,9 @@ async function closeMonth(db: any, month_date: string) {
     const out: any[] = [];
     for (let i = 0; i < Math.min(3, list.length); i++) {
       const pos = i + 1;
-      const rr = (rules as any[]).find((x) => x.ranking_type === ranking_type && x.position === pos && x.role === "tarotista");
+      const rr = (rules as any[]).find(
+        (x) => x.ranking_type === ranking_type && x.position === pos && x.role === "tarotista"
+      );
       out.push({ month_date, worker_id: list[i].worker_id, ranking_type, position: pos, amount: rr ? Number(rr.amount) : 0 });
     }
     return out;
@@ -222,18 +226,11 @@ async function closeMonth(db: any, month_date: string) {
   }
 
   await db.from("period_closures").upsert(
-    {
-      month_date,
-      is_closed: true,
-      closed_at: new Date().toISOString(),
-      closed_by: null,
-      source: "cron",
-      note: null,
-    },
+    { month_date, is_closed: true, closed_at: new Date().toISOString(), closed_by: null, source: "cron", note: null },
     { onConflict: "month_date" }
   );
 
-  return { ok: true, alreadyClosed: false };
+  return { alreadyClosed: false };
 }
 
 export async function POST(req: Request) {
@@ -241,15 +238,12 @@ export async function POST(req: Request) {
     const secret = getEnv("CRON_SECRET");
     const got = req.headers.get("x-cron-secret") || "";
 
-    if (got !== secret) {
-      return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
-    }
+    if (got !== secret) return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
 
     const supabaseUrl = getEnv("NEXT_PUBLIC_SUPABASE_URL");
     const serviceKey = getEnv("SUPABASE_SERVICE_ROLE_KEY");
     const db = createClient(supabaseUrl, serviceKey);
 
-    // Cron cierra el mes anterior (día 1)
     const targetMonth = prevMonthISO(new Date());
 
     const result = await closeMonth(db, targetMonth);
