@@ -53,6 +53,15 @@ type DashboardResp = {
     role: string;
     amount_eur: number;
   }>;
+
+  winnerTeam: null | {
+    team_id: string;
+    team_name: string;
+    central_worker_id: string | null;
+    central_name: string | null;
+    total_minutes: number;
+    total_captadas: number;
+  };
 };
 
 type AdminSortKey = "total" | "minutes" | "captadas" | "base" | "bonus";
@@ -165,8 +174,7 @@ export default function PanelPage() {
     if (rt === "captadas") return (data?.rankings?.captadas?.[0]?.name as string) || null;
     if (rt === "cliente_pct") return (data?.rankings?.cliente_pct?.[0]?.name as string) || null;
     if (rt === "repite_pct") return (data?.rankings?.repite_pct?.[0]?.name as string) || null;
-    // minutes NO se premia (y tampoco lo enseñamos aquí)
-    return null;
+    return null; // minutes no se premia
   }
 
   function valueOf(k: RankKey, r: any) {
@@ -177,7 +185,7 @@ export default function PanelPage() {
     return "";
   }
 
-  // ✅ agrupamos reglas, pero EXCLUIMOS minutos (no hay bono por minutos)
+  // agrupamos reglas, pero EXCLUIMOS minutos (no hay bono por minutos)
   const bonusRulesGrouped = useMemo(() => {
     const rules = (data?.bonusRules || []).filter((r) => String(r.ranking_type || "").toLowerCase() !== "minutes");
     const map = new Map<string, any[]>();
@@ -309,7 +317,7 @@ export default function PanelPage() {
         )}
       </div>
 
-      {/* Reglas de bonos + líderes */}
+      {/* Bonos (reglas + líderes) */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Bonos (reglas + quién va ganando)</h2>
 
@@ -329,7 +337,23 @@ export default function PanelPage() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
             {[...bonusRulesGrouped.entries()].map(([key, rules]) => {
               const [role, ranking_type] = key.split("::");
-              const leader = role === "tarotista" ? leaderNameForRankingType(ranking_type) : null;
+              const rt = String(ranking_type || "").toLowerCase();
+
+              let leaderLine: string | null = null;
+
+              if (role === "tarotista") {
+                const leader = leaderNameForRankingType(ranking_type);
+                leaderLine = leader ? `Líder actual: ${leader}` : "Líder actual: —";
+              } else if (role === "central" && rt === "team_win") {
+                const wt = data?.winnerTeam;
+                if (wt?.team_name) {
+                  leaderLine = `Gana ahora: ${wt.team_name} (Central: ${wt.central_name || "—"})`;
+                } else {
+                  leaderLine = "Gana ahora: — (no hay equipos o no hay datos)";
+                }
+              } else {
+                leaderLine = "Líder actual: —";
+              }
 
               return (
                 <div key={key} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
@@ -337,17 +361,16 @@ export default function PanelPage() {
                     {labelRole(role)} · {labelRanking(ranking_type)}
                   </div>
 
-                  {leader ? (
-                    <div style={{ marginBottom: 10, color: "#111" }}>
-                      Líder actual: <b>{leader}</b> ✅
+                  <div style={{ marginBottom: 10, color: "#111" }}>
+                    <b>{leaderLine}</b>
+                  </div>
+
+                  {role === "central" && rt === "team_win" && data?.winnerTeam ? (
+                    <div style={{ marginBottom: 10, color: "#666", fontSize: 12 }}>
+                      Datos del equipo líder: minutos <b>{fmt(data.winnerTeam.total_minutes)}</b> · captadas{" "}
+                      <b>{fmt(data.winnerTeam.total_captadas)}</b>
                     </div>
-                  ) : role === "tarotista" ? (
-                    <div style={{ marginBottom: 10, color: "#666" }}>Líder actual: —</div>
-                  ) : (
-                    <div style={{ marginBottom: 10, color: "#666" }}>
-                      Líder actual: (esto depende de equipos; lo conectamos en el siguiente paso)
-                    </div>
-                  )}
+                  ) : null}
 
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead>
