@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "../lib/supabaseClient";
+import { supabase } from "../../lib/supabaseClient";
 
 type WorkerRole = "admin" | "central" | "tarotista";
 
@@ -234,7 +234,7 @@ export default function AdminPage() {
           href="/admin/mappings"
           style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}
         >
-          Mappings Call### →
+          Mappings →
         </a>
 
         <button
@@ -255,10 +255,6 @@ export default function AdminPage() {
 
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Sincronizar Google Sheets (CSV)</h2>
-
-        <p style={{ marginTop: 6, color: "#666" }}>
-          Pega aquí tu enlace público con <b>output=csv</b>.
-        </p>
 
         <div style={{ display: "grid", gap: 10 }}>
           <input
@@ -293,7 +289,7 @@ export default function AdminPage() {
 
           {syncDebug ? (
             <div style={{ padding: 10, borderRadius: 10, background: "#fff", border: "1px solid #e5e5e5" }}>
-              <b>DEBUG (cópialo y pégamelo):</b>
+              <b>DEBUG:</b>
               <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{syncDebug}</pre>
             </div>
           ) : null}
@@ -301,28 +297,27 @@ export default function AdminPage() {
       </div>
 
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-          <h2 style={{ marginTop: 0, fontSize: 18 }}>Ranking global (Top 20 tarotistas por minutos)</h2>
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>Ranking global (Top 20 tarotistas por minutos)</h2>
 
-          <button
-            onClick={loadRankings}
-            disabled={loadingRank || status !== "OK"}
-            style={{
-              padding: 10,
-              borderRadius: 10,
-              border: "1px solid #111",
-              background: loadingRank ? "#eee" : "#fff",
-              color: "#111",
-              cursor: loadingRank ? "not-allowed" : "pointer",
-              fontWeight: 700,
-            }}
-          >
-            {loadingRank ? "Cargando..." : "Actualizar ranking"}
-          </button>
-        </div>
+        <button
+          onClick={loadRankings}
+          disabled={loadingRank || status !== "OK"}
+          style={{
+            padding: 10,
+            borderRadius: 10,
+            border: "1px solid #111",
+            background: loadingRank ? "#eee" : "#fff",
+            color: "#111",
+            cursor: loadingRank ? "not-allowed" : "pointer",
+            fontWeight: 700,
+            marginTop: 8,
+          }}
+        >
+          {loadingRank ? "Cargando..." : "Actualizar ranking"}
+        </button>
 
         {rankMsg ? (
-          <div style={{ padding: 10, borderRadius: 10, background: "#fff3f3", border: "1px solid #ffcccc" }}>
+          <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: "#fff3f3", border: "1px solid #ffcccc" }}>
             {rankMsg}
           </div>
         ) : null}
@@ -335,16 +330,12 @@ export default function AdminPage() {
                 <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
                 <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Minutos</th>
                 <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Captadas</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>free</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>rueda</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>cliente</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>repite</th>
               </tr>
             </thead>
             <tbody>
               {ranking.length === 0 ? (
                 <tr>
-                  <td colSpan={8} style={{ padding: 10, color: "#666" }}>
+                  <td colSpan={4} style={{ padding: 10, color: "#666" }}>
                     Aún no hay datos. Pulsa “Sync ahora”.
                   </td>
                 </tr>
@@ -355,10 +346,6 @@ export default function AdminPage() {
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.minutes}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.captadas}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.free}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.rueda}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.cliente}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.repite}</td>
                   </tr>
                 ))
               )}
