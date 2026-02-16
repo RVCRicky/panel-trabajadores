@@ -221,25 +221,16 @@ export async function POST(req: Request) {
     let mappedByWorkersExternalRef = 0;
     let mappedByWorkersName = 0;
 
-    const missingTarotistas = new Map<string, number>();
-
-    // NUEVO: motivos de filas malas
-    const badReasons = new Map<string, number>();
-    const badExamples: any[] = [];
-
-    function addBad(reason: string, row: any) {
-      skippedBad++;
-      badReasons.set(reason, (badReasons.get(reason) || 0) + 1);
-      if (badExamples.length < 15) badExamples.push({ reason, row });
-    }
+    let defaultedCodigoToCliente = 0;
 
     for (const row of rows) {
       const tarotistaRaw = String(row["TAROTISTA"] ?? "").trim();
       const tarotistaKey = normalizeValue(tarotistaRaw);
 
       const telefonista = String(row["TELEFONISTA"] ?? "").trim();
+
       const codigoRaw = String(row["CODIGO"] ?? "").trim();
-      const codigo = codigoRaw.toLowerCase();
+      let codigo = codigoRaw.toLowerCase();
 
       const llamadaCall = toBool(row["LLAMADA CALL"]);
       const captado = toBool(row["CAPTADO"]);
@@ -248,28 +239,31 @@ export async function POST(req: Request) {
 
       const source_date = normalizeDate(row["FECHA"]);
 
+      // 1) Si no hay tarotista -> ignorar (no es un dato útil)
       if (!tarotistaKey) {
-        addBad("TAROTISTA vacío", row);
+        skippedBad++;
         continue;
       }
 
-      if (!codigo && llamadaCall) {
-        // llamadaCall=true sin código -> ignorar, no cuenta como bad
+      // 2) LlamadaCall true sin código -> ignorar
+      if (!codigo && llamadaCall) continue;
+
+      // 3) Si CODIGO vacío pero hay minutos -> lo tratamos como "cliente"
+      if (!codigo && minutes > 0) {
+        codigo = "cliente";
+        defaultedCodigoToCliente++;
+      }
+
+      // 4) Si sigue vacío -> malo
+      if (!codigo) {
+        skippedBad++;
         continue;
       }
 
-      if (!codigo && !llamadaCall) {
-        addBad("CODIGO vacío", row);
-        continue;
-      }
-
-      if (codigo === "llamada call") {
-        // ignorar
-        continue;
-      }
+      if (codigo === "llamada call") continue;
 
       if (!["free", "rueda", "cliente", "repite"].includes(codigo)) {
-        addBad(`CODIGO inválido: "${codigoRaw}"`, row);
+        skippedBad++;
         continue;
       }
 
@@ -300,7 +294,6 @@ export async function POST(req: Request) {
 
       if (!workerId) {
         skippedNoWorker++;
-        missingTarotistas.set(tarotistaRaw, (missingTarotistas.get(tarotistaRaw) || 0) + 1);
         continue;
       }
 
@@ -321,16 +314,6 @@ export async function POST(req: Request) {
       inserted++;
     }
 
-    const missingTop = Array.from(missingTarotistas.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 30)
-      .map(([name, count]) => ({ name, count }));
-
-    const badTop = Array.from(badReasons.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 20)
-      .map(([reason, count]) => ({ reason, count }));
-
     return NextResponse.json({
       ok: true,
       inserted,
@@ -344,9 +327,7 @@ export async function POST(req: Request) {
         mappedByWorkersName,
         totalMappingsLoaded: mapDict.size,
       },
-      missingTarotistasTop30: missingTop,
-      badTop20: badTop,
-      badExamples,
+      defaultedCodigoToCliente,
       debug: {
         separatorDetected: parsed.sep === "\t" ? "TAB" : parsed.sep,
         headersRaw: parsed.headersRaw,
@@ -354,7 +335,7 @@ export async function POST(req: Request) {
         firstRowExample: rows[0] ? rows[0] : null,
       },
       note:
-        "Revisa badTop20/badExamples: normalmente son filas con CODIGO vacío. Podemos decidir ignorarlas o asignar un código por defecto.",
+        "Regla nueva: CODIGO vacío + TIEMPO>0 => cliente. Las filas con TAROTISTA vacío se consideran basura y se saltan.",
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
