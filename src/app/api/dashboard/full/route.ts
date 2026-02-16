@@ -50,13 +50,13 @@ export async function GET(req: Request) {
 
     if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
 
-    // mes actual (UTC) -> YYYY-MM-01
+    // mes actual (UTC)
     const month_date = monthFromDate(new Date());
 
-    // rankings (los que ya tenías)
-    const { data: tarotStats } = await db.rpc("get_tarotistas_ranking", { p_month: month_date }).catch(() => ({ data: [] as any[] }));
-    // si tu proyecto NO tiene ese RPC, no pasa nada, solo devolvemos vacío
-    // (tú ya estabas viendo rankings, así que normalmente sí lo tienes)
+    // rankings (si existe el RPC)
+    let tarotStats: any[] = [];
+    const rpcRes = await db.rpc("get_tarotistas_ranking", { p_month: month_date } as any);
+    if (!rpcRes.error && Array.isArray(rpcRes.data)) tarotStats = rpcRes.data as any[];
 
     // ⬇️ NUEVO: mi earnings del mes
     let myEarnings: any = null;
@@ -103,12 +103,11 @@ export async function GET(req: Request) {
         isAdmin,
         worker: meWorker || null,
       },
-      // mantenemos compatibilidad con lo que ya tengas en panel:
       rankings: {
-        minutes: tarotStats || [],
-        repite_pct: tarotStats || [],
-        cliente_pct: tarotStats || [],
-        captadas: tarotStats || [],
+        minutes: tarotStats,
+        repite_pct: tarotStats,
+        cliente_pct: tarotStats,
+        captadas: tarotStats,
       },
       myEarnings,
       allEarnings,
