@@ -195,10 +195,15 @@ export async function POST(req: Request) {
         continue;
       }
 
-      if (!["free", "rueda", "cliente", "repite"].includes(codigo)) {
-        skippedBad++;
-        continue;
-      }
+      // Ignoramos códigos que no nos interesan (ej: "llamada call")
+if (codigo === "llamada call") {
+  continue;
+}
+
+if (!["free", "rueda", "cliente", "repite"].includes(codigo)) {
+  skippedBad++;
+  continue;
+}
 
       // worker por external_ref = TAROTISTA
       const { data: worker, error: wFindErr } = await adminClient
