@@ -190,10 +190,24 @@ export async function POST(req: Request) {
       const fecha = String(row["FECHA"] ?? "").trim();
       const source_date = fecha ? fecha : null;
 
-      if (!tarotista || !codigo) {
-        skippedBad++;
-        continue;
-      }
+      const llamadaCall = toBool(row["LLAMADA CALL"]); // viene como TRUE/FALSE
+
+// Si falta tarotista, es fila mala
+if (!tarotista) {
+  skippedBad++;
+  continue;
+}
+
+// Si CODIGO está vacío pero LLAMADA CALL es TRUE -> la ignoramos (no nos interesa)
+if (!codigo && llamadaCall) {
+  continue;
+}
+
+// Si CODIGO está vacío y NO es llamada call -> fila mala
+if (!codigo && !llamadaCall) {
+  skippedBad++;
+  continue;
+}
 
       // Ignoramos códigos que no nos interesan (ej: "llamada call")
 if (codigo === "llamada call") {
