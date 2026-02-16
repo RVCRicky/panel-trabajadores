@@ -27,7 +27,14 @@ function nextMonthISO(month_date: string) {
   return monthStartISO(dt);
 }
 
-async function computeAndClose(db: any, month_date: string, closed_by: string | null, source: "manual" | "cron") {
+type CloseResult = { alreadyClosed: boolean };
+
+async function computeAndClose(
+  db: any,
+  month_date: string,
+  closed_by: string | null,
+  source: "manual" | "cron"
+): Promise<CloseResult> {
   // ¿ya cerrado?
   const { data: closure } = await db
     .from("period_closures")
@@ -36,7 +43,7 @@ async function computeAndClose(db: any, month_date: string, closed_by: string | 
     .maybeSingle();
 
   if (closure?.is_closed) {
-    return { ok: true, alreadyClosed: true };
+    return { alreadyClosed: true };
   }
 
   // asegurar period
@@ -145,7 +152,6 @@ async function computeAndClose(db: any, month_date: string, closed_by: string | 
   pushSnap("cliente_pct", rank_cliente, (a) => a.cliente_pct);
   pushSnap("captadas", rank_captadas, (a) => a.captadas);
 
-  // limpiar snapshots previos del mes (por si estaba medio hecho)
   await db.from("monthly_rankings").delete().eq("month_date", month_date);
   if (snapshots.length) await db.from("monthly_rankings").insert(snapshots);
 
@@ -154,7 +160,9 @@ async function computeAndClose(db: any, month_date: string, closed_by: string | 
     const out: any[] = [];
     for (let i = 0; i < Math.min(3, list.length); i++) {
       const pos = i + 1;
-      const rr = (rules as any[]).find((x) => x.ranking_type === ranking_type && x.position === pos && x.role === "tarotista");
+      const rr = (rules as any[]).find(
+        (x) => x.ranking_type === ranking_type && x.position === pos && x.role === "tarotista"
+      );
       out.push({
         month_date,
         worker_id: list[i].worker_id,
@@ -234,7 +242,6 @@ async function computeAndClose(db: any, month_date: string, closed_by: string | 
     const amount = rr ? Number(rr.amount) : 0;
 
     if (centralId) {
-      // añadimos también al monthly_bonus_results como "team_win"
       await db.from("monthly_bonus_results").insert([
         { month_date, worker_id: centralId, ranking_type: "team_win", position: 1, amount },
       ]);
@@ -254,7 +261,7 @@ async function computeAndClose(db: any, month_date: string, closed_by: string | 
     { onConflict: "month_date" }
   );
 
-  return { ok: true, alreadyClosed: false };
+  return { alreadyClosed: false };
 }
 
 export async function POST(req: Request) {
