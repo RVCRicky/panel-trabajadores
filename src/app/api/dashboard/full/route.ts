@@ -37,11 +37,9 @@ export async function GET(req: Request) {
 
     const db = createClient(supabaseUrl, serviceKey);
 
-    // admin?
     const { data: adminRow } = await db.from("app_admins").select("user_id").eq("user_id", uid).maybeSingle();
     const isAdmin = !!adminRow;
 
-    // worker
     const { data: meWorker, error: wErr } = await db
       .from("workers")
       .select("id, user_id, role, display_name")
@@ -50,7 +48,6 @@ export async function GET(req: Request) {
 
     if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
 
-    // mes actual (UTC)
     const month_date = monthFromDate(new Date());
 
     // rankings (si existe el RPC)
@@ -58,30 +55,33 @@ export async function GET(req: Request) {
     const rpcRes = await db.rpc("get_tarotistas_ranking", { p_month: month_date } as any);
     if (!rpcRes.error && Array.isArray(rpcRes.data)) tarotStats = rpcRes.data as any[];
 
-    // ⬇️ NUEVO: mi earnings del mes
+    // mi earnings
     let myEarnings: any = null;
     if (meWorker?.id) {
       const { data: e } = await db
         .from("monthly_earnings")
-        .select("minutes_total, amount_base_eur, amount_bonus_eur, amount_total_eur")
+        .select("minutes_total, captadas, amount_base_eur, amount_bonus_eur, amount_total_eur")
         .eq("month_date", month_date)
         .eq("worker_id", meWorker.id)
         .maybeSingle();
 
       myEarnings = e || {
         minutes_total: 0,
+        captadas: 0,
         amount_base_eur: 0,
         amount_bonus_eur: 0,
         amount_total_eur: 0,
       };
     }
 
-    // ⬇️ NUEVO: admin puede ver earnings de todos
+    // admin: earnings de todos (⬅️ ahora incluye captadas)
     let allEarnings: any[] | null = null;
     if (isAdmin) {
       const { data: all } = await db
         .from("monthly_earnings")
-        .select("worker_id, amount_total_eur, amount_base_eur, amount_bonus_eur, minutes_total, worker:workers(display_name, role)")
+        .select(
+          "worker_id, minutes_total, captadas, amount_total_eur, amount_base_eur, amount_bonus_eur, worker:workers(display_name, role)"
+        )
         .eq("month_date", month_date)
         .order("amount_total_eur", { ascending: false });
 
@@ -90,6 +90,7 @@ export async function GET(req: Request) {
         name: x.worker?.display_name || x.worker_id,
         role: x.worker?.role || "—",
         minutes_total: x.minutes_total || 0,
+        captadas: x.captadas || 0,
         amount_base_eur: x.amount_base_eur || 0,
         amount_bonus_eur: x.amount_bonus_eur || 0,
         amount_total_eur: x.amount_total_eur || 0,
