@@ -114,6 +114,78 @@ export async function GET(req: Request) {
       }));
     }
 
+    // ✅ ganador de equipos del mes (para team_win)
+    // Regla: sumamos minutos_total y captadas de tarotistas del equipo, usando monthly_earnings del mes.
+    // team_members debe tener: team_id, tarotista_worker_id (ya lo arreglaste).
+    // teams debe tener: id, name, central_worker_id
+    let winnerTeam: any | null = null;
+    try {
+      const { data: teams } = await db.from("teams").select("id, name, central_worker_id");
+      const { data: members } = await db.from("team_members").select("team_id, tarotista_worker_id");
+
+      if ((teams || []).length && (members || []).length) {
+        const teamMap = new Map<string, { id: string; name: string; central_worker_id: string | null; memberIds: string[] }>();
+        for (const t of teams as any[]) {
+          teamMap.set(t.id, { id: t.id, name: t.name, central_worker_id: t.central_worker_id || null, memberIds: [] });
+        }
+        for (const m of members as any[]) {
+          const t = teamMap.get(m.team_id);
+          if (t && m.tarotista_worker_id) t.memberIds.push(m.tarotista_worker_id);
+        }
+
+        // cargamos earnings de los miembros
+        const allMemberIds = Array.from(teamMap.values()).flatMap((t) => t.memberIds);
+        if (allMemberIds.length) {
+          const { data: earns } = await db
+            .from("monthly_earnings")
+            .select("worker_id, minutes_total, captadas")
+            .eq("month_date", month_date)
+            .in("worker_id", allMemberIds);
+
+          const earnBy = new Map<string, { minutes_total: number; captadas: number }>();
+          for (const e of (earns || []) as any[]) {
+            earnBy.set(e.worker_id, { minutes_total: Number(e.minutes_total || 0), captadas: Number(e.captadas || 0) });
+          }
+
+          const scored = Array.from(teamMap.values())
+            .map((t) => {
+              let minutes = 0;
+              let captadas = 0;
+              for (const wid of t.memberIds) {
+                const e = earnBy.get(wid);
+                if (e) {
+                  minutes += e.minutes_total;
+                  captadas += e.captadas;
+                }
+              }
+              return { ...t, total_minutes: minutes, total_captadas: captadas };
+            })
+            // criterio: primero minutos, luego captadas
+            .sort((a, b) => b.total_minutes - a.total_minutes || b.total_captadas - a.total_captadas);
+
+          if (scored.length) {
+            const top = scored[0];
+            // nombre del central:
+            let centralName: string | null = null;
+            if (top.central_worker_id) {
+              const { data: cw } = await db.from("workers").select("display_name").eq("id", top.central_worker_id).maybeSingle();
+              centralName = cw?.display_name || null;
+            }
+            winnerTeam = {
+              team_id: top.id,
+              team_name: top.name,
+              central_worker_id: top.central_worker_id,
+              central_name: centralName,
+              total_minutes: top.total_minutes,
+              total_captadas: top.total_captadas,
+            };
+          }
+        }
+      }
+    } catch {
+      winnerTeam = null;
+    }
+
     return NextResponse.json({
       ok: true,
       month_date,
@@ -130,6 +202,7 @@ export async function GET(req: Request) {
       myEarnings,
       allEarnings,
       bonusRules,
+      winnerTeam,
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
