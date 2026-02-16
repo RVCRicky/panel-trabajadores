@@ -78,7 +78,7 @@ export default function PanelPage() {
   const [rows, setRows] = useState<StatRow[]>([]);
   const [totalRows, setTotalRows] = useState(0);
 
-  const [myStats, setMyStats] = useState<MyStatsResp extends infer X ? any : any>(null);
+  const [myStats, setMyStats] = useState<any>(null);
   const [myStatsMsg, setMyStatsMsg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -103,7 +103,7 @@ export default function PanelPage() {
       }
 
       if (!json.worker) {
-        setStatus("No tienes perfil en workers. (Admin debe crear tu ficha)");
+        setStatus("No tienes perfil en workers.");
         return;
       }
 
@@ -117,7 +117,6 @@ export default function PanelPage() {
 
       await loadEverything();
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
   async function logout() {
@@ -127,49 +126,37 @@ export default function PanelPage() {
 
   async function loadMyStats() {
     setMyStatsMsg(null);
-    try {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-      if (!token) {
-        router.replace("/login");
-        return;
-      }
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) return;
 
-      const r = await fetch("/api/stats/me", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const j = (await r.json()) as MyStatsResp;
+    const r = await fetch("/api/stats/me", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
 
-      if (!j.ok) {
-        setMyStatsMsg(`Error mis stats: ${(j as any).error}`);
-        return;
-      }
+    const j = (await r.json()) as MyStatsResp;
 
-      setMyStats(j);
-    } catch (e: any) {
-      setMyStatsMsg(e?.message || "Error cargando mis stats");
+    if (!j.ok) {
+      setMyStatsMsg((j as any).error);
+      return;
     }
+
+    setMyStats(j);
   }
 
   async function loadGlobalStats() {
-    setMsg(null);
     setLoading(true);
-    try {
-      const r = await fetch("/api/stats/global");
-      const j = (await r.json()) as StatsGlobalResp;
+    const r = await fetch("/api/stats/global");
+    const j = (await r.json()) as StatsGlobalResp;
 
-      if (!j.ok) {
-        setMsg(`Error stats: ${j.error}`);
-        return;
-      }
-
+    if (j.ok) {
       setRows(j.tarotistasTop || []);
       setTotalRows(j.totalRows || 0);
-    } catch (e: any) {
-      setMsg(e?.message || "Error cargando ranking");
-    } finally {
-      setLoading(false);
+    } else {
+      setMsg(j.error);
     }
+
+    setLoading(false);
   }
 
   async function loadEverything() {
@@ -184,128 +171,74 @@ export default function PanelPage() {
 
       <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         Estado: <b>{status}</b>
-        {me ? (
+        {me && (
           <div style={{ marginTop: 8, color: "#666" }}>
             Usuario: <b>{me.display_name}</b> · Rol: <b>{me.role}</b>
           </div>
-        ) : null}
+        )}
       </div>
 
-      <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
-        {me?.role === "admin" ? (
-          <a
-            href="/admin"
-            style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}
-          >
-            Ir a Admin →
-          </a>
-        ) : null}
-
-        <button
-          onClick={loadEverything}
-          disabled={loading || status !== "OK"}
-          style={{
-            padding: 10,
-            borderRadius: 10,
-            border: "1px solid #111",
-            background: loading ? "#eee" : "#fff",
-            cursor: loading ? "not-allowed" : "pointer",
-            fontWeight: 700,
-          }}
-        >
-          {loading ? "Actualizando..." : "Actualizar todo"}
-        </button>
-
-        <button
-          onClick={logout}
-          style={{
-            padding: 10,
-            borderRadius: 10,
-            border: "1px solid #111",
-            background: "#111",
-            color: "#fff",
-            cursor: "pointer",
-            fontWeight: 700,
-          }}
-        >
-          Cerrar sesión
-        </button>
-      </div>
-
-      <div style={{ marginTop: 14 }}>
-        <h2 style={{ margin: "0 0 10px 0", fontSize: 18 }}>Mis estadísticas</h2>
-
-        {myStatsMsg ? (
-          <div style={{ padding: 10, borderRadius: 10, background: "#fff3f3", border: "1px solid #ffcccc" }}>
-            {myStatsMsg}
-          </div>
-        ) : null}
-
+      <div style={{ marginTop: 16 }}>
+        <h2>Mis estadísticas</h2>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           <Card title="Mis minutos" value={fmt(s?.minutes || 0)} />
-          <Card title="Mis captadas" value={fmt(s?.captadas || 0)} sub="CAPTADO=true" />
+          <Card title="Mis captadas" value={fmt(s?.captadas || 0)} />
           <Card
             title="Desglose"
             value={`${fmt(s?.cliente || 0)} cliente`}
-            sub={`free ${fmt(s?.free || 0)} · rueda ${fmt(s?.rueda || 0)} · repite ${fmt(s?.repite || 0)}`}
+            sub={`free ${fmt(s?.free || 0)} · rueda ${fmt(s?.rueda || 0)} · repite ${fmt(
+              s?.repite || 0
+            )}`}
           />
         </div>
       </div>
 
-      <div style={{ marginTop: 16, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <h2 style={{ marginTop: 0, fontSize: 18 }}>Ranking global (tarotistas)</h2>
-        <p style={{ marginTop: 6, color: "#666" }}>
-          Filas importadas: <b>{fmt(totalRows)}</b>
-        </p>
+      <div style={{ marginTop: 24 }}>
+        <h2>Ranking global (tarotistas)</h2>
 
-        {msg ? (
-          <div style={{ padding: 10, borderRadius: 10, background: "#fff3f3", border: "1px solid #ffcccc" }}>
-            {msg}
-          </div>
-        ) : null}
+        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 10 }}>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Tarotista</th>
+              <th>Minutos</th>
+              <th>Captadas</th>
+              <th>Free</th>
+              <th>Rueda</th>
+              <th>Cliente</th>
+              <th>Repite</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, idx) => {
+              const isMe = me?.display_name === r.name;
 
-        <div style={{ overflowX: "auto", marginTop: 10 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 920 }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Minutos</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Captadas</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>free</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>rueda</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>cliente</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>repite</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 ? (
-                <tr>
-                  <td colSpan={8} style={{ padding: 10, color: "#666" }}>
-                    No hay datos aún.
-                  </td>
+              return (
+                <tr
+                  key={r.worker_id}
+                  style={{
+                    background: isMe ? "#e8f4ff" : "transparent",
+                    fontWeight: isMe ? 700 : 400,
+                  }}
+                >
+                  <td>{idx + 1}</td>
+                  <td>{r.name}</td>
+                  <td style={{ textAlign: "right" }}>{fmt(r.minutes)}</td>
+                  <td style={{ textAlign: "right" }}>{fmt(r.captadas)}</td>
+                  <td style={{ textAlign: "right" }}>{fmt(r.free)}</td>
+                  <td style={{ textAlign: "right" }}>{fmt(r.rueda)}</td>
+                  <td style={{ textAlign: "right" }}>{fmt(r.cliente)}</td>
+                  <td style={{ textAlign: "right" }}>{fmt(r.repite)}</td>
                 </tr>
-              ) : (
-                rows.map((r, idx) => {
-  const isMe = me?.display_name === r.name;
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
-  return (
-    <tr
-      key={r.worker_id}
-      style={{
-        background: isMe ? "#e8f4ff" : "transparent",
-        fontWeight: isMe ? 700 : 400,
-      }}
-    >
-      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
-      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(r.minutes)}</td>
-      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(r.captadas)}</td>
-      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(r.free)}</td>
-      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(r.rueda)}</td>
-      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(r.cliente)}</td>
-      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(r.repite)}</td>
-    </tr>
+      <div style={{ marginTop: 20 }}>
+        <button onClick={logout}>Cerrar sesión</button>
+      </div>
+    </div>
   );
-})
-
+}
