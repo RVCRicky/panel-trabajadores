@@ -29,8 +29,8 @@ function normalizeValue(s: string) {
   return String(s ?? "")
     .trim()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "") // sin acentos
-    .replace(/\s+/g, "") // sin espacios
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, "")
     .toLowerCase();
 }
 
@@ -236,6 +236,9 @@ export async function POST(req: Request) {
     let mappedByWorkersExternalRef = 0;
     let mappedByWorkersName = 0;
 
+    // NUEVO: recoger ejemplos de TAROTISTA que no se encuentran
+    const missingTarotistas = new Map<string, number>(); // raw -> count
+
     for (const row of rows) {
       const tarotistaRaw = String(row["TAROTISTA"] ?? "").trim();
       const tarotistaKey = normalizeValue(tarotistaRaw);
@@ -298,6 +301,8 @@ export async function POST(req: Request) {
 
       if (!workerId) {
         skippedNoWorker++;
+        // contar el raw original para ayudarte
+        missingTarotistas.set(tarotistaRaw, (missingTarotistas.get(tarotistaRaw) || 0) + 1);
         continue;
       }
 
@@ -318,6 +323,12 @@ export async function POST(req: Request) {
       inserted++;
     }
 
+    // preparar top 30 faltantes
+    const missingTop = Array.from(missingTarotistas.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 30)
+      .map(([name, count]) => ({ name, count }));
+
     return NextResponse.json({
       ok: true,
       inserted,
@@ -331,6 +342,7 @@ export async function POST(req: Request) {
         mappedByWorkersName,
         totalMappingsLoaded: mapDict.size,
       },
+      missingTarotistasTop30: missingTop,
       debug: {
         separatorDetected: parsed.sep === "\t" ? "TAB" : parsed.sep,
         headersRaw: parsed.headersRaw,
@@ -338,7 +350,7 @@ export async function POST(req: Request) {
         firstRowExample: rows[0] ? rows[0] : null,
       },
       note:
-        "Ahora también casamos TAROTISTA con workers.display_name (ignorando acentos/espacios). Si siguen faltando, es que esas tarotistas no existen aún en workers.",
+        "Mira missingTarotistasTop30: esos nombres debes crearlos en /admin/workers (rol tarotista) o hacer que coincidan con display_name/external_ref.",
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
