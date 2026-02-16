@@ -110,10 +110,23 @@ export default function AdminWorkersPage() {
         }),
       });
 
-      const j = await r.json();
+      // 🔥 IMPORTANTE: no asumimos JSON. Leemos texto primero.
+      const raw = await r.text();
 
-      if (!r.ok || !j?.ok) {
-        setMsg(`Error: ${j?.error || "UNKNOWN"}`);
+      let j: any = null;
+      try {
+        j = raw ? JSON.parse(raw) : null;
+      } catch {
+        j = null;
+      }
+
+      if (!r.ok) {
+        setMsg(`Error HTTP ${r.status}. Respuesta: ${raw || "(vacía)"}`);
+        return;
+      }
+
+      if (!j?.ok) {
+        setMsg(`Error: ${j?.error || raw || "UNKNOWN"}`);
         return;
       }
 
