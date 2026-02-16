@@ -104,26 +104,37 @@ export async function GET(req: Request) {
 
     // construimos lista ranking tarotistas (solo role tarotista)
     const tarotStats = Array.from(byWorker.entries())
-      .map(([worker_id, a]) => {
-        const w = namesMap.get(worker_id) || { name: worker_id, role: "tarotista" };
-        const minutes = a.minutes;
-        const repite_pct = minutes > 0 ? round1((a.repite / minutes) * 100) : 0;
-        const cliente_pct = minutes > 0 ? round1((a.cliente / minutes) * 100) : 0;
-        return {
-          worker_id,
-          name: w.name,
-          role: w.role,
-          minutes,
-          captadas: a.captadas,
-          free: a.free,
-          rueda: a.rueda,
-          cliente: a.cliente,
-          repite: a.repite,
-          repite_pct,
-          cliente_pct,
-        };
-      })
-      .filter((x) => String(x.role).toLowerCase() === "tarotista");
+  .map(([worker_id, a]) => {
+    const w = namesMap.get(worker_id) || { name: worker_id, role: "tarotista" };
+    const minutes = a.minutes;
+    const repite_pct = minutes > 0 ? round1((a.repite / minutes) * 100) : 0;
+    const cliente_pct = minutes > 0 ? round1((a.cliente / minutes) * 100) : 0;
+    return {
+      worker_id,
+      name: w.name,
+      role: w.role,
+      minutes,
+      captadas: a.captadas,
+      free: a.free,
+      rueda: a.rueda,
+      cliente: a.cliente,
+      repite: a.repite,
+      repite_pct,
+      cliente_pct,
+    };
+  })
+  .filter((x) => {
+    // ✅ Solo tarotistas reales
+    if (String(x.role).toLowerCase() !== "tarotista") return false;
+
+    // ✅ EXCLUIR extensiones tipo Call111 / Call 111 / CALL222 etc.
+    const n = String(x.name || "").trim().toLowerCase();
+    if (n.startsWith("call")) return false;
+    // por si alguna vez viene con espacio: "call 111"
+    if (/^call\s*\d+/i.test(n)) return false;
+
+    return true;
+  });
 
     const sortDesc = (key: string) => (a: any, b: any) => Number(b[key] || 0) - Number(a[key] || 0);
 
