@@ -9,21 +9,90 @@ function getEnv(name: string) {
   return v;
 }
 
-// CSV simple (sin comillas con comas dentro). Para MVP.
+// CSV parser con comillas y separador coma o tab
 function parseCSV(text: string) {
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (lines.length < 2) return [];
 
-  const headers = lines[0].split(",").map((h) => h.trim());
+  const sep = lines[0].includes("\t") ? "\t" : ",";
+
+  const parseLine = (line: string) => {
+    const out: string[] = [];
+    let cur = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+        continue;
+      }
+
+      if (!inQuotes && ch === sep) {
+        out.push(cur);
+        cur = "";
+        continue;
+      }
+
+      cur += ch;
+    }
+    out.push(cur);
+    return out.map((s) => s.trim());
+  };
+
+  const headers = parseLine(lines[0]);
 
   return lines.slice(1).map((line) => {
-    const cols = line.split(",");
+    const cols = parseLine(line);
     const row: any = {};
-    headers.forEach((h, i) => {
-      row[h] = (cols[i] ?? "").trim();
-    });
+    headers.forEach((h, i) => (row[h] = (cols[i] ?? "").trim()));
     return row;
   });
+}
+
+function toBool(v: any) {
+  const s = String(v ?? "").trim().toLowerCase();
+  return s === "true" || s === "1" || s === "si" || s === "sí" || s === "yes" || s === "x";
+}
+
+function toInt(v: any, fallback = 0) {
+  const n = Number.parseInt(String(v ?? "").trim(), 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// TIEMPO puede venir como:
+// - "120" (minutos)
+// - "120.5"
+// - "01:23:45" (hh:mm:ss)
+// - "23:45" (mm:ss)
+function timeToMinutes(v: any) {
+  const s = String(v ?? "").trim();
+  if (!s) return 0;
+
+  if (s.includes(":")) {
+    const parts = s.split(":").map((p) => p.trim());
+    if (parts.length === 3) {
+      const hh = toInt(parts[0], 0);
+      const mm = toInt(parts[1], 0);
+      const ss = toInt(parts[2], 0);
+      return Math.round(hh * 60 + mm + ss / 60);
+    }
+    if (parts.length === 2) {
+      const mm = toInt(parts[0], 0);
+      const ss = toInt(parts[1], 0);
+      return Math.round(mm + ss / 60);
+    }
+    return 0;
+  }
+
+  const n = Number(String(s).replace(",", "."));
+  return Number.isFinite(n) ? Math.round(n) : 0;
 }
 
 type Body = { csvUrl: string };
@@ -38,7 +107,7 @@ export async function POST(req: Request) {
     const anonKey = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
     const serviceKey = getEnv("SUPABASE_SERVICE_ROLE_KEY");
 
-    // 1) Exigir token del usuario (para comprobar admin por RLS)
+    // exigir token del usuario
     const auth = req.headers.get("authorization") || "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
     if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
@@ -47,7 +116,7 @@ export async function POST(req: Request) {
     const csvUrl = (body.csvUrl || "").trim();
     if (!csvUrl) return NextResponse.json({ ok: false, error: "MISSING_CSV_URL" }, { status: 400 });
 
-    // 2) Verificar que el usuario es admin (via app_admins) usando ANON + token
+    // comprobar admin (app_admins) via RLS con ANON + token
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
     });
@@ -64,52 +133,39 @@ export async function POST(req: Request) {
     if (aErr) return NextResponse.json({ ok: false, error: aErr.message }, { status: 400 });
     if (!adminRow) return NextResponse.json({ ok: false, error: "NOT_ADMIN" }, { status: 403 });
 
-    // 3) Descargar CSV
+    // descargar CSV
     const r = await fetch(csvUrl);
-    if (!r.ok) {
-      return NextResponse.json({ ok: false, error: `CSV_FETCH_FAILED_${r.status}` }, { status: 400 });
-    }
+    if (!r.ok) return NextResponse.json({ ok: false, error: `CSV_FETCH_FAILED_${r.status}` }, { status: 400 });
 
     const text = await r.text();
     const rows = parseCSV(text);
 
-    // 4) Service role para escribir (server only)
     const adminClient = createClient(supabaseUrl, serviceKey);
 
-    // 5) Limpiar tabla (reset import)
+    // limpiar tabla
     const del = await adminClient.from("attendance_rows").delete().neq("id", 0);
     if (del.error) return NextResponse.json({ ok: false, error: del.error.message }, { status: 400 });
 
-    // 6) Insertar filas nuevas
+    // Columnas reales:
+    // FECHA | ... | TELEFONISTA | ... | TAROTISTA | TIEMPO | ... | Codigo | ... | CAPTADO | ...
     let inserted = 0;
     let skippedNoWorker = 0;
     let skippedBad = 0;
 
     for (const row of rows) {
-      // Nombres esperados en tu CSV:
-      // - external_ref: ideal que exista; si no, usa "Trabajador" o "Extension" y lo guardas en external_ref en workers
-      // - Codigo: free/rueda/cliente/repite
-      // - Captado: true/false o 1/0
-      // - Minutes / Calls (o Minutos / Llamadas)
-      const ext =
-        (row["external_ref"] ||
-          row["ExternalRef"] ||
-          row["Trabajador"] ||
-          row["Extension"] ||
-          row["Ext"] ||
-          "").trim();
+      const tarotista = String(row["TAROTISTA"] ?? "").trim();
+      const telefonista = String(row["TELEFONISTA"] ?? "").trim(); // central (lo guardamos en raw)
+      const codigo = String(row["Codigo"] ?? "").trim().toLowerCase();
+      const captado = toBool(row["CAPTADO"]);
+      const minutes = timeToMinutes(row["TIEMPO"]);
 
-      const codigo = (row["Codigo"] || row["codigo"] || "").toLowerCase().trim();
-      const captRaw = (row["Captado"] || row["captado"] || "").toString().toLowerCase().trim();
-      const captado = captRaw === "true" || captRaw === "1" || captRaw === "si" || captRaw === "sí";
+      // Llamadas no las usamos: dejamos calls=0
+      const calls = 0;
 
-      const minutesStr = row["Minutes"] || row["Minutos"] || row["minutes"] || row["minutos"] || "0";
-      const callsStr = row["Calls"] || row["Llamadas"] || row["calls"] || row["llamadas"] || "0";
+      const fecha = String(row["FECHA"] ?? "").trim();
+      const source_date = fecha ? fecha : null;
 
-      const minutes = Number.parseInt(String(minutesStr), 10) || 0;
-      const calls = Number.parseInt(String(callsStr), 10) || 0;
-
-      if (!ext || !codigo) {
+      if (!tarotista || !codigo) {
         skippedBad++;
         continue;
       }
@@ -119,10 +175,11 @@ export async function POST(req: Request) {
         continue;
       }
 
+      // buscamos worker por external_ref = TAROTISTA
       const { data: worker, error: wFindErr } = await adminClient
         .from("workers")
         .select("id")
-        .eq("external_ref", ext)
+        .eq("external_ref", tarotista)
         .maybeSingle();
 
       if (wFindErr) return NextResponse.json({ ok: false, error: wFindErr.message }, { status: 400 });
@@ -131,13 +188,17 @@ export async function POST(req: Request) {
         continue;
       }
 
+      // guardamos también TELEFONISTA en raw para poder sacar estadísticas por central más adelante
+      const raw = { ...row, TELEFONISTA: telefonista };
+
       const ins = await adminClient.from("attendance_rows").insert({
         worker_id: worker.id,
+        source_date,
         minutes,
         calls,
         codigo,
         captado,
-        raw: row,
+        raw,
       });
 
       if (ins.error) return NextResponse.json({ ok: false, error: ins.error.message }, { status: 400 });
@@ -151,6 +212,8 @@ export async function POST(req: Request) {
       skippedNoWorker,
       skippedBad,
       totalRows: rows.length,
+      note:
+        "Para que inserte: workers.external_ref debe coincidir EXACTO con el texto de la columna TAROTISTA.",
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
