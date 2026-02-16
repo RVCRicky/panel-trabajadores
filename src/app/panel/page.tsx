@@ -2,56 +2,82 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "../../lib/supabaseClient";
+import { supabase } from "@/lib/supabaseClient";
 
-type RankingType = "minutes" | "repite_pct" | "cliente_pct" | "captadas";
-type WorkerRole = "admin" | "central" | "tarotista";
-
-function fmt(n: number) {
+function fmt(n: any) {
   return (Number(n) || 0).toLocaleString("es-ES");
 }
-function medal(rank: number) {
-  if (rank === 1) return "🥇";
-  if (rank === 2) return "🥈";
-  if (rank === 3) return "🥉";
-  return "";
+function eur(n: any) {
+  return (Number(n) || 0).toLocaleString("es-ES", { style: "currency", currency: "EUR" });
 }
+function medal(pos: number) {
+  return pos === 1 ? "🥇" : pos === 2 ? "🥈" : pos === 3 ? "🥉" : "";
+}
+
+type DashboardResp = {
+  ok: boolean;
+  error?: string;
+
+  month_date: string;
+  user: { isAdmin: boolean; worker: any | null };
+
+  rankings: {
+    minutes: any[];
+    repite_pct: any[];
+    cliente_pct: any[];
+    captadas: any[];
+  };
+
+  myEarnings: null | {
+    minutes_total: number;
+    amount_base_eur: number;
+    amount_bonus_eur: number;
+    amount_total_eur: number;
+  };
+
+  allEarnings: null | Array<{
+    worker_id: string;
+    name: string;
+    role: string;
+    minutes_total: number;
+    amount_base_eur: number;
+    amount_bonus_eur: number;
+    amount_total_eur: number;
+  }>;
+};
 
 export default function PanelPage() {
   const router = useRouter();
-
-  const [rankingType, setRankingType] = useState<RankingType>("minutes");
+  const [rankType, setRankType] = useState<"minutes" | "repite_pct" | "cliente_pct" | "captadas">("minutes");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [data, setData] = useState<DashboardResp | null>(null);
 
-  const [dash, setDash] = useState<any>(null);
-
-  async function getTokenOrRedirect(): Promise<string | null> {
+  async function getToken() {
     const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token || null;
-    if (!token) {
-      router.replace("/login");
-      return null;
-    }
-    return token;
+    return data.session?.access_token || null;
   }
 
-  async function loadDashboard() {
+  async function load() {
     setErr(null);
     setLoading(true);
     try {
-      const token = await getTokenOrRedirect();
-      if (!token) return;
-
-      const r = await fetch(`/api/dashboard/full`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const j = await r.json();
-      if (!j.ok) {
-        setErr(j.error || "Error dashboard");
+      const token = await getToken();
+      if (!token) {
+        router.replace("/login");
         return;
       }
-      setDash(j);
+
+      const res = await fetch("/api/dashboard/full", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const j = (await res.json().catch(() => null)) as DashboardResp | null;
+      if (!j?.ok) {
+        setErr(j?.error || "Error dashboard");
+        return;
+      }
+      setData(j);
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
     } finally {
@@ -60,29 +86,19 @@ export default function PanelPage() {
   }
 
   useEffect(() => {
-    loadDashboard();
+    load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const me = dash?.user?.worker || null;
-  const myStats = dash?.myStats || null;
-
-  const rows = (dash?.rankings?.[rankingType] || []) as any[];
+  const me = data?.user?.worker || null;
+  const ranks = data?.rankings?.[rankType] || [];
 
   const myRank = useMemo(() => {
-    if (!me?.display_name) return null;
-    const idx = rows.findIndex((r) => r.name === me.display_name);
-    if (idx === -1) return null;
-    return idx + 1;
-  }, [me?.display_name, rows]);
-
-  function valueForRow(r: any) {
-    if (rankingType === "minutes") return fmt(r.minutes);
-    if (rankingType === "captadas") return fmt(r.captadas);
-    if (rankingType === "repite_pct") return `${r.repite_pct} %`;
-    if (rankingType === "cliente_pct") return `${r.cliente_pct} %`;
-    return "";
-  }
+    const myName = me?.display_name;
+    if (!myName) return null;
+    const idx = ranks.findIndex((x: any) => x.name === myName);
+    return idx === -1 ? null : idx + 1;
+  }, [me?.display_name, ranks]);
 
   async function logout() {
     await supabase.auth.signOut();
@@ -94,17 +110,43 @@ export default function PanelPage() {
       <h1 style={{ marginTop: 0 }}>Panel</h1>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-        <button onClick={loadDashboard} disabled={loading} style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 800 }}>
+        <button
+          onClick={load}
+          disabled={loading}
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 800 }}
+        >
           {loading ? "Actualizando..." : "Actualizar"}
         </button>
-        <button onClick={logout} style={{ padding: 10, borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", fontWeight: 800 }}>
+
+        <button
+          onClick={logout}
+          style={{
+            padding: 10,
+            borderRadius: 10,
+            border: "1px solid #111",
+            background: "#111",
+            color: "#fff",
+            fontWeight: 800,
+          }}
+        >
           Cerrar sesión
         </button>
-        {dash?.user?.isAdmin ? (
-          <a href="/admin" style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}>
+
+        {data?.user?.isAdmin ? (
+          <a
+            href="/admin"
+            style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}
+          >
             Ir a Admin →
           </a>
         ) : null}
+
+        <a
+          href="/panel/invoices"
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}
+        >
+          Mis facturas →
+        </a>
       </div>
 
       {err ? (
@@ -113,126 +155,55 @@ export default function PanelPage() {
         </div>
       ) : null}
 
+      {/* Bloque cabecera */}
       <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <div style={{ color: "#666" }}>Mes: <b>{dash?.month_date || "—"}</b></div>
+        <div style={{ color: "#666" }}>
+          Mes: <b>{data?.month_date || "—"}</b>
+        </div>
         <div style={{ marginTop: 6 }}>
           Usuario: <b>{me?.display_name || "—"}</b> · Rol: <b>{me?.role || "—"}</b>
         </div>
-        <div style={{ marginTop: 6, color: "#666" }}>
-          Filas del mes: <b>{fmt(dash?.meta?.totalRowsMonth || 0)}</b>
-        </div>
       </div>
 
-      {/* MIS ESTADÍSTICAS */}
+      {/* NUEVO: Ganado */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <h2 style={{ marginTop: 0, fontSize: 18 }}>Mis estadísticas (mes)</h2>
-        {myStats ? (
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>Ganado este mes</h2>
+
+        {data?.myEarnings ? (
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", color: "#111" }}>
-            <div><b>Minutos:</b> {fmt(myStats.minutes)}</div>
-            <div><b>Captadas:</b> {fmt(myStats.captadas)}</div>
-            <div><b>% Repite:</b> {myStats.repite_pct} %</div>
-            <div><b>% Cliente:</b> {myStats.cliente_pct} %</div>
-            <div><b>Desglose:</b> free {fmt(myStats.free)} · rueda {fmt(myStats.rueda)} · cliente {fmt(myStats.cliente)} · repite {fmt(myStats.repite)}</div>
-            <div><b>Mi posición:</b> {myRank ? `${medal(myRank)} #${myRank}` : "—"}</div>
-          </div>
-        ) : (
-          <div style={{ color: "#666" }}>Sin datos.</div>
-        )}
-      </div>
-
-      {/* EQUIPO CENTRAL */}
-      {me?.role === "central" ? (
-        <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-          <h2 style={{ marginTop: 0, fontSize: 18 }}>Mi equipo</h2>
-          {dash?.myTeam?.team ? (
-            <>
-              <div><b>Equipo:</b> {dash.myTeam.team.name}</div>
-              {dash?.myTeam?.stats ? (
-                <div style={{ marginTop: 6, color: "#111" }}>
-                  <b>Minutos equipo:</b> {fmt(dash.myTeam.stats.total_minutes)} ·{" "}
-                  <b>Captadas equipo:</b> {fmt(dash.myTeam.stats.total_captadas)} ·{" "}
-                  <b>% Cliente equipo:</b> {dash.myTeam.stats.total_cliente_pct} %
-                </div>
-              ) : (
-                <div style={{ color: "#666", marginTop: 6 }}>Tu equipo aún no tiene datos este mes.</div>
-              )}
-            </>
-          ) : (
-            <div style={{ color: "#666" }}>
-              No tienes equipo creado/asignado aún. (Admin debe crear tu equipo y asignar tarotistas)
+            <div>
+              <b>Minutos:</b> {fmt(data.myEarnings.minutes_total)}
             </div>
-          )}
-        </div>
-      ) : null}
-
-      {/* GANADOR DE EQUIPO */}
-      <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <h2 style={{ marginTop: 0, fontSize: 18 }}>Ganador de equipos (mes)</h2>
-        {dash?.winnerTeam ? (
-          <div>
-            <b>{dash.winnerTeam.team_name}</b> — minutos: <b>{fmt(dash.winnerTeam.total_minutes)}</b> · captadas:{" "}
-            <b>{fmt(dash.winnerTeam.total_captadas)}</b> · % cliente: <b>{dash.winnerTeam.total_cliente_pct} %</b>
+            <div>
+              <b>Base:</b> {eur(data.myEarnings.amount_base_eur)}
+            </div>
+            <div>
+              <b>Bonos:</b> {eur(data.myEarnings.amount_bonus_eur)} <span style={{ color: "#666" }}>(cap 20€)</span>
+            </div>
+            <div>
+              <b>Total:</b> {eur(data.myEarnings.amount_total_eur)}
+            </div>
           </div>
         ) : (
-          <div style={{ color: "#666" }}>Aún no hay equipos o no hay datos.</div>
+          <div style={{ color: "#666" }}>Sin cálculo todavía (admin debe recalcular mes).</div>
         )}
       </div>
 
-      {/* BONOS */}
-      <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <h2 style={{ marginTop: 0, fontSize: 18 }}>Bonos del mes (auto)</h2>
-
-        <div style={{ color: "#666", marginBottom: 8 }}>
-          (Los importes se cambian en Supabase → tabla <b>bonus_rules</b>)
-        </div>
-
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Ranking</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Pos</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Persona</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Bono</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(dash?.bonuses?.tarotistas || []).map((b: any, i: number) => (
-                <tr key={i}>
-                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{b.ranking_type}</td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{b.position}</td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{b.name}</td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(b.amount)}</td>
-                </tr>
-              ))}
-              {dash?.bonuses?.centralWinner ? (
-                <tr>
-                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>team_win</td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>1</td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
-                    Central del equipo: {dash.bonuses.centralWinner.team_name}
-                  </td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>
-                    {fmt(dash.bonuses.centralWinner.amount)}
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* RANKING SELECTOR */}
+      {/* Rankings */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Rankings (mes)</h2>
 
-        <div style={{ marginBottom: 10 }}>
-          <select value={rankingType} onChange={(e) => setRankingType(e.target.value as RankingType)} style={{ padding: 8 }}>
+        <div style={{ marginBottom: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <select value={rankType} onChange={(e) => setRankType(e.target.value as any)} style={{ padding: 8 }}>
             <option value="minutes">1) Ranking por Minutos</option>
             <option value="repite_pct">2) Ranking por % Repite</option>
             <option value="cliente_pct">3) Ranking por % Cliente</option>
             <option value="captadas">4) Ranking por Captadas</option>
           </select>
+
+          <div style={{ color: "#666" }}>
+            Mi posición: <b>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</b>
+          </div>
         </div>
 
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -244,16 +215,26 @@ export default function PanelPage() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r: any, idx: number) => {
-              const rank = idx + 1;
+            {ranks.map((r: any, idx: number) => {
+              const pos = idx + 1;
               const isMe = me?.display_name === r.name;
               return (
                 <tr key={r.worker_id} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 800 : 400 }}>
                   <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
-                    {medal(rank)} {rank}
+                    {medal(pos)} {pos}
                   </td>
                   <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{valueForRow(r)}</td>
+                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>
+                    {rankType === "minutes"
+                      ? fmt(r.minutes)
+                      : rankType === "captadas"
+                      ? fmt(r.captadas)
+                      : rankType === "repite_pct"
+                      ? `${r.repite_pct} %`
+                      : rankType === "cliente_pct"
+                      ? `${r.cliente_pct} %`
+                      : ""}
+                  </td>
                 </tr>
               );
             })}
@@ -264,6 +245,48 @@ export default function PanelPage() {
           Nota: % Repite = minutos repite / minutos totales del mes. % Cliente igual.
         </div>
       </div>
+
+      {/* NUEVO: Admin ve lo ganado por todos */}
+      {data?.user?.isAdmin && data?.allEarnings ? (
+        <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
+          <h2 style={{ marginTop: 0, fontSize: 18 }}>Admin · Ganado por persona (mes)</h2>
+
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Nombre</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Rol</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Minutos</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Base</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Bonos</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.allEarnings.map((x) => (
+                  <tr key={x.worker_id}>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
+                      <b>{x.name}</b>
+                    </td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", color: "#666" }}>{x.role}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(x.minutes_total)}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{eur(x.amount_base_eur)}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{eur(x.amount_bonus_eur)}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>
+                      <b>{eur(x.amount_total_eur)}</b>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
+            Los bonos están capados a 20€ por persona (ver monthly_earnings.bonus_cap_eur).
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
