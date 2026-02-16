@@ -30,6 +30,7 @@ type DashboardResp = {
 
   myEarnings: null | {
     minutes_total: number;
+    captadas: number;
     amount_base_eur: number;
     amount_bonus_eur: number;
     amount_total_eur: number;
@@ -40,15 +41,21 @@ type DashboardResp = {
     name: string;
     role: string;
     minutes_total: number;
+    captadas: number;
     amount_base_eur: number;
     amount_bonus_eur: number;
     amount_total_eur: number;
   }>;
 };
 
+type AdminSortKey = "total" | "minutes" | "captadas" | "base" | "bonus";
+
 export default function PanelPage() {
   const router = useRouter();
+
   const [rankType, setRankType] = useState<"minutes" | "repite_pct" | "cliente_pct" | "captadas">("minutes");
+  const [adminSort, setAdminSort] = useState<AdminSortKey>("total");
+
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<DashboardResp | null>(null);
@@ -100,6 +107,21 @@ export default function PanelPage() {
     return idx === -1 ? null : idx + 1;
   }, [me?.display_name, ranks]);
 
+  const sortedAllEarnings = useMemo(() => {
+    const list = data?.allEarnings || [];
+    const copy = [...list];
+    const val = (x: any) => {
+      if (adminSort === "total") return Number(x.amount_total_eur || 0);
+      if (adminSort === "minutes") return Number(x.minutes_total || 0);
+      if (adminSort === "captadas") return Number(x.captadas || 0);
+      if (adminSort === "base") return Number(x.amount_base_eur || 0);
+      if (adminSort === "bonus") return Number(x.amount_bonus_eur || 0);
+      return 0;
+    };
+    copy.sort((a, b) => val(b) - val(a));
+    return copy;
+  }, [data?.allEarnings, adminSort]);
+
   async function logout() {
     await supabase.auth.signOut();
     router.replace("/login");
@@ -133,10 +155,7 @@ export default function PanelPage() {
         </button>
 
         {data?.user?.isAdmin ? (
-          <a
-            href="/admin"
-            style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}
-          >
+          <a href="/admin" style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}>
             Ir a Admin →
           </a>
         ) : null}
@@ -155,7 +174,7 @@ export default function PanelPage() {
         </div>
       ) : null}
 
-      {/* Bloque cabecera */}
+      {/* Cabecera */}
       <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <div style={{ color: "#666" }}>
           Mes: <b>{data?.month_date || "—"}</b>
@@ -165,7 +184,7 @@ export default function PanelPage() {
         </div>
       </div>
 
-      {/* NUEVO: Ganado */}
+      {/* Ganado */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Ganado este mes</h2>
 
@@ -173,6 +192,9 @@ export default function PanelPage() {
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", color: "#111" }}>
             <div>
               <b>Minutos:</b> {fmt(data.myEarnings.minutes_total)}
+            </div>
+            <div>
+              <b>Captadas:</b> {fmt(data.myEarnings.captadas)}
             </div>
             <div>
               <b>Base:</b> {eur(data.myEarnings.amount_base_eur)}
@@ -246,31 +268,46 @@ export default function PanelPage() {
         </div>
       </div>
 
-      {/* NUEVO: Admin ve lo ganado por todos */}
+      {/* Admin: Ganado por todos + ordenar */}
       {data?.user?.isAdmin && data?.allEarnings ? (
         <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-          <h2 style={{ marginTop: 0, fontSize: 18 }}>Admin · Ganado por persona (mes)</h2>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
+            <h2 style={{ marginTop: 0, fontSize: 18 }}>Admin · Ganado por persona (mes)</h2>
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ color: "#666" }}>Ordenar por:</span>
+              <select value={adminSort} onChange={(e) => setAdminSort(e.target.value as AdminSortKey)} style={{ padding: 8 }}>
+                <option value="total">Total €</option>
+                <option value="base">Base €</option>
+                <option value="bonus">Bonos €</option>
+                <option value="minutes">Minutos</option>
+                <option value="captadas">Captadas</option>
+              </select>
+            </div>
+          </div>
 
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
               <thead>
                 <tr>
                   <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Nombre</th>
                   <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Rol</th>
                   <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Minutos</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Captadas</th>
                   <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Base</th>
                   <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Bonos</th>
                   <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Total</th>
                 </tr>
               </thead>
               <tbody>
-                {data.allEarnings.map((x) => (
+                {sortedAllEarnings.map((x) => (
                   <tr key={x.worker_id}>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
                       <b>{x.name}</b>
                     </td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", color: "#666" }}>{x.role}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(x.minutes_total)}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(x.captadas)}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{eur(x.amount_base_eur)}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{eur(x.amount_bonus_eur)}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>
