@@ -21,10 +21,6 @@ function normalizeKey(s: string) {
     .toUpperCase();
 }
 
-// Normaliza valores para comparar:
-// - quita acentos
-// - quita espacios
-// - minúsculas
 function normalizeValue(s: string) {
   return String(s ?? "")
     .trim()
@@ -41,7 +37,6 @@ function detectSeparator(headerLine: string) {
   return ",";
 }
 
-// CSV parser con comillas y separador auto
 function parseCSV(text: string) {
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (lines.length < 2) return { rows: [], sep: ",", headersRaw: [], headersNorm: [] };
@@ -125,9 +120,6 @@ function timeToMinutes(v: any) {
   return Number.isFinite(n) ? Math.round(n) : 0;
 }
 
-// FECHA:
-// - "13/02/2026" -> "2026-02-13"
-// - "2026-02-13" -> ok
 function normalizeDate(v: any): string | null {
   const s = String(v ?? "").trim();
   if (!s) return null;
@@ -157,7 +149,6 @@ export async function POST(req: Request) {
     const anonKey = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
     const serviceKey = getEnv("SUPABASE_SERVICE_ROLE_KEY");
 
-    // token usuario
     const auth = req.headers.get("authorization") || "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
     if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
@@ -166,7 +157,6 @@ export async function POST(req: Request) {
     const csvUrl = (body.csvUrl || "").trim();
     if (!csvUrl) return NextResponse.json({ ok: false, error: "MISSING_CSV_URL" }, { status: 400 });
 
-    // comprobar admin (RLS)
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
     });
@@ -183,7 +173,6 @@ export async function POST(req: Request) {
     if (aErr) return NextResponse.json({ ok: false, error: aErr.message }, { status: 400 });
     if (!adminRow) return NextResponse.json({ ok: false, error: "NOT_ADMIN" }, { status: 403 });
 
-    // bajar CSV
     const r = await fetch(csvUrl);
     if (!r.ok) return NextResponse.json({ ok: false, error: `CSV_FETCH_FAILED_${r.status}` }, { status: 400 });
 
@@ -191,10 +180,8 @@ export async function POST(req: Request) {
     const parsed = parseCSV(text);
     const rows = parsed.rows;
 
-    // service role
     const adminClient = createClient(supabaseUrl, serviceKey);
 
-    // cargar mappings una vez
     const { data: maps, error: mapsErr } = await adminClient
       .from("call_mappings")
       .select("csv_tarotista, worker_id");
@@ -206,7 +193,6 @@ export async function POST(req: Request) {
       if (k) mapDict.set(k, m.worker_id);
     }
 
-    // cargar workers una vez
     const { data: ws, error: wsErr } = await adminClient
       .from("workers")
       .select("id, external_ref, display_name");
@@ -223,7 +209,6 @@ export async function POST(req: Request) {
       if (kName) workersByName.set(kName, w.id);
     }
 
-    // reset import
     const del = await adminClient.from("attendance_rows").delete().neq("id", 0);
     if (del.error) return NextResponse.json({ ok: false, error: del.error.message }, { status: 400 });
 
@@ -236,15 +221,26 @@ export async function POST(req: Request) {
     let mappedByWorkersExternalRef = 0;
     let mappedByWorkersName = 0;
 
-    // NUEVO: recoger ejemplos de TAROTISTA que no se encuentran
-    const missingTarotistas = new Map<string, number>(); // raw -> count
+    const missingTarotistas = new Map<string, number>();
+
+    // NUEVO: motivos de filas malas
+    const badReasons = new Map<string, number>();
+    const badExamples: any[] = [];
+
+    function addBad(reason: string, row: any) {
+      skippedBad++;
+      badReasons.set(reason, (badReasons.get(reason) || 0) + 1);
+      if (badExamples.length < 15) badExamples.push({ reason, row });
+    }
 
     for (const row of rows) {
       const tarotistaRaw = String(row["TAROTISTA"] ?? "").trim();
       const tarotistaKey = normalizeValue(tarotistaRaw);
 
       const telefonista = String(row["TELEFONISTA"] ?? "").trim();
-      const codigo = String(row["CODIGO"] ?? "").trim().toLowerCase();
+      const codigoRaw = String(row["CODIGO"] ?? "").trim();
+      const codigo = codigoRaw.toLowerCase();
+
       const llamadaCall = toBool(row["LLAMADA CALL"]);
       const captado = toBool(row["CAPTADO"]);
       const minutes = timeToMinutes(row["TIEMPO"]);
@@ -253,23 +249,27 @@ export async function POST(req: Request) {
       const source_date = normalizeDate(row["FECHA"]);
 
       if (!tarotistaKey) {
-        skippedBad++;
+        addBad("TAROTISTA vacío", row);
         continue;
       }
 
-      // si CODIGO vacío pero LLAMADA CALL TRUE => ignorar
-      if (!codigo && llamadaCall) continue;
+      if (!codigo && llamadaCall) {
+        // llamadaCall=true sin código -> ignorar, no cuenta como bad
+        continue;
+      }
 
-      // CODIGO vacío y no llamada => malo
       if (!codigo && !llamadaCall) {
-        skippedBad++;
+        addBad("CODIGO vacío", row);
         continue;
       }
 
-      if (codigo === "llamada call") continue;
+      if (codigo === "llamada call") {
+        // ignorar
+        continue;
+      }
 
       if (!["free", "rueda", "cliente", "repite"].includes(codigo)) {
-        skippedBad++;
+        addBad(`CODIGO inválido: "${codigoRaw}"`, row);
         continue;
       }
 
@@ -278,7 +278,6 @@ export async function POST(req: Request) {
         continue;
       }
 
-      // resolver worker
       let workerId: string | null = null;
 
       const fromMap = mapDict.get(tarotistaKey);
@@ -301,7 +300,6 @@ export async function POST(req: Request) {
 
       if (!workerId) {
         skippedNoWorker++;
-        // contar el raw original para ayudarte
         missingTarotistas.set(tarotistaRaw, (missingTarotistas.get(tarotistaRaw) || 0) + 1);
         continue;
       }
@@ -323,11 +321,15 @@ export async function POST(req: Request) {
       inserted++;
     }
 
-    // preparar top 30 faltantes
     const missingTop = Array.from(missingTarotistas.entries())
       .sort((a, b) => b[1] - a[1])
       .slice(0, 30)
       .map(([name, count]) => ({ name, count }));
+
+    const badTop = Array.from(badReasons.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 20)
+      .map(([reason, count]) => ({ reason, count }));
 
     return NextResponse.json({
       ok: true,
@@ -343,6 +345,8 @@ export async function POST(req: Request) {
         totalMappingsLoaded: mapDict.size,
       },
       missingTarotistasTop30: missingTop,
+      badTop20: badTop,
+      badExamples,
       debug: {
         separatorDetected: parsed.sep === "\t" ? "TAB" : parsed.sep,
         headersRaw: parsed.headersRaw,
@@ -350,7 +354,7 @@ export async function POST(req: Request) {
         firstRowExample: rows[0] ? rows[0] : null,
       },
       note:
-        "Mira missingTarotistasTop30: esos nombres debes crearlos en /admin/workers (rol tarotista) o hacer que coincidan con display_name/external_ref.",
+        "Revisa badTop20/badExamples: normalmente son filas con CODIGO vacío. Podemos decidir ignorarlas o asignar un código por defecto.",
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
