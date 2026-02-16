@@ -21,6 +21,14 @@ function normalizeKey(s: string) {
     .toUpperCase();
 }
 
+// Normaliza el valor TAROTISTA para comparar mappings
+function normalizeTarotistaValue(s: string) {
+  return String(s ?? "")
+    .trim()
+    .replace(/\s+/g, "")
+    .toLowerCase();
+}
+
 function detectSeparator(headerLine: string) {
   const line = headerLine || "";
   if (line.includes("\t")) return "\t";
@@ -28,7 +36,6 @@ function detectSeparator(headerLine: string) {
   return ",";
 }
 
-// CSV parser con comillas y separador auto
 function parseCSV(text: string) {
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (lines.length < 2) return { rows: [], sep: ",", headersRaw: [], headersNorm: [] };
@@ -112,6 +119,29 @@ function timeToMinutes(v: any) {
   return Number.isFinite(n) ? Math.round(n) : 0;
 }
 
+// Convierte FECHA:
+// - "13/02/2026" -> "2026-02-13"
+// - si ya viene "2026-02-13" lo deja
+// - si no puede, devuelve null
+function normalizeDate(v: any): string | null {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+
+  // ya ISO
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+  // dd/mm/yyyy
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    const dd = m[1].padStart(2, "0");
+    const mm = m[2].padStart(2, "0");
+    const yyyy = m[3];
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  return null;
+}
+
 type Body = { csvUrl: string };
 
 export async function OPTIONS() {
@@ -124,7 +154,6 @@ export async function POST(req: Request) {
     const anonKey = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
     const serviceKey = getEnv("SUPABASE_SERVICE_ROLE_KEY");
 
-    // exigir token del usuario
     const auth = req.headers.get("authorization") || "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
     if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
@@ -133,7 +162,7 @@ export async function POST(req: Request) {
     const csvUrl = (body.csvUrl || "").trim();
     if (!csvUrl) return NextResponse.json({ ok: false, error: "MISSING_CSV_URL" }, { status: 400 });
 
-    // comprobar admin con ANON + token (RLS)
+    // comprobar admin
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
     });
@@ -150,7 +179,7 @@ export async function POST(req: Request) {
     if (aErr) return NextResponse.json({ ok: false, error: aErr.message }, { status: 400 });
     if (!adminRow) return NextResponse.json({ ok: false, error: "NOT_ADMIN" }, { status: 403 });
 
-    // descargar CSV
+    // bajar CSV
     const r = await fetch(csvUrl);
     if (!r.ok) return NextResponse.json({ ok: false, error: `CSV_FETCH_FAILED_${r.status}` }, { status: 400 });
 
@@ -158,89 +187,89 @@ export async function POST(req: Request) {
     const parsed = parseCSV(text);
     const rows = parsed.rows;
 
-    // service role para escribir
     const adminClient = createClient(supabaseUrl, serviceKey);
 
-    // limpiar tabla (reset import)
+    // cargar mappings
+    const { data: maps, error: mapsErr } = await adminClient
+      .from("call_mappings")
+      .select("csv_tarotista, worker_id");
+
+    if (mapsErr) return NextResponse.json({ ok: false, error: mapsErr.message }, { status: 400 });
+
+    const mapDict = new Map<string, string>();
+    for (const m of (maps as any[]) || []) {
+      const k = normalizeTarotistaValue(m.csv_tarotista);
+      if (k) mapDict.set(k, m.worker_id);
+    }
+
+    // cargar workers.external_ref
+    const { data: ws, error: wsErr } = await adminClient.from("workers").select("id, external_ref");
+    if (wsErr) return NextResponse.json({ ok: false, error: wsErr.message }, { status: 400 });
+
+    const workersByExt = new Map<string, string>();
+    for (const w of (ws as any[]) || []) {
+      const k = normalizeTarotistaValue(w.external_ref || "");
+      if (k) workersByExt.set(k, w.id);
+    }
+
+    // reset import
     const del = await adminClient.from("attendance_rows").delete().neq("id", 0);
     if (del.error) return NextResponse.json({ ok: false, error: del.error.message }, { status: 400 });
 
     let inserted = 0;
     let skippedNoWorker = 0;
     let skippedBad = 0;
-
-    // stats útiles
     let mappedByCallMappings = 0;
     let mappedByWorkersExternalRef = 0;
+    let skippedBadDate = 0;
 
     for (const row of rows) {
-      // Claves NORMALIZADAS:
-      // FECHA | TELEFONISTA | TAROTISTA | TIEMPO | CODIGO | CAPTADO | LLAMADA CALL
-      const tarotistaKey = String(row["TAROTISTA"] ?? "").trim();
-      const telefonista = String(row["TELEFONISTA"] ?? "").trim(); // central (lo guardamos en raw)
+      const tarotistaRaw = String(row["TAROTISTA"] ?? "").trim();
+      const tarotistaKey = normalizeTarotistaValue(tarotistaRaw);
+
+      const telefonista = String(row["TELEFONISTA"] ?? "").trim();
       const codigo = String(row["CODIGO"] ?? "").trim().toLowerCase();
       const llamadaCall = toBool(row["LLAMADA CALL"]);
       const captado = toBool(row["CAPTADO"]);
       const minutes = timeToMinutes(row["TIEMPO"]);
       const calls = 0;
 
-      const fecha = String(row["FECHA"] ?? "").trim();
-      const source_date = fecha ? fecha : null;
+      const source_date = normalizeDate(row["FECHA"]); // ✅ arreglado
 
-      // Validación mínima
       if (!tarotistaKey) {
         skippedBad++;
         continue;
       }
 
-      // Si CODIGO vacío pero LLAMADA CALL es TRUE -> ignorar (no te interesa)
-      if (!codigo && llamadaCall) {
-        continue;
-      }
-
-      // Si CODIGO vacío y NO es llamada call -> fila mala
+      if (!codigo && llamadaCall) continue;
       if (!codigo && !llamadaCall) {
         skippedBad++;
         continue;
       }
 
-      // Ignoramos código literal "llamada call" si apareciera
-      if (codigo === "llamada call") {
-        continue;
-      }
+      if (codigo === "llamada call") continue;
 
-      // Solo aceptamos estos 4
       if (!["free", "rueda", "cliente", "repite"].includes(codigo)) {
         skippedBad++;
         continue;
       }
 
-      // 1) Intento: mapping Call### -> worker_id real
+      // Si la fecha es rara, la saltamos (para no romper import entero)
+      if (row["FECHA"] && !source_date) {
+        skippedBadDate++;
+        continue;
+      }
+
       let workerId: string | null = null;
 
-      const { data: mapRow, error: mapErr } = await adminClient
-        .from("call_mappings")
-        .select("worker_id")
-        .eq("csv_tarotista", tarotistaKey)
-        .maybeSingle();
-
-      if (mapErr) return NextResponse.json({ ok: false, error: mapErr.message }, { status: 400 });
-
-      if (mapRow?.worker_id) {
-        workerId = mapRow.worker_id as any;
+      const fromMap = mapDict.get(tarotistaKey);
+      if (fromMap) {
+        workerId = fromMap;
         mappedByCallMappings++;
       } else {
-        // 2) Fallback: si alguna vez TAROTISTA ya viene como external_ref real
-        const { data: wRow, error: wErr } = await adminClient
-          .from("workers")
-          .select("id")
-          .eq("external_ref", tarotistaKey)
-          .maybeSingle();
-
-        if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 400 });
-
-        if (wRow?.id) {
-          workerId = wRow.id as any;
+        const fromExt = workersByExt.get(tarotistaKey);
+        if (fromExt) {
+          workerId = fromExt;
           mappedByWorkersExternalRef++;
         }
       }
@@ -250,7 +279,6 @@ export async function POST(req: Request) {
         continue;
       }
 
-      // Guardamos TELEFONISTA dentro de raw (luego haremos stats por central)
       const raw = { ...row, TELEFONISTA: telefonista };
 
       const ins = await adminClient.from("attendance_rows").insert({
@@ -273,19 +301,15 @@ export async function POST(req: Request) {
       inserted,
       skippedNoWorker,
       skippedBad,
+      skippedBadDate,
       totalRows: rows.length,
-      stats: {
-        mappedByCallMappings,
-        mappedByWorkersExternalRef,
-      },
+      stats: { mappedByCallMappings, mappedByWorkersExternalRef, totalMappingsLoaded: mapDict.size },
       debug: {
         separatorDetected: parsed.sep === "\t" ? "TAB" : parsed.sep,
         headersRaw: parsed.headersRaw,
         headersNormalized: parsed.headersNorm,
         firstRowExample: rows[0] ? rows[0] : null,
       },
-      next:
-        "Ahora crea mappings (Call111 -> África, etc.). Luego Sync y verás Insertadas subir.",
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
