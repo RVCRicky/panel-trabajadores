@@ -50,10 +50,27 @@ export async function GET(req: Request) {
 
     const month_date = monthFromDate(new Date());
 
-    // rankings (si existe el RPC)
+    // rankings (si existe RPC)
     let tarotStats: any[] = [];
     const rpcRes = await db.rpc("get_tarotistas_ranking", { p_month: month_date } as any);
     if (!rpcRes.error && Array.isArray(rpcRes.data)) tarotStats = rpcRes.data as any[];
+
+    // reglas de bonos (visible para todos)
+    const { data: bonusRulesRaw, error: brErr } = await db
+      .from("bonus_rules")
+      .select("ranking_type, position, role, amount_eur, is_active")
+      .eq("is_active", true)
+      .order("ranking_type", { ascending: true })
+      .order("position", { ascending: true });
+
+    if (brErr) return NextResponse.json({ ok: false, error: brErr.message }, { status: 500 });
+
+    const bonusRules = (bonusRulesRaw || []).map((r: any) => ({
+      ranking_type: r.ranking_type,
+      position: r.position,
+      role: r.role,
+      amount_eur: Number(r.amount_eur || 0),
+    }));
 
     // mi earnings
     let myEarnings: any = null;
@@ -74,7 +91,7 @@ export async function GET(req: Request) {
       };
     }
 
-    // admin: earnings de todos (⬅️ ahora incluye captadas)
+    // admin: earnings de todos
     let allEarnings: any[] | null = null;
     if (isAdmin) {
       const { data: all } = await db
@@ -112,6 +129,7 @@ export async function GET(req: Request) {
       },
       myEarnings,
       allEarnings,
+      bonusRules,
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
