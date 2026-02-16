@@ -32,12 +32,38 @@ type StatRow = {
   repite: number;
 };
 
-type StatsResp =
+type StatsGlobalResp =
   | { ok: true; tarotistasTop: StatRow[]; centralesTop: StatRow[]; totalRows: number }
+  | { ok: false; error: string };
+
+type MyStatsResp =
+  | {
+      ok: true;
+      worker: null | { id: string; role: WorkerRole; display_name: string; is_active: boolean };
+      stats: null | {
+        minutes: number;
+        calls: number;
+        captadas: number;
+        free: number;
+        rueda: number;
+        cliente: number;
+        repite: number;
+      };
+    }
   | { ok: false; error: string };
 
 function fmt(n: number) {
   return (Number(n) || 0).toLocaleString("es-ES");
+}
+
+function Card(props: { title: string; value: string; sub?: string }) {
+  return (
+    <div style={{ border: "1px solid #ddd", borderRadius: 14, padding: 14, minWidth: 220, flex: "1 1 220px" }}>
+      <div style={{ color: "#666", fontSize: 13 }}>{props.title}</div>
+      <div style={{ fontSize: 26, fontWeight: 800, marginTop: 6 }}>{props.value}</div>
+      {props.sub ? <div style={{ color: "#666", fontSize: 12, marginTop: 6 }}>{props.sub}</div> : null}
+    </div>
+  );
 }
 
 export default function PanelPage() {
@@ -48,8 +74,12 @@ export default function PanelPage() {
 
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+
   const [rows, setRows] = useState<StatRow[]>([]);
   const [totalRows, setTotalRows] = useState(0);
+
+  const [myStats, setMyStats] = useState<MyStatsResp extends infer X ? any : any>(null);
+  const [myStatsMsg, setMyStatsMsg] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -85,8 +115,7 @@ export default function PanelPage() {
       setMe(json.worker);
       setStatus("OK");
 
-      // cargar ranking al entrar
-      await loadStats();
+      await loadEverything();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
@@ -96,12 +125,38 @@ export default function PanelPage() {
     router.replace("/login");
   }
 
-  async function loadStats() {
+  async function loadMyStats() {
+    setMyStatsMsg(null);
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) {
+        router.replace("/login");
+        return;
+      }
+
+      const r = await fetch("/api/stats/me", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const j = (await r.json()) as MyStatsResp;
+
+      if (!j.ok) {
+        setMyStatsMsg(`Error mis stats: ${(j as any).error}`);
+        return;
+      }
+
+      setMyStats(j);
+    } catch (e: any) {
+      setMyStatsMsg(e?.message || "Error cargando mis stats");
+    }
+  }
+
+  async function loadGlobalStats() {
     setMsg(null);
     setLoading(true);
     try {
       const r = await fetch("/api/stats/global");
-      const j = (await r.json()) as StatsResp;
+      const j = (await r.json()) as StatsGlobalResp;
 
       if (!j.ok) {
         setMsg(`Error stats: ${j.error}`);
@@ -111,11 +166,17 @@ export default function PanelPage() {
       setRows(j.tarotistasTop || []);
       setTotalRows(j.totalRows || 0);
     } catch (e: any) {
-      setMsg(e?.message || "Error cargando stats");
+      setMsg(e?.message || "Error cargando ranking");
     } finally {
       setLoading(false);
     }
   }
+
+  async function loadEverything() {
+    await Promise.all([loadMyStats(), loadGlobalStats()]);
+  }
+
+  const s = myStats?.stats || null;
 
   return (
     <div style={{ padding: 18, maxWidth: 1040 }}>
@@ -141,7 +202,7 @@ export default function PanelPage() {
         ) : null}
 
         <button
-          onClick={loadStats}
+          onClick={loadEverything}
           disabled={loading || status !== "OK"}
           style={{
             padding: 10,
@@ -152,7 +213,7 @@ export default function PanelPage() {
             fontWeight: 700,
           }}
         >
-          {loading ? "Actualizando..." : "Actualizar ranking"}
+          {loading ? "Actualizando..." : "Actualizar todo"}
         </button>
 
         <button
@@ -171,7 +232,27 @@ export default function PanelPage() {
         </button>
       </div>
 
-      <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
+      <div style={{ marginTop: 14 }}>
+        <h2 style={{ margin: "0 0 10px 0", fontSize: 18 }}>Mis estadísticas</h2>
+
+        {myStatsMsg ? (
+          <div style={{ padding: 10, borderRadius: 10, background: "#fff3f3", border: "1px solid #ffcccc" }}>
+            {myStatsMsg}
+          </div>
+        ) : null}
+
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <Card title="Mis minutos" value={fmt(s?.minutes || 0)} />
+          <Card title="Mis captadas" value={fmt(s?.captadas || 0)} sub="CAPTADO=true" />
+          <Card
+            title="Desglose"
+            value={`${fmt(s?.cliente || 0)} cliente`}
+            sub={`free ${fmt(s?.free || 0)} · rueda ${fmt(s?.rueda || 0)} · repite ${fmt(s?.repite || 0)}`}
+          />
+        </div>
+      </div>
+
+      <div style={{ marginTop: 16, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Ranking global (tarotistas)</h2>
         <p style={{ marginTop: 6, color: "#666" }}>
           Filas importadas: <b>{fmt(totalRows)}</b>
