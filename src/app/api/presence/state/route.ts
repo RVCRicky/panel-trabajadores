@@ -17,7 +17,7 @@ async function getUidFromBearer(req: Request) {
 
   const auth = req.headers.get("authorization") || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-  if (!token) return { uid: null, error: "NO_TOKEN" };
+  if (!token) return { uid: null as string | null, error: "NO_TOKEN" as const };
 
   const userClient = createClient(supabaseUrl, anonKey, {
     global: { headers: { Authorization: `Bearer ${token}` } },
@@ -25,21 +25,19 @@ async function getUidFromBearer(req: Request) {
 
   const { data } = await userClient.auth.getUser();
   const uid = data?.user?.id || null;
-  if (!uid) return { uid: null, error: "NOT_AUTH" };
-  return { uid, error: null };
+  if (!uid) return { uid: null, error: "NOT_AUTH" as const };
+  return { uid, error: null as any };
 }
-
-const ALLOWED = new Set(["online", "pause", "bathroom"]);
 
 export async function POST(req: Request) {
   try {
     const { uid, error } = await getUidFromBearer(req);
     if (!uid) return NextResponse.json({ ok: false, error }, { status: 401 });
 
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
     const state = String(body?.state || "").toLowerCase();
 
-    if (!ALLOWED.has(state)) {
+    if (!["online", "pause", "bathroom"].includes(state)) {
       return NextResponse.json({ ok: false, error: "BAD_STATE" }, { status: 400 });
     }
 
@@ -47,49 +45,40 @@ export async function POST(req: Request) {
     const serviceKey = getEnvAny(["SUPABASE_SERVICE_ROLE_KEY"]);
     const db = createClient(supabaseUrl, serviceKey);
 
-    const { data: w, error: wErr } = await db
+    // worker
+    const { data: worker, error: wErr } = await db
       .from("workers")
-      .select("id")
+      .select("id, is_active")
       .eq("user_id", uid)
       .maybeSingle();
 
     if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
-    if (!w) return NextResponse.json({ ok: false, error: "NO_WORKER_PROFILE" }, { status: 400 });
+    if (!worker) return NextResponse.json({ ok: false, error: "NO_WORKER_PROFILE" }, { status: 404 });
+    if (!worker.is_active) return NextResponse.json({ ok: false, error: "USER_DISABLED" }, { status: 403 });
 
-    // estado actual
-    const { data: cur, error: cErr1 } = await db
-      .from("presence_current")
-      .select("active_session_id, state")
-      .eq("worker_id", w.id)
+    // sesión activa
+    const { data: active, error: aErr } = await db
+      .from("presence_sessions")
+      .select("id")
+      .eq("worker_id", worker.id)
+      .is("ended_at", null)
+      .order("started_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
 
-    if (cErr1) return NextResponse.json({ ok: false, error: cErr1.message }, { status: 500 });
-
-    const sid = cur?.active_session_id || null;
-    if (!sid) return NextResponse.json({ ok: false, error: "NO_ACTIVE_SESSION" }, { status: 400 });
+    if (aErr) return NextResponse.json({ ok: false, error: aErr.message }, { status: 500 });
+    if (!active?.id) return NextResponse.json({ ok: false, error: "NO_ACTIVE_SESSION" }, { status: 400 });
 
     // evento
     const { error: eErr } = await db.from("presence_events").insert({
-      session_id: sid,
-      worker_id: w.id,
+      session_id: active.id,
+      worker_id: worker.id,
       state,
-      meta: { by: "self" },
     });
+
     if (eErr) return NextResponse.json({ ok: false, error: eErr.message }, { status: 500 });
 
-    // update current
-    const { error: cErr2 } = await db.from("presence_current").upsert(
-      {
-        worker_id: w.id,
-        state,
-        last_change_at: new Date().toISOString(),
-        active_session_id: sid,
-      },
-      { onConflict: "worker_id" }
-    );
-    if (cErr2) return NextResponse.json({ ok: false, error: cErr2.message }, { status: 500 });
-
-    return NextResponse.json({ ok: true, worker_id: w.id, session_id: sid, state });
+    return NextResponse.json({ ok: true, session_id: active.id, state });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
   }
