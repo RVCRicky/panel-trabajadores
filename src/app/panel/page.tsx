@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -13,6 +13,8 @@ function eur(n: any) {
 function medal(pos: number) {
   return pos === 1 ? "🥇" : pos === 2 ? "🥈" : pos === 3 ? "🥉" : "";
 }
+
+type RankKey = "minutes" | "repite_pct" | "cliente_pct" | "captadas";
 
 type DashboardResp = {
   ok: boolean;
@@ -36,16 +38,14 @@ type DashboardResp = {
     amount_total_eur: number;
   };
 
-  allEarnings: null | Array<{
-    worker_id: string;
-    name: string;
-    role: string;
-    minutes_total: number;
-    captadas: number;
-    amount_base_eur: number;
-    amount_bonus_eur: number;
-    amount_total_eur: number;
-  }>;
+  winnerTeam: null | {
+    team_id: string;
+    team_name: string;
+    central_user_id?: string | null;
+    central_name: string | null;
+    total_minutes: number;
+    total_captadas: number;
+  };
 
   bonusRules: Array<{
     ranking_type: string;
@@ -53,19 +53,9 @@ type DashboardResp = {
     role: string;
     amount_eur: number;
   }>;
-
-  winnerTeam: null | {
-    team_id: string;
-    team_name: string;
-    central_worker_id: string | null;
-    central_name: string | null;
-    total_minutes: number;
-    total_captadas: number;
-  };
 };
 
-type AdminSortKey = "total" | "minutes" | "captadas" | "base" | "bonus";
-type RankKey = "minutes" | "repite_pct" | "cliente_pct" | "captadas";
+type PresenceState = "offline" | "online" | "pause" | "bathroom";
 
 function labelRanking(k: string) {
   const key = String(k || "").toLowerCase();
@@ -74,6 +64,8 @@ function labelRanking(k: string) {
   if (key === "repite_pct") return "Repite %";
   if (key === "minutes") return "Minutos";
   if (key === "team_win") return "Equipo ganador (central)";
+  if (key === "captadas_steps") return "Captadas por tramos (sin límite)";
+  if (key === "improve_repite") return "Mejora Repite % vs mes anterior";
   return k;
 }
 
@@ -85,15 +77,32 @@ function labelRole(r: string) {
   return r;
 }
 
+function formatHMS(sec: number) {
+  const s = Math.max(0, Math.floor(sec));
+  const hh = Math.floor(s / 3600);
+  const mm = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(hh)}:${pad(mm)}:${pad(ss)}`;
+}
+
 export default function PanelPage() {
   const router = useRouter();
 
   const [rankType, setRankType] = useState<RankKey>("minutes");
-  const [adminSort, setAdminSort] = useState<AdminSortKey>("total");
 
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<DashboardResp | null>(null);
+
+  // Presencia
+  const [pState, setPState] = useState<PresenceState>("offline");
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [startedAt, setStartedAt] = useState<string | null>(null);
+
+  // Cronómetro simple: cuenta desde startedAt si está online/pause/bathroom
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const tickRef = useRef<any>(null);
 
   async function getToken() {
     const { data } = await supabase.auth.getSession();
@@ -127,10 +136,94 @@ export default function PanelPage() {
     }
   }
 
+  async function presenceLogin() {
+    setErr(null);
+    try {
+      const token = await getToken();
+      if (!token) return router.replace("/login");
+
+      const res = await fetch("/api/presence/login", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const j = await res.json().catch(() => null);
+      if (!j?.ok) return setErr(j?.error || "Error login presencia");
+
+      setPState("online");
+      setSessionId(j.session_id || null);
+      setStartedAt(j.started_at || new Date().toISOString());
+    } catch (e: any) {
+      setErr(e?.message || "Error login presencia");
+    }
+  }
+
+  async function presenceSet(state: PresenceState) {
+    setErr(null);
+    try {
+      const token = await getToken();
+      if (!token) return router.replace("/login");
+
+      const res = await fetch("/api/presence/state", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ state }),
+      });
+      const j = await res.json().catch(() => null);
+      if (!j?.ok) return setErr(j?.error || "Error cambio estado");
+
+      setPState(state);
+      if (j.session_id) setSessionId(j.session_id);
+    } catch (e: any) {
+      setErr(e?.message || "Error cambio estado");
+    }
+  }
+
+  async function presenceLogout() {
+    setErr(null);
+    try {
+      const token = await getToken();
+      if (!token) return router.replace("/login");
+
+      const res = await fetch("/api/presence/logout", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const j = await res.json().catch(() => null);
+      if (!j?.ok) return setErr(j?.error || "Error logout presencia");
+
+      setPState("offline");
+      setSessionId(null);
+      setStartedAt(null);
+      setElapsedSec(0);
+    } catch (e: any) {
+      setErr(e?.message || "Error logout presencia");
+    }
+  }
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Cronómetro
+  useEffect(() => {
+    if (tickRef.current) clearInterval(tickRef.current);
+
+    if (!startedAt || pState === "offline") {
+      setElapsedSec(0);
+      return;
+    }
+
+    const startMs = new Date(startedAt).getTime();
+    const update = () => {
+      const now = Date.now();
+      setElapsedSec(Math.max(0, Math.floor((now - startMs) / 1000)));
+    };
+    update();
+
+    tickRef.current = setInterval(update, 1000);
+    return () => tickRef.current && clearInterval(tickRef.current);
+  }, [startedAt, pState]);
 
   const me = data?.user?.worker || null;
   const ranks = data?.rankings?.[rankType] || [];
@@ -142,21 +235,6 @@ export default function PanelPage() {
     return idx === -1 ? null : idx + 1;
   }, [me?.display_name, ranks]);
 
-  const sortedAllEarnings = useMemo(() => {
-    const list = data?.allEarnings || [];
-    const copy = [...list];
-    const val = (x: any) => {
-      if (adminSort === "total") return Number(x.amount_total_eur || 0);
-      if (adminSort === "minutes") return Number(x.minutes_total || 0);
-      if (adminSort === "captadas") return Number(x.captadas || 0);
-      if (adminSort === "base") return Number(x.amount_base_eur || 0);
-      if (adminSort === "bonus") return Number(x.amount_bonus_eur || 0);
-      return 0;
-    };
-    copy.sort((a, b) => val(b) - val(a));
-    return copy;
-  }, [data?.allEarnings, adminSort]);
-
   async function logout() {
     await supabase.auth.signOut();
     router.replace("/login");
@@ -167,14 +245,6 @@ export default function PanelPage() {
     return list.slice(0, 3);
   }
 
-  function leaderNameForRankingType(ranking_type: string): string | null {
-    const rt = String(ranking_type || "").toLowerCase();
-    if (rt === "captadas") return (data?.rankings?.captadas?.[0]?.name as string) || null;
-    if (rt === "cliente_pct") return (data?.rankings?.cliente_pct?.[0]?.name as string) || null;
-    if (rt === "repite_pct") return (data?.rankings?.repite_pct?.[0]?.name as string) || null;
-    return null;
-  }
-
   function valueOf(k: RankKey, r: any) {
     if (k === "minutes") return fmt(r.minutes);
     if (k === "captadas") return fmt(r.captadas);
@@ -183,8 +253,9 @@ export default function PanelPage() {
     return "";
   }
 
+  // reglas de bono (solo para mostrar)
   const bonusRulesGrouped = useMemo(() => {
-    const rules = (data?.bonusRules || []).filter((r) => String(r.ranking_type || "").toLowerCase() !== "minutes");
+    const rules = (data?.bonusRules || []).filter((r) => String(r.ranking_type || "").toLowerCase() !== "team_winner");
     const map = new Map<string, any[]>();
     for (const r of rules) {
       const key = `${r.role}::${r.ranking_type}`;
@@ -194,6 +265,22 @@ export default function PanelPage() {
     for (const [k, arr] of map) arr.sort((a, b) => a.position - b.position);
     return map;
   }, [data?.bonusRules]);
+
+  const stateBadge = useMemo(() => {
+    const s = pState;
+    const styles: any = {
+      display: "inline-block",
+      padding: "6px 10px",
+      borderRadius: 999,
+      fontWeight: 900,
+      border: "1px solid #ddd",
+      fontSize: 12,
+    };
+    if (s === "online") return <span style={{ ...styles, background: "#eaffea" }}>ONLINE</span>;
+    if (s === "pause") return <span style={{ ...styles, background: "#fff6dd" }}>PAUSA</span>;
+    if (s === "bathroom") return <span style={{ ...styles, background: "#e8f4ff" }}>BAÑO</span>;
+    return <span style={{ ...styles, background: "#f4f4f4" }}>OFFLINE</span>;
+  }, [pState]);
 
   return (
     <div style={{ padding: 20, maxWidth: 1100 }}>
@@ -226,6 +313,67 @@ export default function PanelPage() {
         <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10, marginBottom: 12 }}>{err}</div>
       ) : null}
 
+      {/* CONTROL HORARIO */}
+      {(me?.role === "tarotista" || me?.role === "central") ? (
+        <div style={{ border: "1px solid #111", borderRadius: 14, padding: 14, marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <div>
+              <div style={{ fontWeight: 900 }}>Control horario</div>
+              <div style={{ color: "#666", marginTop: 4 }}>
+                Estado: {stateBadge} {sessionId ? <span style={{ color: "#999" }}>· sesión {sessionId.slice(0, 8)}…</span> : null}
+              </div>
+            </div>
+
+            <div style={{ textAlign: "right" }}>
+              <div style={{ color: "#666", fontSize: 12 }}>Tiempo logueado</div>
+              <div style={{ fontSize: 26, fontWeight: 900 }}>{formatHMS(elapsedSec)}</div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
+            <button onClick={presenceLogin} style={{ padding: 10, borderRadius: 12, border: "1px solid #111", fontWeight: 900 }}>
+              Loguear
+            </button>
+
+            <button
+              onClick={() => presenceSet("pause")}
+              disabled={pState === "offline"}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}
+            >
+              Pausa
+            </button>
+
+            <button
+              onClick={() => presenceSet("bathroom")}
+              disabled={pState === "offline"}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}
+            >
+              Baño
+            </button>
+
+            <button
+              onClick={() => presenceSet("online")}
+              disabled={pState === "offline"}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}
+            >
+              Volver
+            </button>
+
+            <button
+              onClick={presenceLogout}
+              disabled={pState === "offline"}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #111", background: "#111", color: "#fff", fontWeight: 900 }}
+            >
+              Desloguear
+            </button>
+          </div>
+
+          <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
+            Nota: En el siguiente paso calculamos tiempo real de pausa/baño y lo mostramos al admin en directo.
+          </div>
+        </div>
+      ) : null}
+
       <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <div style={{ color: "#666" }}>
           Mes: <b>{data?.month_date || "—"}</b>
@@ -235,6 +383,7 @@ export default function PanelPage() {
         </div>
       </div>
 
+      {/* TOP 3 */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Top 3 del mes</h2>
 
@@ -242,16 +391,6 @@ export default function PanelPage() {
           {(["minutes", "repite_pct", "cliente_pct", "captadas"] as RankKey[]).map((k) => (
             <div key={k} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
               <div style={{ fontWeight: 900, marginBottom: 6 }}>{labelRanking(k)}</div>
-              {k === "minutes" ? (
-                <div style={{ color: "#666", fontSize: 12, marginBottom: 8 }}>
-                  (Este ranking es informativo. <b>No tiene bono</b>.)
-                </div>
-              ) : (
-                <div style={{ color: "#666", fontSize: 12, marginBottom: 8 }}>
-                  (Este ranking <b>sí</b> tiene bono si hay regla activa.)
-                </div>
-              )}
-
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <tbody>
                   {top3For(k).map((r: any, idx: number) => (
@@ -274,17 +413,12 @@ export default function PanelPage() {
                   ) : null}
                 </tbody>
               </table>
-
-              {(k === "repite_pct" || k === "cliente_pct") && (
-                <div style={{ marginTop: 8, color: "#666", fontSize: 12 }}>
-                  % = minutos de ese tipo / minutos totales del mes
-                </div>
-              )}
             </div>
           ))}
         </div>
       </div>
 
+      {/* GANADO */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Ganado este mes</h2>
 
@@ -300,7 +434,7 @@ export default function PanelPage() {
               <b>Base:</b> {eur(data.myEarnings.amount_base_eur)}
             </div>
             <div>
-              <b>Bonos:</b> {eur(data.myEarnings.amount_bonus_eur)} <span style={{ color: "#666" }}>(cap 20€)</span>
+              <b>Bonos:</b> {eur(data.myEarnings.amount_bonus_eur)}
             </div>
             <div>
               <b>Total:</b> {eur(data.myEarnings.amount_total_eur)}
@@ -311,12 +445,9 @@ export default function PanelPage() {
         )}
       </div>
 
+      {/* BONOS (solo mostrar reglas) */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <h2 style={{ marginTop: 0, fontSize: 18 }}>Bonos (reglas + quién va ganando)</h2>
-
-        <div style={{ color: "#666", marginBottom: 10 }}>
-          Aquí se ve <b>qué bono existe</b> y <b>quién va líder</b> ahora mismo. Los bonos finales se capan a <b>20€</b> por persona.
-        </div>
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>Bonos (reglas)</h2>
 
         {[...bonusRulesGrouped.keys()].length === 0 ? (
           <div style={{ color: "#666" }}>No hay reglas activas.</div>
@@ -324,40 +455,11 @@ export default function PanelPage() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
             {[...bonusRulesGrouped.entries()].map(([key, rules]) => {
               const [role, ranking_type] = key.split("::");
-              const rt = String(ranking_type || "").toLowerCase();
-
-              let leaderLine: string | null = null;
-
-              if (role === "tarotista") {
-                const leader = leaderNameForRankingType(ranking_type);
-                leaderLine = leader ? `Líder actual: ${leader}` : "Líder actual: —";
-              } else if (role === "central" && rt === "team_win") {
-                const wt = data?.winnerTeam;
-                if (wt?.team_name) {
-                  leaderLine = `Gana ahora: ${wt.team_name} (Central: ${wt.central_name || "—"})`;
-                } else {
-                  leaderLine = "Gana ahora: —";
-                }
-              } else {
-                leaderLine = "Líder actual: —";
-              }
-
               return (
                 <div key={key} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
                   <div style={{ fontWeight: 900, marginBottom: 6 }}>
                     {labelRole(role)} · {labelRanking(ranking_type)}
                   </div>
-
-                  <div style={{ marginBottom: 10, color: "#111" }}>
-                    <b>{leaderLine}</b>
-                  </div>
-
-                  {role === "central" && rt === "team_win" && data?.winnerTeam ? (
-                    <div style={{ marginBottom: 10, color: "#666", fontSize: 12 }}>
-                      Datos del equipo líder: minutos <b>{fmt(data.winnerTeam.total_minutes)}</b> · captadas{" "}
-                      <b>{fmt(data.winnerTeam.total_captadas)}</b>
-                    </div>
-                  ) : null}
 
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead>
@@ -386,12 +488,13 @@ export default function PanelPage() {
         )}
       </div>
 
+      {/* RANKINGS */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Rankings (tabla completa)</h2>
 
         <div style={{ marginBottom: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <select value={rankType} onChange={(e) => setRankType(e.target.value as RankKey)} style={{ padding: 8 }}>
-            <option value="minutes">Ranking por Minutos (sin bono)</option>
+            <option value="minutes">Ranking por Minutos</option>
             <option value="repite_pct">Ranking por Repite %</option>
             <option value="cliente_pct">Ranking por Clientes %</option>
             <option value="captadas">Ranking por Captadas</option>
@@ -414,83 +517,30 @@ export default function PanelPage() {
             {ranks.map((r: any, idx: number) => {
               const pos = idx + 1;
               const isMe = me?.display_name === r.name;
+              const value =
+                rankType === "minutes"
+                  ? fmt(r.minutes)
+                  : rankType === "captadas"
+                  ? fmt(r.captadas)
+                  : rankType === "repite_pct"
+                  ? `${r.repite_pct} %`
+                  : rankType === "cliente_pct"
+                  ? `${r.cliente_pct} %`
+                  : "";
+
               return (
                 <tr key={r.worker_id} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 800 : 400 }}>
                   <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
                     {medal(pos)} {pos}
                   </td>
                   <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>
-                    {rankType === "minutes"
-                      ? fmt(r.minutes)
-                      : rankType === "captadas"
-                      ? fmt(r.captadas)
-                      : rankType === "repite_pct"
-                      ? `${r.repite_pct} %`
-                      : rankType === "cliente_pct"
-                      ? `${r.cliente_pct} %`
-                      : ""}
-                  </td>
+                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{value}</td>
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
-
-      {data?.user?.isAdmin && data?.allEarnings ? (
-        <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
-            <h2 style={{ marginTop: 0, fontSize: 18 }}>Admin · Ganado por persona (mes)</h2>
-
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span style={{ color: "#666" }}>Ordenar por:</span>
-              <select value={adminSort} onChange={(e) => setAdminSort(e.target.value as AdminSortKey)} style={{ padding: 8 }}>
-                <option value="total">Total €</option>
-                <option value="base">Base €</option>
-                <option value="bonus">Bonos €</option>
-                <option value="minutes">Minutos</option>
-                <option value="captadas">Captadas</option>
-              </select>
-            </div>
-          </div>
-
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Nombre</th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Rol</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Minutos</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Captadas</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Base</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Bonos</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedAllEarnings.map((x) => (
-                  <tr key={x.worker_id}>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
-                      <b>{x.name}</b>
-                    </td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", color: "#666" }}>{labelRole(x.role)}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(x.minutes_total)}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(x.captadas)}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{eur(x.amount_base_eur)}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{eur(x.amount_bonus_eur)}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>
-                      <b>{eur(x.amount_total_eur)}</b>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>Los bonos están capados a 20€ por persona.</div>
-        </div>
-      ) : null}
     </div>
   );
 }
