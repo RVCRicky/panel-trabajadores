@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "../../lib/supabaseClient";
+import { supabase } from "@/lib/supabaseClient";
 
 type WorkerRole = "admin" | "central" | "tarotista";
 
@@ -239,7 +239,7 @@ export default function AdminPage() {
 
         {/* ✅ NUEVO: acceso directo a presencia en vivo */}
         <a
-          href="/admin/presence"
+          href="/admin/live"
           style={{
             padding: 10,
             borderRadius: 10,
