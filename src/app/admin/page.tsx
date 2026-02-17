@@ -237,6 +237,20 @@ export default function AdminPage() {
           Mappings →
         </a>
 
+        {/* ✅ NUEVO: acceso directo a presencia en vivo */}
+        <a
+          href="/admin/presence"
+          style={{
+            padding: 10,
+            borderRadius: 10,
+            border: "1px solid #111",
+            textDecoration: "none",
+            fontWeight: 800,
+          }}
+        >
+          Presencia en directo →
+        </a>
+
         <button
           onClick={logout}
           style={{
