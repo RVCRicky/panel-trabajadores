@@ -61,8 +61,8 @@ export async function POST(req: Request) {
 
     if (aErr) return NextResponse.json({ ok: false, error: aErr.message }, { status: 500 });
 
-    let sessionId = active?.id as string | null;
-    let startedAt = active?.started_at as string | null;
+    let sessionId = (active?.id as string | null) || null;
+    let startedAt = (active?.started_at as string | null) || null;
 
     if (!sessionId) {
       const { data: created, error: cErr } = await db
@@ -77,13 +77,29 @@ export async function POST(req: Request) {
     }
 
     // 3) evento: online
+    const nowIso = new Date().toISOString();
+
     const { error: eErr } = await db.from("presence_events").insert({
       session_id: sessionId,
       worker_id: worker.id,
       state: "online",
+      at: nowIso,
     });
 
     if (eErr) return NextResponse.json({ ok: false, error: eErr.message }, { status: 500 });
+
+    // ✅ 4) FORZAR presence_current (persistente)
+    const { error: pcErr } = await db.from("presence_current").upsert(
+      {
+        worker_id: worker.id,
+        state: "online",
+        last_change_at: nowIso,
+        active_session_id: sessionId,
+      },
+      { onConflict: "worker_id" }
+    );
+
+    if (pcErr) return NextResponse.json({ ok: false, error: pcErr.message }, { status: 500 });
 
     return NextResponse.json({
       ok: true,
