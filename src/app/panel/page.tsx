@@ -109,6 +109,57 @@ export default function PanelPage() {
     return data.session?.access_token || null;
   }
 
+  // ✅ CARGA REAL del estado de presencia desde BD (persistente)
+  async function refreshPresenceFromDb(workerId: string) {
+    try {
+      // 1) Si hay sesión abierta, ESTÁ LOGUEADO (independiente del refresh)
+      const { data: openSessions, error: sErr } = await supabase
+        .from("presence_sessions")
+        .select("id, started_at")
+        .eq("worker_id", workerId)
+        .is("ended_at", null)
+        .order("started_at", { ascending: false })
+        .limit(1);
+
+      if (sErr) {
+        console.error("presence_sessions error:", sErr);
+        return;
+      }
+
+      const open = openSessions?.[0] || null;
+
+      if (!open) {
+        // no hay sesión abierta => OFFLINE
+        setPState("offline");
+        setSessionId(null);
+        setStartedAt(null);
+        setElapsedSec(0);
+        return;
+      }
+
+      // 2) Hay sesión abierta => leemos presence_current (estado online/pause/bathroom)
+      const { data: cur, error: cErr } = await supabase
+        .from("presence_current")
+        .select("state, active_session_id, last_change_at")
+        .eq("worker_id", workerId)
+        .maybeSingle();
+
+      if (cErr) {
+        console.error("presence_current error:", cErr);
+        // si falla, por seguridad lo ponemos online (porque sesión abierta existe)
+        setPState("online");
+      } else {
+        const s = (cur?.state as PresenceState) || "online";
+        setPState(s === "offline" ? "online" : s);
+      }
+
+      setSessionId((cur?.active_session_id as string) || open.id);
+      setStartedAt(open.started_at || new Date().toISOString());
+    } catch (e) {
+      console.error("refreshPresenceFromDb error:", e);
+    }
+  }
+
   async function load() {
     setErr(null);
     setLoading(true);
@@ -128,7 +179,15 @@ export default function PanelPage() {
         setErr(j?.error || "Error dashboard");
         return;
       }
+
       setData(j);
+
+      // ✅ después de cargar dashboard, refrescamos presencia REAL
+      const workerId = j?.user?.worker?.id || null;
+      const role = j?.user?.worker?.role || null;
+      if (workerId && (role === "tarotista" || role === "central")) {
+        await refreshPresenceFromDb(workerId);
+      }
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
     } finally {
@@ -149,9 +208,14 @@ export default function PanelPage() {
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error login presencia");
 
-      setPState("online");
-      setSessionId(j.session_id || null);
-      setStartedAt(j.started_at || new Date().toISOString());
+      // ✅ en vez de confiar en estado local, leemos la BD
+      const workerId = data?.user?.worker?.id || null;
+      if (workerId) await refreshPresenceFromDb(workerId);
+      else {
+        setPState("online");
+        setSessionId(j.session_id || null);
+        setStartedAt(j.started_at || new Date().toISOString());
+      }
     } catch (e: any) {
       setErr(e?.message || "Error login presencia");
     }
@@ -171,8 +235,13 @@ export default function PanelPage() {
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error cambio estado");
 
-      setPState(state);
-      if (j.session_id) setSessionId(j.session_id);
+      // ✅ refrescar desde BD
+      const workerId = data?.user?.worker?.id || null;
+      if (workerId) await refreshPresenceFromDb(workerId);
+      else {
+        setPState(state);
+        if (j.session_id) setSessionId(j.session_id);
+      }
     } catch (e: any) {
       setErr(e?.message || "Error cambio estado");
     }
@@ -191,10 +260,15 @@ export default function PanelPage() {
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error logout presencia");
 
-      setPState("offline");
-      setSessionId(null);
-      setStartedAt(null);
-      setElapsedSec(0);
+      // ✅ refrescar desde BD (debería quedar offline)
+      const workerId = data?.user?.worker?.id || null;
+      if (workerId) await refreshPresenceFromDb(workerId);
+      else {
+        setPState("offline");
+        setSessionId(null);
+        setStartedAt(null);
+        setElapsedSec(0);
+      }
     } catch (e: any) {
       setErr(e?.message || "Error logout presencia");
     }
@@ -204,6 +278,16 @@ export default function PanelPage() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ✅ Si por lo que sea cambia el worker (cambio de usuario), vuelve a refrescar presencia
+  useEffect(() => {
+    const workerId = data?.user?.worker?.id || null;
+    const role = data?.user?.worker?.role || null;
+    if (workerId && (role === "tarotista" || role === "central")) {
+      refreshPresenceFromDb(workerId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.user?.worker?.id]);
 
   // Cronómetro
   useEffect(() => {
@@ -314,7 +398,7 @@ export default function PanelPage() {
       ) : null}
 
       {/* CONTROL HORARIO */}
-      {(me?.role === "tarotista" || me?.role === "central") ? (
+      {me?.role === "tarotista" || me?.role === "central" ? (
         <div style={{ border: "1px solid #111", borderRadius: 14, padding: 14, marginBottom: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <div>
@@ -369,7 +453,7 @@ export default function PanelPage() {
           </div>
 
           <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
-            Nota: En el siguiente paso calculamos tiempo real de pausa/baño y lo mostramos al admin en directo.
+            Nota: Este estado es persistente (se mantiene aunque refresques) porque se lee desde presence_sessions/presence_current.
           </div>
         </div>
       ) : null}
