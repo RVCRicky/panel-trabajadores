@@ -50,6 +50,9 @@ export default function AdminLivePage() {
   const [rows, setRows] = useState<Row[]>([]);
   const [filterRole, setFilterRole] = useState<"all" | WorkerRole>("all");
 
+  // ✅ NUEVO: filtro de visibilidad (por defecto solo activos)
+  const [showMode, setShowMode] = useState<"active" | "all">("active");
+
   async function ensureAdmin() {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
@@ -152,9 +155,18 @@ export default function AdminLivePage() {
   }, []);
 
   const filtered = useMemo(() => {
-    if (filterRole === "all") return rows;
-    return rows.filter((r) => r.role === filterRole);
-  }, [rows, filterRole]);
+    let list = rows;
+
+    // ✅ filtro por rol
+    if (filterRole !== "all") list = list.filter((r) => r.role === filterRole);
+
+    // ✅ filtro por estado (por defecto: solo activos)
+    if (showMode === "active") {
+      list = list.filter((r) => r.state !== "offline");
+    }
+
+    return list;
+  }, [rows, filterRole, showMode]);
 
   return (
     <div style={{ padding: 20, maxWidth: 1100 }}>
@@ -173,17 +185,33 @@ export default function AdminLivePage() {
           {loading ? "Actualizando..." : "Actualizar"}
         </button>
 
-        <select value={filterRole} onChange={(e) => setFilterRole(e.target.value as any)} style={{ padding: 10, borderRadius: 10 }}>
+        <select
+          value={filterRole}
+          onChange={(e) => setFilterRole(e.target.value as any)}
+          style={{ padding: 10, borderRadius: 10 }}
+        >
           <option value="all">Todos</option>
           <option value="central">Centrales</option>
           <option value="tarotista">Tarotistas</option>
+        </select>
+
+        {/* ✅ NUEVO: solo activos / todos */}
+        <select
+          value={showMode}
+          onChange={(e) => setShowMode(e.target.value as any)}
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900 }}
+        >
+          <option value="active">Solo activos (online/pausa/baño)</option>
+          <option value="all">Todos (incluye offline)</option>
         </select>
 
         {okAdmin ? <span style={{ color: "#666", alignSelf: "center" }}>Auto-refresh cada 5s</span> : null}
       </div>
 
       {err ? (
-        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10, marginBottom: 12 }}>{err}</div>
+        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10, marginBottom: 12 }}>
+          {err}
+        </div>
       ) : null}
 
       <div style={{ overflowX: "auto", border: "1px solid #ddd", borderRadius: 12 }}>
@@ -202,7 +230,7 @@ export default function AdminLivePage() {
             {filtered.length === 0 ? (
               <tr>
                 <td colSpan={6} style={{ padding: 12, color: "#666" }}>
-                  Sin datos.
+                  {showMode === "active" ? "No hay nadie activo ahora mismo." : "Sin datos."}
                 </td>
               </tr>
             ) : (
@@ -225,3 +253,4 @@ export default function AdminLivePage() {
     </div>
   );
 }
+
