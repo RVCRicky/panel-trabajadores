@@ -37,39 +37,45 @@ export async function GET(req: Request) {
     const serviceKey = getEnvAny(["SUPABASE_SERVICE_ROLE_KEY"]);
     const db = createClient(supabaseUrl, serviceKey);
 
-    // ¿es admin?
+    // admin check
     const { data: isAdmin } = await db.from("app_admins").select("user_id").eq("user_id", uid).maybeSingle();
     if (!isAdmin) return NextResponse.json({ ok: false, error: "NOT_ADMIN" }, { status: 403 });
 
-    // lista live
-    const { data: rows, error: qErr } = await db
+    // ✅ Leer estado persistente
+    const { data: cur, error: cErr } = await db
       .from("presence_current")
-      .select("worker_id, state, last_change_at, active_session_id, note");
-    if (qErr) return NextResponse.json({ ok: false, error: qErr.message }, { status: 500 });
+      .select("worker_id, state, last_change_at, active_session_id");
+    if (cErr) return NextResponse.json({ ok: false, error: cErr.message }, { status: 500 });
 
-    // traer nombres/roles
-    const workerIds = (rows || []).map((r) => r.worker_id);
-    const { data: workers } = await db
+    const workerIds = (cur || []).map((r) => r.worker_id);
+
+    const { data: workers, error: wErr } = await db
       .from("workers")
-      .select("id, display_name, role, user_id")
-      .in("id", workerIds.length ? workerIds : ["00000000-0000-0000-0000-000000000000"]);
+      .select("id, display_name, role, is_active")
+      .in("id", workerIds.length ? workerIds : ["00000000-0000-0000-0000-000000000000"])
+      .order("role", { ascending: true })
+      .order("display_name", { ascending: true });
+
+    if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
 
     const wMap = new Map<string, any>();
     (workers || []).forEach((w) => wMap.set(w.id, w));
 
-    const out = (rows || [])
-      .map((r) => {
+    const out = (cur || [])
+      .map((r: any) => {
         const w = wMap.get(r.worker_id);
         return {
           worker_id: r.worker_id,
           name: w?.display_name || "—",
           role: w?.role || "—",
-          state: r.state,
+          is_active: w?.is_active ?? true,
+          state: (r.state || "offline") as "offline" | "online" | "pause" | "bathroom",
           last_change_at: r.last_change_at,
           active_session_id: r.active_session_id,
         };
       })
-      .sort((a, b) => (a.role + a.name).localeCompare(b.role + b.name));
+      // opcional: no mostrar desactivados
+      .filter((x) => x.is_active);
 
     return NextResponse.json({ ok: true, rows: out });
   } catch (e: any) {
