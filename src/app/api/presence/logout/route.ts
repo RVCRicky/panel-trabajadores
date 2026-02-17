@@ -17,7 +17,7 @@ async function getUidFromBearer(req: Request) {
 
   const auth = req.headers.get("authorization") || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-  if (!token) return { uid: null, error: "NO_TOKEN" };
+  if (!token) return { uid: null as string | null, error: "NO_TOKEN" as const };
 
   const userClient = createClient(supabaseUrl, anonKey, {
     global: { headers: { Authorization: `Bearer ${token}` } },
@@ -25,8 +25,8 @@ async function getUidFromBearer(req: Request) {
 
   const { data } = await userClient.auth.getUser();
   const uid = data?.user?.id || null;
-  if (!uid) return { uid: null, error: "NOT_AUTH" };
-  return { uid, error: null };
+  if (!uid) return { uid: null, error: "NOT_AUTH" as const };
+  return { uid, error: null as any };
 }
 
 export async function POST(req: Request) {
@@ -38,55 +38,51 @@ export async function POST(req: Request) {
     const serviceKey = getEnvAny(["SUPABASE_SERVICE_ROLE_KEY"]);
     const db = createClient(supabaseUrl, serviceKey);
 
-    const { data: w, error: wErr } = await db
+    // 1) worker
+    const { data: worker, error: wErr } = await db
       .from("workers")
-      .select("id")
+      .select("id, is_active")
       .eq("user_id", uid)
       .maybeSingle();
 
     if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
-    if (!w) return NextResponse.json({ ok: false, error: "NO_WORKER_PROFILE" }, { status: 400 });
+    if (!worker) return NextResponse.json({ ok: false, error: "NO_WORKER_PROFILE" }, { status: 404 });
+    if (!worker.is_active) return NextResponse.json({ ok: false, error: "USER_DISABLED" }, { status: 403 });
 
-    const { data: cur, error: cErr } = await db
-      .from("presence_current")
-      .select("active_session_id")
-      .eq("worker_id", w.id)
+    // 2) sesión activa
+    const { data: active, error: aErr } = await db
+      .from("presence_sessions")
+      .select("id")
+      .eq("worker_id", worker.id)
+      .is("ended_at", null)
+      .order("started_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
 
-    if (cErr) return NextResponse.json({ ok: false, error: cErr.message }, { status: 500 });
+    if (aErr) return NextResponse.json({ ok: false, error: aErr.message }, { status: 500 });
 
-    const sid = cur?.active_session_id || null;
-
-    // evento offline si había sesión
-    if (sid) {
-      await db.from("presence_events").insert({
-        session_id: sid,
-        worker_id: w.id,
-        state: "offline",
-        meta: { by: "self" },
-      });
-
-      // cerrar sesión
-      await db
-        .from("presence_sessions")
-        .update({ ended_at: new Date().toISOString(), ended_reason: "logout" })
-        .eq("id", sid)
-        .is("ended_at", null);
+    if (!active?.id) {
+      // no hay sesión activa: ya está “offline”
+      return NextResponse.json({ ok: true, alreadyOff: true });
     }
 
-    // estado actual offline
-    const { error: uErr } = await db.from("presence_current").upsert(
-      {
-        worker_id: w.id,
-        state: "offline",
-        last_change_at: new Date().toISOString(),
-        active_session_id: null,
-      },
-      { onConflict: "worker_id" }
-    );
-    if (uErr) return NextResponse.json({ ok: false, error: uErr.message }, { status: 500 });
+    // 3) evento offline
+    const { error: eErr } = await db.from("presence_events").insert({
+      session_id: active.id,
+      worker_id: worker.id,
+      state: "offline",
+    });
+    if (eErr) return NextResponse.json({ ok: false, error: eErr.message }, { status: 500 });
 
-    return NextResponse.json({ ok: true, worker_id: w.id, session_id: sid, state: "offline" });
+    // 4) cerrar sesión
+    const { error: endErr } = await db
+      .from("presence_sessions")
+      .update({ ended_at: new Date().toISOString() })
+      .eq("id", active.id);
+
+    if (endErr) return NextResponse.json({ ok: false, error: endErr.message }, { status: 500 });
+
+    return NextResponse.json({ ok: true, ended: true, session_id: active.id });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
   }
