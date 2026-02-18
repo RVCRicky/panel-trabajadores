@@ -17,6 +17,18 @@ type Row = {
   active_session_id: string | null;
 };
 
+type MissingRow = {
+  worker_id: string;
+  name?: string | null;
+  role?: string | null;
+  tz?: string | null;
+  local_dow?: number | null;
+  local_time?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  grace_minutes?: number | null;
+};
+
 function fmtAgo(iso: string | null) {
   if (!iso) return "—";
   const ms = Date.now() - new Date(iso).getTime();
@@ -47,98 +59,68 @@ export default function AdminLivePage() {
   const [err, setErr] = useState<string | null>(null);
   const [okAdmin, setOkAdmin] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [rows, setRows] = useState<Row[]>([]);
-  const [filterRole, setFilterRole] = useState<"all" | WorkerRole>("all");
 
-  // ✅ NUEVO: filtro de visibilidad (por defecto solo activos)
-  const [showMode, setShowMode] = useState<"active" | "all">("active");
+  const [rows, setRows] = useState<Row[]>([]);
+  const [missing, setMissing] = useState<MissingRow[]>([]);
+  const [missingCount, setMissingCount] = useState(0);
+
+  const [filterRole, setFilterRole] = useState<"all" | WorkerRole>("all");
+  const [show, setShow] = useState<"online_only" | "all">("all");
 
   async function ensureAdmin() {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
     if (!token) {
       router.replace("/login");
-      return false;
+      return null;
     }
 
     const res = await fetch("/api/me", { headers: { Authorization: `Bearer ${token}` } });
     const j = await res.json().catch(() => null);
     if (!j?.ok || !j?.worker) {
       setErr("No tienes perfil en workers.");
-      return false;
+      return null;
     }
     if (j.worker.role !== "admin") {
       router.replace("/panel");
-      return false;
+      return null;
     }
     setOkAdmin(true);
-    return true;
+    return token as string;
   }
 
   async function load() {
     setErr(null);
     setLoading(true);
     try {
-      const ok = await ensureAdmin();
-      if (!ok) return;
+      const token = await ensureAdmin();
+      if (!token) return;
 
-      // presence_current + workers
-      const { data: cur, error: e1 } = await supabase
-        .from("presence_current")
-        .select("worker_id,state,active_session_id,last_change_at");
-      if (e1) throw e1;
-
-      const { data: ws, error: e2 } = await supabase
-        .from("workers")
-        .select("id,display_name,role,is_active")
-        .eq("is_active", true);
-      if (e2) throw e2;
-
-      // sessions abiertas para started_at
-      const { data: ses, error: e3 } = await supabase
-        .from("presence_sessions")
-        .select("id,worker_id,started_at,ended_at")
-        .is("ended_at", null);
-      if (e3) throw e3;
-
-      const curByWorker = new Map<string, any>();
-      for (const c of cur || []) curByWorker.set(c.worker_id, c);
-
-      const openSesByWorker = new Map<string, any>();
-      for (const s of ses || []) {
-        // si hay varias, nos quedamos con la más reciente
-        const prev = openSesByWorker.get(s.worker_id);
-        if (!prev || new Date(s.started_at).getTime() > new Date(prev.started_at).getTime()) {
-          openSesByWorker.set(s.worker_id, s);
-        }
-      }
-
-      const out: Row[] = (ws || [])
-        .filter((w: any) => w.role === "central" || w.role === "tarotista")
-        .map((w: any) => {
-          const c = curByWorker.get(w.id) || null;
-          const s = openSesByWorker.get(w.id) || null;
-          const state: PresenceState = (c?.state as PresenceState) || (s ? "online" : "offline");
-          return {
-            worker_id: w.id,
-            display_name: w.display_name,
-            role: w.role,
-            state: state === "offline" && s ? "online" : state,
-            started_at: s?.started_at || null,
-            last_change_at: c?.last_change_at || null,
-            active_session_id: c?.active_session_id || s?.id || null,
-          };
-        });
-
-      // orden: online primero, luego pause, baño, offline + nombre
-      const orderKey = (st: PresenceState) => (st === "online" ? 0 : st === "pause" ? 1 : st === "bathroom" ? 2 : 3);
-      out.sort((a, b) => {
-        const d = orderKey(a.state) - orderKey(b.state);
-        if (d !== 0) return d;
-        return a.display_name.localeCompare(b.display_name);
+      const qs = show === "all" ? "?show=all" : "";
+      const res = await fetch(`/api/admin/presence/live${qs}`, {
+        headers: { Authorization: `Bearer ${token}` },
       });
 
-      setRows(out);
+      const j = await res.json().catch(() => null);
+      if (!j?.ok) {
+        setErr(j?.error || "Error cargando presencia");
+        return;
+      }
+
+      // filas presencia
+      setRows((j.rows || []).map((r: any) => ({
+        worker_id: r.worker_id,
+        display_name: r.name ?? r.display_name ?? "—",
+        role: r.role,
+        state: r.state,
+        started_at: r.started_at ?? null,
+        last_change_at: r.last_change_at ?? null,
+        active_session_id: r.active_session_id ?? null,
+      })));
+
+      // faltantes (deberían estar)
+      setMissingCount(Number(j.missingCount) || 0);
+      setMissing((j.missing || []) as MissingRow[]);
     } catch (e: any) {
       setErr(e?.message || "Error cargando presencia");
     } finally {
@@ -146,66 +128,44 @@ export default function AdminLivePage() {
     }
   }
 
-  // auto refresh
   useEffect(() => {
     load();
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [show]);
 
   const filtered = useMemo(() => {
-    let list = rows;
-
-    // ✅ filtro por rol
-    if (filterRole !== "all") list = list.filter((r) => r.role === filterRole);
-
-    // ✅ filtro por estado (por defecto: solo activos)
-    if (showMode === "active") {
-      list = list.filter((r) => r.state !== "offline");
-    }
-
-    return list;
-  }, [rows, filterRole, showMode]);
+    let out = rows;
+    if (filterRole !== "all") out = out.filter((r) => r.role === filterRole);
+    return out;
+  }, [rows, filterRole]);
 
   return (
-    <div style={{ padding: 20, maxWidth: 1100 }}>
+    <div style={{ padding: 20, maxWidth: 1200 }}>
       <h1 style={{ marginTop: 0 }}>Admin · Directo</h1>
 
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
         <a href="/admin" style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}>
           ← Volver a Admin
         </a>
 
-        <button
-          onClick={load}
-          disabled={loading}
-          style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900 }}
-        >
+        <button onClick={load} disabled={loading} style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900 }}>
           {loading ? "Actualizando..." : "Actualizar"}
         </button>
 
-        <select
-          value={filterRole}
-          onChange={(e) => setFilterRole(e.target.value as any)}
-          style={{ padding: 10, borderRadius: 10 }}
-        >
+        <select value={filterRole} onChange={(e) => setFilterRole(e.target.value as any)} style={{ padding: 10, borderRadius: 10 }}>
           <option value="all">Todos</option>
           <option value="central">Centrales</option>
           <option value="tarotista">Tarotistas</option>
         </select>
 
-        {/* ✅ NUEVO: solo activos / todos */}
-        <select
-          value={showMode}
-          onChange={(e) => setShowMode(e.target.value as any)}
-          style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900 }}
-        >
-          <option value="active">Solo activos (online/pausa/baño)</option>
+        <select value={show} onChange={(e) => setShow(e.target.value as any)} style={{ padding: 10, borderRadius: 10 }}>
+          <option value="online_only">Solo online/pausa/baño</option>
           <option value="all">Todos (incluye offline)</option>
         </select>
 
-        {okAdmin ? <span style={{ color: "#666", alignSelf: "center" }}>Auto-refresh cada 5s</span> : null}
+        {okAdmin ? <span style={{ color: "#666" }}>Auto-refresh cada 5s</span> : null}
       </div>
 
       {err ? (
@@ -214,6 +174,62 @@ export default function AdminLivePage() {
         </div>
       ) : null}
 
+      {/* ✅ NUEVO: Pendientes */}
+      <div style={{ border: "2px solid #111", borderRadius: 14, padding: 14, marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <div>
+            <div style={{ fontWeight: 1000, fontSize: 18 }}>🚨 Pendientes ahora</div>
+            <div style={{ color: "#666", marginTop: 4 }}>
+              Personas que <b>deberían estar en turno</b> y están <b>OFFLINE</b> (según shift_rules).
+            </div>
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 1000 }}>
+            {missingCount}
+          </div>
+        </div>
+
+        {missingCount === 0 ? (
+          <div style={{ marginTop: 10, color: "#666" }}>
+            No hay pendientes según las reglas actuales.
+            <div style={{ marginTop: 6, fontSize: 12 }}>
+              Si tú crees que sí debería haber, entonces falta cargar/ajustar <b>shift_rules</b> para esas personas (día/hora/tz).
+            </div>
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto", marginTop: 10 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Persona</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Rol</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>TZ</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Hora local</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Turno</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Gracia</th>
+                </tr>
+              </thead>
+              <tbody>
+                {missing.map((m, idx) => (
+                  <tr key={`${m.worker_id}-${idx}`}>
+                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3", fontWeight: 900 }}>
+                      {m.name || m.worker_id.slice(0, 8) + "…"}
+                    </td>
+                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{m.role || "—"}</td>
+                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3", color: "#666" }}>{m.tz || "—"}</td>
+                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{m.local_time || "—"}</td>
+                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>
+                      {m.start_time && m.end_time ? `${m.start_time}–${m.end_time}` : "—"}
+                    </td>
+                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{m.grace_minutes ?? "—"} min</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Tabla presencia */}
       <div style={{ overflowX: "auto", border: "1px solid #ddd", borderRadius: 12 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
           <thead>
@@ -229,9 +245,7 @@ export default function AdminLivePage() {
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={6} style={{ padding: 12, color: "#666" }}>
-                  {showMode === "active" ? "No hay nadie activo ahora mismo." : "Sin datos."}
-                </td>
+                <td colSpan={6} style={{ padding: 12, color: "#666" }}>Sin datos.</td>
               </tr>
             ) : (
               filtered.map((r) => (
