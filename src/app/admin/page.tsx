@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
+import { Badge } from "@/components/ui/Badge";
+import { QuickLink } from "@/components/ui/QuickLink";
 
 type WorkerRole = "admin" | "central" | "tarotista";
 
@@ -27,37 +30,8 @@ type AttRow = {
   worker: { id: string; display_name: string; role: WorkerRole } | null;
 };
 
-function Card({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div style={{ border: "1px solid #ddd", borderRadius: 14, padding: 14, background: "#fff" }}>
-      <div style={{ fontWeight: 950, marginBottom: 8 }}>{title}</div>
-      {children}
-    </div>
-  );
-}
-
-function Pill({ children }: { children: React.ReactNode }) {
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "6px 10px",
-        borderRadius: 999,
-        border: "1px solid #eee",
-        background: "#fafafa",
-        fontWeight: 900,
-        fontSize: 12,
-      }}
-    >
-      {children}
-    </span>
-  );
+function fmt(n: any) {
+  return (Number(n) || 0).toLocaleString("es-ES");
 }
 
 export default function AdminPage() {
@@ -66,7 +40,12 @@ export default function AdminPage() {
   const [status, setStatus] = useState("Cargando...");
   const [meName, setMeName] = useState("");
 
-  // CSV Sync
+  // KPI / resumen
+  const [onlineNow, setOnlineNow] = useState<number | null>(null);
+  const [missingNow, setMissingNow] = useState<number | null>(null);
+  const [pendingIncidents, setPendingIncidents] = useState<number | null>(null);
+
+  // Sync CSV
   const [csvUrl, setCsvUrl] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
@@ -77,17 +56,12 @@ export default function AdminPage() {
   const [rankMsg, setRankMsg] = useState<string | null>(null);
   const [rows, setRows] = useState<AttRow[]>([]);
 
-  // Resumen / Alertas
-  const [summaryLoading, setSummaryLoading] = useState(false);
-  const [missingCount, setMissingCount] = useState<number>(0);
-  const [missingNames, setMissingNames] = useState<string[]>([]);
-  const [pendingIncidentsCount, setPendingIncidentsCount] = useState<number>(0);
-
   async function getToken() {
     const { data } = await supabase.auth.getSession();
     return data.session?.access_token || null;
   }
 
+  // ✅ Comprueba admin
   useEffect(() => {
     (async () => {
       const token = await getToken();
@@ -96,14 +70,11 @@ export default function AdminPage() {
         return;
       }
 
-      const res = await fetch("/api/me", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch("/api/me", { headers: { Authorization: `Bearer ${token}` } });
+      const json = (await res.json().catch(() => null)) as MeResp | null;
 
-      const json = (await res.json()) as MeResp;
-
-      if (!json.ok) {
-        setStatus(`Error /api/me: ${json.error}`);
+      if (!json?.ok) {
+        setStatus(`Error /api/me: ${(json as any)?.error || "UNKNOWN"}`);
         return;
       }
 
@@ -124,11 +95,7 @@ export default function AdminPage() {
 
       setMeName(json.worker.display_name);
       setStatus("OK");
-
-      // al entrar, cargamos resumen (pendientes)
-      await loadSummary();
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
   async function logout() {
@@ -136,53 +103,61 @@ export default function AdminPage() {
     router.replace("/login");
   }
 
-  async function loadSummary() {
-    setSummaryLoading(true);
+  // ✅ KPIs (presencia + pendientes)
+  async function loadKpis() {
     try {
       const token = await getToken();
-      if (!token) {
-        router.replace("/login");
-        return;
-      }
+      if (!token) return;
 
-      // 1) Turnos pendientes (shift_missing_now viene dentro del live)
-      // si tu endpoint usa filtro por defecto (no offline), NO afecta a missing: missing viene aparte.
-      const pres = await fetch("/api/admin/presence/live", {
+      // Presencia (incluye missingCount en tu endpoint)
+      const pr = await fetch("/api/admin/presence/live?show=all", {
         headers: { Authorization: `Bearer ${token}` },
       });
-      const pj = await pres.json().catch(() => null);
+      const pj = await pr.json().catch(() => null);
 
       if (pj?.ok) {
-        const mc = Number(pj.missingCount) || 0;
-        setMissingCount(mc);
-
-        // intentamos sacar nombres si vienen en pj.missing
-        const names =
-          (pj.missing || [])
-            .map((x: any) => x?.name || x?.display_name || x?.worker_name || "")
-            .filter(Boolean) || [];
-        setMissingNames(names.slice(0, 8));
+        const rows = Array.isArray(pj.rows) ? pj.rows : [];
+        const online = rows.filter((r: any) => r.state && r.state !== "offline").length;
+        setOnlineNow(online);
+        setMissingNow(typeof pj.missingCount === "number" ? pj.missingCount : 0);
+      } else {
+        setOnlineNow(null);
+        setMissingNow(null);
       }
 
-      // 2) Incidencias pendientes (si existe endpoint)
-      const inc = await fetch("/api/admin/incidents/pending", {
+      // Incidencias pendientes (si el endpoint existe)
+      const ir = await fetch("/api/admin/incidents/pending", {
         headers: { Authorization: `Bearer ${token}` },
       });
-      const ij = await inc.json().catch(() => null);
-
+      const ij = await ir.json().catch(() => null);
       if (ij?.ok) {
-        const c =
-          Number(ij.pendingCount) ||
-          Number(ij.count) ||
-          (Array.isArray(ij.rows) ? ij.rows.length : 0) ||
-          (Array.isArray(ij.pending) ? ij.pending.length : 0) ||
-          0;
-        setPendingIncidentsCount(c);
+        const count =
+          typeof ij.count === "number"
+            ? ij.count
+            : Array.isArray(ij.items)
+            ? ij.items.length
+            : Array.isArray(ij.rows)
+            ? ij.rows.length
+            : 0;
+        setPendingIncidents(count);
+      } else {
+        // si no existe todavía o falla, no rompemos
+        setPendingIncidents(null);
       }
-    } finally {
-      setSummaryLoading(false);
+    } catch {
+      setOnlineNow(null);
+      setMissingNow(null);
+      setPendingIncidents(null);
     }
   }
+
+  useEffect(() => {
+    if (status !== "OK") return;
+    loadKpis();
+    const t = setInterval(loadKpis, 10000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
 
   async function loadRankings() {
     setRankMsg(null);
@@ -228,7 +203,6 @@ export default function AdminPage() {
       });
 
       const raw = await r.text();
-
       let j: any = null;
       try {
         j = raw ? JSON.parse(raw) : null;
@@ -243,13 +217,10 @@ export default function AdminPage() {
         return;
       }
 
-      setSyncMsg(
-        `✅ Sync OK. Insertadas: ${j.inserted}. Saltadas sin worker: ${j.skippedNoWorker}. Filas malas: ${j.skippedBad}. Total CSV: ${j.totalRows}`
-      );
+      setSyncMsg(`✅ Sync OK. Insertadas: ${j.inserted}. Saltadas sin worker: ${j.skippedNoWorker}. Filas malas: ${j.skippedBad}. Total CSV: ${j.totalRows}`);
 
-      // refrescamos ranking + resumen
       await loadRankings();
-      await loadSummary();
+      await loadKpis();
     } finally {
       setSyncing(false);
     }
@@ -258,274 +229,189 @@ export default function AdminPage() {
   const ranking = useMemo(() => {
     const m = new Map<
       string,
-      {
-        name: string;
-        role: WorkerRole;
-        minutes: number;
-        calls: number;
-        captadas: number;
-        free: number;
-        rueda: number;
-        cliente: number;
-        repite: number;
-      }
+      { name: string; role: WorkerRole; minutes: number; captadas: number }
     >();
 
     for (const r of rows) {
       if (!r.worker) continue;
       const id = r.worker.id;
       if (!m.has(id)) {
-        m.set(id, {
-          name: r.worker.display_name,
-          role: r.worker.role,
-          minutes: 0,
-          calls: 0,
-          captadas: 0,
-          free: 0,
-          rueda: 0,
-          cliente: 0,
-          repite: 0,
-        });
+        m.set(id, { name: r.worker.display_name, role: r.worker.role, minutes: 0, captadas: 0 });
       }
       const it = m.get(id)!;
       it.minutes += Number(r.minutes) || 0;
-      it.calls += Number(r.calls) || 0;
       if (r.captado) it.captadas += 1;
-
-      if (r.codigo === "free") it.free += Number(r.minutes) || 0;
-      if (r.codigo === "rueda") it.rueda += Number(r.minutes) || 0;
-      if (r.codigo === "cliente") it.cliente += Number(r.minutes) || 0;
-      if (r.codigo === "repite") it.repite += Number(r.minutes) || 0;
     }
 
-    const arr = Array.from(m.values());
-    const tarotistas = arr.filter((x) => x.role === "tarotista");
-    tarotistas.sort((a, b) => b.minutes - a.minutes);
-    return tarotistas.slice(0, 20);
+    const arr = Array.from(m.values()).filter((x) => x.role === "tarotista");
+    arr.sort((a, b) => b.minutes - a.minutes);
+    return arr.slice(0, 10);
   }, [rows]);
 
-  return (
-    <div style={{ padding: 2 }}>
-      {/* Header del contenido */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-        <h1 style={{ margin: 0, fontSize: 22 }}>Dashboard Admin</h1>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button
-            onClick={loadSummary}
-            disabled={summaryLoading || status !== "OK"}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 10,
-              border: "1px solid #ddd",
-              background: summaryLoading ? "#eee" : "#fff",
-              fontWeight: 900,
-              cursor: summaryLoading ? "not-allowed" : "pointer",
-            }}
-          >
-            {summaryLoading ? "Actualizando..." : "Actualizar resumen"}
-          </button>
+  const toneMissing = missingNow && missingNow > 0 ? "warn" : "ok";
+  const tonePending = pendingIncidents && pendingIncidents > 0 ? "warn" : "ok";
+  const toneOnline = onlineNow && onlineNow > 0 ? "ok" : "neutral";
 
-          <button
-            onClick={logout}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 10,
-              border: "1px solid #111",
-              background: "#111",
-              color: "#fff",
-              fontWeight: 900,
-              cursor: "pointer",
-            }}
-          >
-            Cerrar sesión
-          </button>
-        </div>
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      {/* Header interno (tu layout ya pone el menú arriba) */}
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <h1 style={{ margin: 0 }}>Dashboard Admin</h1>
+        <span style={{ marginLeft: "auto", color: "#666" }}>
+          Estado: <b style={{ color: "#111" }}>{status}</b> {status === "OK" ? <>· Admin: <b style={{ color: "#111" }}>{meName}</b></> : null}
+        </span>
+        <button
+          onClick={logout}
+          style={{
+            padding: 10,
+            borderRadius: 10,
+            border: "1px solid #111",
+            background: "#111",
+            color: "#fff",
+            fontWeight: 900,
+            cursor: "pointer",
+          }}
+        >
+          Cerrar sesión
+        </button>
       </div>
 
-      {/* Cards resumen */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-          gap: 12,
-          marginBottom: 12,
-        }}
-      >
-        <Card title="Estado del sistema">
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <Pill>
-              Estado: <span style={{ fontWeight: 950 }}>{status}</span>
-            </Pill>
-            {status === "OK" ? (
-              <span style={{ color: "#666" }}>
-                Admin: <b style={{ color: "#111" }}>{meName}</b>
-              </span>
-            ) : null}
-          </div>
-          <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
-            Consejo: usa “Actualizar resumen” para ver pendientes y incidencias al instante.
-          </div>
+      {/* KPIs */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+        <Card>
+          <CardTitle>Presencia online ahora</CardTitle>
+          <CardValue>{onlineNow === null ? "—" : fmt(onlineNow)}</CardValue>
+          <CardHint>
+            <Badge tone={toneOnline as any}>{onlineNow && onlineNow > 0 ? "OK" : "Sin datos"}</Badge> · Se actualiza cada 10s
+          </CardHint>
         </Card>
 
-        <Card title="Turnos pendientes (deberían estar y no están)">
-          <div style={{ fontSize: 34, fontWeight: 1000, lineHeight: 1 }}>{missingCount}</div>
-          {missingCount > 0 ? (
-            <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>
-              {missingNames.length ? (
-                <>
-                  Ej.: <b style={{ color: "#111" }}>{missingNames.join(", ")}</b>
-                  {missingCount > missingNames.length ? "…" : null}
-                </>
-              ) : (
-                <>Hay personas pendientes ahora.</>
-              )}
-            </div>
-          ) : (
-            <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>Todo correcto ahora mismo.</div>
-          )}
-          <div style={{ marginTop: 10 }}>
-            <a
-              href="/admin/live"
-              style={{
-                display: "inline-block",
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid #111",
-                textDecoration: "none",
-                fontWeight: 950,
-                color: "#111",
-              }}
-            >
+        <Card>
+          <CardTitle>Deberían estar y no están</CardTitle>
+          <CardValue>{missingNow === null ? "—" : fmt(missingNow)}</CardValue>
+          <CardHint>
+            <Badge tone={toneMissing as any}>{missingNow && missingNow > 0 ? "Revisar" : "Todo bien"}</Badge> · Turnos actuales
+          </CardHint>
+        </Card>
+
+        <Card>
+          <CardTitle>Incidencias pendientes</CardTitle>
+          <CardValue>{pendingIncidents === null ? "—" : fmt(pendingIncidents)}</CardValue>
+          <CardHint>
+            <Badge tone={tonePending as any}>{pendingIncidents && pendingIncidents > 0 ? "Acción" : "OK"}</Badge> · Justificar / No justificar
+          </CardHint>
+        </Card>
+
+        <Card>
+          <CardTitle>Acciones rápidas</CardTitle>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+            <a href="/admin/live" style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none", fontWeight: 900 }}>
               Ver presencia →
             </a>
-          </div>
-        </Card>
-
-        <Card title="Incidencias pendientes">
-          <div style={{ fontSize: 34, fontWeight: 1000, lineHeight: 1 }}>{pendingIncidentsCount}</div>
-          <div style={{ marginTop: 8, color: "#666", fontSize: 13 }}>
-            Faltas/retardos por revisar (justificada / no justificada).
-          </div>
-          <div style={{ marginTop: 10 }}>
-            <a
-              href="/admin/incidents"
-              style={{
-                display: "inline-block",
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid #111",
-                textDecoration: "none",
-                fontWeight: 950,
-                color: "#111",
-              }}
-            >
-              Gestionar incidencias →
+            <a href="/admin/incidents" style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none", fontWeight: 900 }}>
+              Ver incidencias →
             </a>
           </div>
+          <CardHint>Todo en 1 click.</CardHint>
         </Card>
       </div>
 
-      {/* Accesos rápidos */}
-      <div style={{ border: "1px solid #ddd", borderRadius: 14, padding: 14, marginBottom: 12, background: "#fff" }}>
-        <div style={{ fontWeight: 950, marginBottom: 10 }}>Accesos rápidos</div>
-
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <a href="/admin/live" style={quickLink(true)}>
-            Presencia en directo →
-          </a>
-          <a href="/admin/incidents" style={quickLink(false)}>
-            Incidencias →
-          </a>
-          <a href="/admin/workers" style={quickLink(false)}>
-            Trabajadores →
-          </a>
-          <a href="/admin/mappings" style={quickLink(false)}>
-            Mappings →
-          </a>
-        </div>
+      {/* Accesos a secciones */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+        <QuickLink href="/admin/live" title="Presencia" desc="Quién está online / pausa / baño y quién falta." />
+        <QuickLink href="/admin/incidents" title="Incidencias" desc="Justificar / No justificar, historial y control." />
+        <QuickLink href="/admin/workers" title="Trabajadores" desc="Altas, bajas, roles, activar/desactivar." />
+        <QuickLink href="/admin/mappings" title="Mappings" desc="Enlaces de CSV/Drive con trabajadores." />
       </div>
 
       {/* Sync CSV */}
-      <div style={{ marginBottom: 12 }}>
-        <Card title="Sincronizar Google Sheets (CSV)">
-          <div style={{ display: "grid", gap: 10 }}>
-            <input
-              value={csvUrl}
-              onChange={(e) => setCsvUrl(e.target.value)}
-              placeholder="https://docs.google.com/spreadsheets/d/e/.../pub?gid=...&single=true&output=csv"
-              style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
-            />
+      <Card>
+        <CardTitle>Sincronizar Google Sheets (CSV)</CardTitle>
 
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <button
-                onClick={runSync}
-                disabled={syncing || status !== "OK" || !csvUrl.trim()}
-                style={{
-                  padding: 12,
-                  borderRadius: 10,
-                  border: "1px solid #111",
-                  background: syncing ? "#eee" : "#111",
-                  color: syncing ? "#111" : "#fff",
-                  cursor: syncing ? "not-allowed" : "pointer",
-                  fontWeight: 900,
-                }}
-              >
-                {syncing ? "Sincronizando..." : "Sync ahora"}
-              </button>
+        <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+          <input
+            value={csvUrl}
+            onChange={(e) => setCsvUrl(e.target.value)}
+            placeholder="https://docs.google.com/spreadsheets/d/e/.../pub?gid=...&single=true&output=csv"
+            style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
+          />
 
-              <span style={{ color: "#666", fontSize: 12 }}>
-                Al terminar, refresca ranking y pendientes automáticamente.
-              </span>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button
+              onClick={runSync}
+              disabled={syncing || status !== "OK" || !csvUrl.trim()}
+              style={{
+                padding: 12,
+                borderRadius: 10,
+                border: "1px solid #111",
+                background: syncing ? "#eee" : "#111",
+                color: syncing ? "#111" : "#fff",
+                cursor: syncing ? "not-allowed" : "pointer",
+                fontWeight: 900,
+              }}
+            >
+              {syncing ? "Sincronizando..." : "Sync ahora"}
+            </button>
+
+            <button
+              onClick={loadRankings}
+              disabled={loadingRank || status !== "OK"}
+              style={{
+                padding: 12,
+                borderRadius: 10,
+                border: "1px solid #ddd",
+                background: "#fff",
+                cursor: loadingRank ? "not-allowed" : "pointer",
+                fontWeight: 900,
+              }}
+            >
+              {loadingRank ? "Cargando..." : "Actualizar ranking"}
+            </button>
+
+            <button
+              onClick={loadKpis}
+              disabled={status !== "OK"}
+              style={{
+                padding: 12,
+                borderRadius: 10,
+                border: "1px solid #ddd",
+                background: "#fff",
+                cursor: status !== "OK" ? "not-allowed" : "pointer",
+                fontWeight: 900,
+              }}
+            >
+              Refrescar KPIs
+            </button>
+          </div>
+
+          {syncMsg ? (
+            <div style={{ padding: 10, borderRadius: 10, background: "#f6f6f6", border: "1px solid #e5e5e5" }}>
+              {syncMsg}
             </div>
+          ) : null}
 
-            {syncMsg ? (
-              <div style={{ padding: 10, borderRadius: 10, background: "#f6f6f6", border: "1px solid #e5e5e5" }}>
-                {syncMsg}
-              </div>
-            ) : null}
+          {syncDebug ? (
+            <div style={{ padding: 10, borderRadius: 10, background: "#fff", border: "1px solid #e5e5e5" }}>
+              <b>DEBUG:</b>
+              <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{syncDebug}</pre>
+            </div>
+          ) : null}
 
-            {syncDebug ? (
-              <div style={{ padding: 10, borderRadius: 10, background: "#fff", border: "1px solid #e5e5e5" }}>
-                <b>DEBUG:</b>
-                <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{syncDebug}</pre>
-              </div>
-            ) : null}
-          </div>
-        </Card>
-      </div>
-
-      {/* Ranking */}
-      <Card title="Ranking global (Top 20 tarotistas por minutos)">
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
-          <button
-            onClick={loadRankings}
-            disabled={loadingRank || status !== "OK"}
-            style={{
-              padding: 10,
-              borderRadius: 10,
-              border: "1px solid #111",
-              background: loadingRank ? "#eee" : "#fff",
-              color: "#111",
-              cursor: loadingRank ? "not-allowed" : "pointer",
-              fontWeight: 900,
-            }}
-          >
-            {loadingRank ? "Cargando..." : "Actualizar ranking"}
-          </button>
-
-          <span style={{ color: "#666", fontSize: 12 }}>
-            Tip: para ver datos nuevos, primero haz “Sync ahora”.
-          </span>
+          {rankMsg ? (
+            <div style={{ padding: 10, borderRadius: 10, background: "#fff3f3", border: "1px solid #ffcccc" }}>
+              {rankMsg}
+            </div>
+          ) : null}
         </div>
+      </Card>
 
-        {rankMsg ? (
-          <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: "#fff3f3", border: "1px solid #ffcccc" }}>
-            {rankMsg}
-          </div>
-        ) : null}
+      {/* Mini ranking */}
+      <Card>
+        <CardTitle>Top 10 tarotistas (minutos)</CardTitle>
+        <CardHint>Para ver el ranking completo, entra en tu /panel.</CardHint>
 
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 780 }}>
+        <div style={{ overflowX: "auto", marginTop: 10 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 740 }}>
             <thead>
               <tr>
                 <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
@@ -543,11 +429,11 @@ export default function AdminPage() {
                 </tr>
               ) : (
                 ranking.map((r, idx) => (
-                  <tr key={`${r.name}-${idx}`}>
+                  <tr key={r.name}>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.minutes}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{r.captadas}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{fmt(r.minutes)}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(r.captadas)}</td>
                   </tr>
                 ))
               )}
@@ -557,16 +443,4 @@ export default function AdminPage() {
       </Card>
     </div>
   );
-}
-
-function quickLink(primary: boolean) {
-  return {
-    padding: "10px 12px",
-    borderRadius: 10,
-    border: primary ? "1px solid #111" : "1px solid #ddd",
-    textDecoration: "none",
-    fontWeight: 950,
-    background: primary ? "#111" : "#fff",
-    color: primary ? "#fff" : "#111",
-  } as React.CSSProperties;
 }
