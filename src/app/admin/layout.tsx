@@ -51,15 +51,23 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     );
   }
 
-  const linkStyle = (href: string) => ({
-    padding: "10px 12px",
-    borderRadius: 10,
-    border: "1px solid #ddd",
-    textDecoration: "none",
-    fontWeight: 900,
-    background: pathname === href ? "#111" : "#fff",
-    color: pathname === href ? "#fff" : "#111",
-  });
+  const isActive = (href: string) => {
+    if (href === "/admin") return pathname === "/admin";
+    return pathname === href || pathname.startsWith(href + "/");
+  };
+
+  const linkStyle = (href: string) => {
+    const active = isActive(href);
+    return {
+      padding: "10px 12px",
+      borderRadius: 10,
+      border: "1px solid #ddd",
+      textDecoration: "none",
+      fontWeight: 900,
+      background: active ? "#111" : "#fff",
+      color: active ? "#fff" : "#111",
+    } as React.CSSProperties;
+  };
 
   return (
     <div>
