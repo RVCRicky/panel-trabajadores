@@ -14,9 +14,13 @@ function bearer(req: Request) {
   return m?.[1] || null;
 }
 
-async function assertAdmin(db: any, token: string) {
+type AdminCheck =
+  | { ok: true; uid: string; admin_worker_id: string }
+  | { ok: false; status: number; error: string };
+
+async function assertAdmin(db: any, token: string): Promise<AdminCheck> {
   const { data: u, error: eu } = await db.auth.getUser(token);
-  if (eu || !u?.user) return { ok: false, status: 401, error: "BAD_TOKEN" as const };
+  if (eu || !u?.user) return { ok: false, status: 401, error: "BAD_TOKEN" };
   const uid = u.user.id;
 
   const { data: me, error: eme } = await db
@@ -25,10 +29,10 @@ async function assertAdmin(db: any, token: string) {
     .eq("user_id", uid)
     .maybeSingle();
 
-  if (eme) return { ok: false, status: 500, error: eme.message as const };
-  if (!me) return { ok: false, status: 403, error: "NO_WORKER" as const };
-  if (!me.is_active) return { ok: false, status: 403, error: "INACTIVE" as const };
-  if (me.role !== "admin") return { ok: false, status: 403, error: "NOT_ADMIN" as const };
+  if (eme) return { ok: false, status: 500, error: eme.message };
+  if (!me) return { ok: false, status: 403, error: "NO_WORKER" };
+  if (!me.is_active) return { ok: false, status: 403, error: "INACTIVE" };
+  if (me.role !== "admin") return { ok: false, status: 403, error: "NOT_ADMIN" };
 
   return { ok: true, uid, admin_worker_id: me.id };
 }
@@ -40,8 +44,8 @@ export async function POST(req: Request) {
 
     const body = await req.json().catch(() => null);
     const incident_id = body?.incident_id as string | undefined;
-    const action = String(body?.action || "").toLowerCase(); // "justified" | "unjustified"
-    const penalty_eur = body?.penalty_eur;
+    const action = String(body?.action || "").toLowerCase(); // justified | unjustified
+    const penalty_eur_raw = body?.penalty_eur;
 
     if (!incident_id) return NextResponse.json({ ok: false, error: "MISSING_INCIDENT_ID" }, { status: 400 });
     if (action !== "justified" && action !== "unjustified")
@@ -56,20 +60,20 @@ export async function POST(req: Request) {
 
     const nextStatus = action === "justified" ? "justified" : "unjustified";
     const nextPenalty =
-      action === "justified"
-        ? 0
-        : typeof penalty_eur === "number"
-        ? penalty_eur
-        : Number(penalty_eur || 0) || 0;
+      action === "justified" ? 0 : (Number(penalty_eur_raw || 0) || 0);
+
+    const patch: any = {
+      status: nextStatus,
+      penalty_eur: nextPenalty,
+    };
+
+    // si existen en tu tabla, las rellenamos (si no existen, no pasa nada)
+    patch.resolved_at = new Date().toISOString();
+    patch.resolved_by = a.admin_worker_id;
 
     const { data: upd, error: eupd } = await db
       .from("shift_incidents")
-      .update({
-        status: nextStatus,
-        penalty_eur: nextPenalty,
-        resolved_at: new Date().toISOString(),
-        resolved_by: a.admin_worker_id,
-      })
+      .update(patch)
       .eq("id", incident_id)
       .select("id,status,penalty_eur")
       .maybeSingle();
