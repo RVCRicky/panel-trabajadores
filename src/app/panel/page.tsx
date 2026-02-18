@@ -103,6 +103,8 @@ export default function PanelPage() {
   const [elapsedSec, setElapsedSec] = useState(0);
   const tickRef = useRef<any>(null);
 
+  const isLogged = pState !== "offline";
+
   async function getToken() {
     const { data } = await supabase.auth.getSession();
     return data.session?.access_token || null;
@@ -128,7 +130,7 @@ export default function PanelPage() {
       setSessionId(j.session_id || null);
       setStartedAt(j.started_at || null);
     } catch {
-      // si falla, no rompemos el panel
+      // no rompemos el panel
     }
   }
 
@@ -172,6 +174,9 @@ export default function PanelPage() {
       const token = await getToken();
       if (!token) return router.replace("/login");
 
+      // ✅ evita “doble login”
+      if (isLogged) return;
+
       const res = await fetch("/api/presence/login", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
@@ -179,7 +184,6 @@ export default function PanelPage() {
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error login presencia");
 
-      // ✅ refresca estado persistente
       await loadPresence();
     } catch (e: any) {
       setErr(e?.message || "Error login presencia");
@@ -192,6 +196,8 @@ export default function PanelPage() {
       const token = await getToken();
       if (!token) return router.replace("/login");
 
+      if (!isLogged) return;
+
       const res = await fetch("/api/presence/state", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -200,7 +206,6 @@ export default function PanelPage() {
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error cambio estado");
 
-      // ✅ refresca estado persistente
       await loadPresence();
     } catch (e: any) {
       setErr(e?.message || "Error cambio estado");
@@ -213,6 +218,8 @@ export default function PanelPage() {
       const token = await getToken();
       if (!token) return router.replace("/login");
 
+      if (!isLogged) return;
+
       const res = await fetch("/api/presence/logout", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
@@ -220,7 +227,6 @@ export default function PanelPage() {
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error logout presencia");
 
-      // ✅ refresca estado persistente (quedará offline)
       await loadPresence();
     } catch (e: any) {
       setErr(e?.message || "Error logout presencia");
@@ -280,7 +286,6 @@ export default function PanelPage() {
     return "";
   }
 
-  // reglas de bono (solo para mostrar)
   const bonusRulesGrouped = useMemo(() => {
     const rules = (data?.bonusRules || []).filter((r) => String(r.ranking_type || "").toLowerCase() !== "team_winner");
     const map = new Map<string, any[]>();
@@ -289,7 +294,7 @@ export default function PanelPage() {
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(r);
     }
-    for (const [k, arr] of map) arr.sort((a, b) => a.position - b.position);
+    for (const [, arr] of map) arr.sort((a, b) => a.position - b.position);
     return map;
   }, [data?.bonusRules]);
 
@@ -340,8 +345,8 @@ export default function PanelPage() {
         <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10, marginBottom: 12 }}>{err}</div>
       ) : null}
 
-      {/* CONTROL HORARIO */}
-      {me?.role === "tarotista" || me?.role === "central" ? (
+      {/* ✅ CONTROL HORARIO (SOLO BOTONES + CRONO) */}
+      {(me?.role === "tarotista" || me?.role === "central") ? (
         <div style={{ border: "1px solid #111", borderRadius: 14, padding: 14, marginBottom: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <div>
@@ -359,47 +364,52 @@ export default function PanelPage() {
           </div>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
-            <button onClick={presenceLogin} style={{ padding: 10, borderRadius: 12, border: "1px solid #111", fontWeight: 900 }}>
+            <button
+              onClick={presenceLogin}
+              disabled={isLogged}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #111", fontWeight: 900, opacity: isLogged ? 0.5 : 1 }}
+            >
               Loguear
             </button>
 
             <button
               onClick={() => presenceSet("pause")}
-              disabled={pState === "offline"}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}
+              disabled={!isLogged}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900, opacity: !isLogged ? 0.5 : 1 }}
             >
               Pausa
             </button>
 
             <button
               onClick={() => presenceSet("bathroom")}
-              disabled={pState === "offline"}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}
+              disabled={!isLogged}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900, opacity: !isLogged ? 0.5 : 1 }}
             >
               Baño
             </button>
 
             <button
               onClick={() => presenceSet("online")}
-              disabled={pState === "offline"}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}
+              disabled={!isLogged}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900, opacity: !isLogged ? 0.5 : 1 }}
             >
-              Volver
+              Volver (Online)
             </button>
 
             <button
               onClick={presenceLogout}
-              disabled={pState === "offline"}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #111", background: "#111", color: "#fff", fontWeight: 900 }}
+              disabled={!isLogged}
+              style={{
+                padding: 10,
+                borderRadius: 12,
+                border: "1px solid #111",
+                background: "#111",
+                color: "#fff",
+                fontWeight: 900,
+                opacity: !isLogged ? 0.5 : 1,
+              }}
             >
               Desloguear
-            </button>
-
-            <button
-              onClick={loadPresence}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}
-            >
-              Refrescar estado
             </button>
           </div>
 
