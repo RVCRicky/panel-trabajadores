@@ -90,12 +90,11 @@ export default function PanelPage() {
   const router = useRouter();
 
   const [rankType, setRankType] = useState<RankKey>("minutes");
-
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<DashboardResp | null>(null);
 
-  // Presencia
+  // Presencia (persistente)
   const [pState, setPState] = useState<PresenceState>("offline");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<string | null>(null);
@@ -109,54 +108,27 @@ export default function PanelPage() {
     return data.session?.access_token || null;
   }
 
-  // ✅ CARGA REAL del estado de presencia desde BD (persistente)
-  async function refreshPresenceFromDb(workerId: string) {
+  // ✅ LEE PRESENCIA REAL desde backend (no desde RLS del navegador)
+  async function loadPresence() {
     try {
-      // 1) Si hay sesión abierta, ESTÁ LOGUEADO (independiente del refresh)
-      const { data: openSessions, error: sErr } = await supabase
-        .from("presence_sessions")
-        .select("id, started_at")
-        .eq("worker_id", workerId)
-        .is("ended_at", null)
-        .order("started_at", { ascending: false })
-        .limit(1);
-
-      if (sErr) {
-        console.error("presence_sessions error:", sErr);
+      const token = await getToken();
+      if (!token) {
+        router.replace("/login");
         return;
       }
 
-      const open = openSessions?.[0] || null;
+      const res = await fetch("/api/presence/me", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
 
-      if (!open) {
-        // no hay sesión abierta => OFFLINE
-        setPState("offline");
-        setSessionId(null);
-        setStartedAt(null);
-        setElapsedSec(0);
-        return;
-      }
+      const j = await res.json().catch(() => null);
+      if (!j?.ok) return;
 
-      // 2) Hay sesión abierta => leemos presence_current (estado online/pause/bathroom)
-      const { data: cur, error: cErr } = await supabase
-        .from("presence_current")
-        .select("state, active_session_id, last_change_at")
-        .eq("worker_id", workerId)
-        .maybeSingle();
-
-      if (cErr) {
-        console.error("presence_current error:", cErr);
-        // si falla, por seguridad lo ponemos online (porque sesión abierta existe)
-        setPState("online");
-      } else {
-        const s = (cur?.state as PresenceState) || "online";
-        setPState(s === "offline" ? "online" : s);
-      }
-
-      setSessionId((cur?.active_session_id as string) || open.id);
-      setStartedAt(open.started_at || new Date().toISOString());
-    } catch (e) {
-      console.error("refreshPresenceFromDb error:", e);
+      setPState((j.state as PresenceState) || "offline");
+      setSessionId(j.session_id || null);
+      setStartedAt(j.started_at || null);
+    } catch {
+      // si falla, no rompemos el panel
     }
   }
 
@@ -182,11 +154,10 @@ export default function PanelPage() {
 
       setData(j);
 
-      // ✅ después de cargar dashboard, refrescamos presencia REAL
-      const workerId = j?.user?.worker?.id || null;
+      // ✅ siempre refrescamos presencia real al cargar
       const role = j?.user?.worker?.role || null;
-      if (workerId && (role === "tarotista" || role === "central")) {
-        await refreshPresenceFromDb(workerId);
+      if (role === "tarotista" || role === "central") {
+        await loadPresence();
       }
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
@@ -208,14 +179,8 @@ export default function PanelPage() {
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error login presencia");
 
-      // ✅ en vez de confiar en estado local, leemos la BD
-      const workerId = data?.user?.worker?.id || null;
-      if (workerId) await refreshPresenceFromDb(workerId);
-      else {
-        setPState("online");
-        setSessionId(j.session_id || null);
-        setStartedAt(j.started_at || new Date().toISOString());
-      }
+      // ✅ refresca estado persistente
+      await loadPresence();
     } catch (e: any) {
       setErr(e?.message || "Error login presencia");
     }
@@ -235,13 +200,8 @@ export default function PanelPage() {
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error cambio estado");
 
-      // ✅ refrescar desde BD
-      const workerId = data?.user?.worker?.id || null;
-      if (workerId) await refreshPresenceFromDb(workerId);
-      else {
-        setPState(state);
-        if (j.session_id) setSessionId(j.session_id);
-      }
+      // ✅ refresca estado persistente
+      await loadPresence();
     } catch (e: any) {
       setErr(e?.message || "Error cambio estado");
     }
@@ -260,15 +220,8 @@ export default function PanelPage() {
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error logout presencia");
 
-      // ✅ refrescar desde BD (debería quedar offline)
-      const workerId = data?.user?.worker?.id || null;
-      if (workerId) await refreshPresenceFromDb(workerId);
-      else {
-        setPState("offline");
-        setSessionId(null);
-        setStartedAt(null);
-        setElapsedSec(0);
-      }
+      // ✅ refresca estado persistente (quedará offline)
+      await loadPresence();
     } catch (e: any) {
       setErr(e?.message || "Error logout presencia");
     }
@@ -278,16 +231,6 @@ export default function PanelPage() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // ✅ Si por lo que sea cambia el worker (cambio de usuario), vuelve a refrescar presencia
-  useEffect(() => {
-    const workerId = data?.user?.worker?.id || null;
-    const role = data?.user?.worker?.role || null;
-    if (workerId && (role === "tarotista" || role === "central")) {
-      refreshPresenceFromDb(workerId);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.user?.worker?.id]);
 
   // Cronómetro
   useEffect(() => {
@@ -404,7 +347,8 @@ export default function PanelPage() {
             <div>
               <div style={{ fontWeight: 900 }}>Control horario</div>
               <div style={{ color: "#666", marginTop: 4 }}>
-                Estado: {stateBadge} {sessionId ? <span style={{ color: "#999" }}>· sesión {sessionId.slice(0, 8)}…</span> : null}
+                Estado: {stateBadge}{" "}
+                {sessionId ? <span style={{ color: "#999" }}>· sesión {sessionId.slice(0, 8)}…</span> : null}
               </div>
             </div>
 
@@ -450,10 +394,17 @@ export default function PanelPage() {
             >
               Desloguear
             </button>
+
+            <button
+              onClick={loadPresence}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}
+            >
+              Refrescar estado
+            </button>
           </div>
 
           <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
-            Nota: Este estado es persistente (se mantiene aunque refresques) porque se lee desde presence_sessions/presence_current.
+            Estado persistente: aunque refresques la página, seguirá ONLINE si hay sesión abierta.
           </div>
         </div>
       ) : null}
@@ -529,7 +480,7 @@ export default function PanelPage() {
         )}
       </div>
 
-      {/* BONOS (solo mostrar reglas) */}
+      {/* BONOS (solo reglas) */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Bonos (reglas)</h2>
 
