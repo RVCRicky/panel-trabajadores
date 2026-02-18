@@ -10,33 +10,16 @@ export default function Home() {
   useEffect(() => {
     (async () => {
       const { data } = await supabase.auth.getSession();
-      const session = data.session;
+      const token = data.session?.access_token;
 
-      if (!session) {
-        router.replace("/login");
-        return;
-      }
-
-      const res = await fetch("/api/me", {
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
-      });
-
-      const json = await res.json().catch(() => null);
-
-      if (!json?.ok || !json.worker) {
-        router.replace("/login");
-        return;
-      }
-
-      if (json.worker.role === "admin") {
-        router.replace("/admin");
-      } else {
-        router.replace("/panel");
-      }
+      if (token) router.replace("/panel");
+      else router.replace("/login");
     })();
   }, [router]);
 
-  return null;
+  return (
+    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", color: "#666" }}>
+      Cargando…
+    </div>
+  );
 }
