@@ -14,9 +14,13 @@ function bearer(req: Request) {
   return m?.[1] || null;
 }
 
-async function assertAdmin(db: any, token: string) {
+type AdminCheck =
+  | { ok: true; uid: string }
+  | { ok: false; status: number; error: string };
+
+async function assertAdmin(db: any, token: string): Promise<AdminCheck> {
   const { data: u, error: eu } = await db.auth.getUser(token);
-  if (eu || !u?.user) return { ok: false, status: 401, error: "BAD_TOKEN" as const };
+  if (eu || !u?.user) return { ok: false, status: 401, error: "BAD_TOKEN" };
   const uid = u.user.id;
 
   const { data: me, error: eme } = await db
@@ -25,10 +29,10 @@ async function assertAdmin(db: any, token: string) {
     .eq("user_id", uid)
     .maybeSingle();
 
-  if (eme) return { ok: false, status: 500, error: eme.message as const };
-  if (!me) return { ok: false, status: 403, error: "NO_WORKER" as const };
-  if (!me.is_active) return { ok: false, status: 403, error: "INACTIVE" as const };
-  if (me.role !== "admin") return { ok: false, status: 403, error: "NOT_ADMIN" as const };
+  if (eme) return { ok: false, status: 500, error: eme.message };
+  if (!me) return { ok: false, status: 403, error: "NO_WORKER" };
+  if (!me.is_active) return { ok: false, status: 403, error: "INACTIVE" };
+  if (me.role !== "admin") return { ok: false, status: 403, error: "NOT_ADMIN" };
 
   return { ok: true, uid };
 }
@@ -45,7 +49,6 @@ export async function GET(req: Request) {
     const a = await assertAdmin(db, token);
     if (!a.ok) return NextResponse.json({ ok: false, error: a.error }, { status: a.status });
 
-    // pendientes de hoy primero, luego el resto
     const { data, error } = await db
       .from("shift_incidents")
       .select("id,worker_id,incident_date,month_date,kind,incident_type,minutes_late,status,penalty_eur,notes,created_at")
@@ -55,14 +58,17 @@ export async function GET(req: Request) {
 
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
 
-    // Traer nombres
+    // traer nombres
     const workerIds = Array.from(new Set((data || []).map((x: any) => x.worker_id))).filter(Boolean);
-    let namesById = new Map<string, any>();
+
+    const namesById = new Map<string, any>();
     if (workerIds.length) {
-      const { data: ws } = await db
+      const { data: ws, error: ew } = await db
         .from("workers")
         .select("id,display_name,role")
         .in("id", workerIds);
+
+      if (ew) return NextResponse.json({ ok: false, error: ew.message }, { status: 500 });
       for (const w of ws || []) namesById.set(w.id, w);
     }
 
