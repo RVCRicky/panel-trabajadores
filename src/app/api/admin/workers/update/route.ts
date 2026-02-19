@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { cookies } from "next/headers";
 
 export const runtime = "nodejs";
 
@@ -9,56 +10,88 @@ function getEnv(name: string) {
   return v;
 }
 
-const supabaseAdmin = createClient(
-  getEnv("SUPABASE_URL"),
-  getEnv("SUPABASE_SERVICE_ROLE_KEY"),
-  {
-    auth: { persistSession: false },
-  }
+const SUPABASE_URL = getEnv("SUPABASE_URL");
+const SERVICE_ROLE = getEnv("SUPABASE_SERVICE_ROLE_KEY");
+
+// Admin client (service role)
+const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE, {
+  auth: { persistSession: false },
+});
+
+// “User client” para leer sesión desde cookies (usa anon key)
+const supabaseUser = createClient(
+  SUPABASE_URL,
+  getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
+  { auth: { persistSession: false } }
 );
 
 type Body = {
-  workerId: string;           // UUID del usuario (auth.users.id) = worker_profiles.id en tu diseño típico
+  workerId: string;
   email?: string | null;
   password?: string | null;
-  // opcional: campos de tu tabla
   name?: string | null;
   role?: string | null;
 };
 
+async function requireAdmin() {
+  // Extraer access token de cookies (Supabase guarda varias cookies; esto funciona en muchos setups,
+  // si en el tuyo no, lo ajustamos a tu cookie exacta)
+  const cookieStore = await cookies();
+  const token =
+    cookieStore.get("sb-access-token")?.value ||
+    cookieStore.get("supabase-auth-token")?.value;
+
+  if (!token) return { ok: false, error: "Not authenticated" as const };
+
+  const { data: userData, error: userErr } = await supabaseUser.auth.getUser(token);
+  if (userErr || !userData?.user?.id) return { ok: false, error: "Invalid session" as const };
+
+  const callerId = userData.user.id;
+
+  // Miramos el perfil del que llama
+  const { data: profile, error: pErr } = await supabaseAdmin
+    .from("worker_profiles")
+    .select("role")
+    .eq("id", callerId)
+    .maybeSingle();
+
+  if (pErr) return { ok: false, error: pErr.message as const };
+  if (!profile) return { ok: false, error: "No profile" as const };
+
+  // AJUSTA AQUÍ el rol admin si usas otro nombre
+  if (profile.role !== "admin") return { ok: false, error: "Forbidden" as const };
+
+  return { ok: true, callerId };
+}
+
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as Body;
+    const gate = await requireAdmin();
+    if (!gate.ok) return NextResponse.json({ ok: false, error: gate.error }, { status: 401 });
 
+    const body = (await req.json()) as Body;
     if (!body.workerId) {
       return NextResponse.json({ ok: false, error: "Missing workerId" }, { status: 400 });
     }
 
-    // 1) Actualizar AUTH (email/password)
+    // AUTH update
     if (body.email || body.password) {
-      const { data, error } = await supabaseAdmin.auth.admin.updateUserById(
-        body.workerId,
-        {
-          ...(body.email ? { email: body.email } : {}),
-          ...(body.password ? { password: body.password } : {}),
-        }
-      );
+      const { error } = await supabaseAdmin.auth.admin.updateUserById(body.workerId, {
+        ...(body.email ? { email: body.email } : {}),
+        ...(body.password ? { password: body.password } : {}),
+      });
 
-      if (error) {
-        return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
-      }
+      if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
 
-      // 2) Opcional: marcar email confirmado si cambias email (evita líos al loguear)
-      // En algunos proyectos esto no hace falta, pero ayuda.
+      // Confirm email (opcional)
       if (body.email) {
         await supabaseAdmin.auth.admin.updateUserById(body.workerId, {
-          email_confirm: true as any, // supabase-js lo soporta en muchos entornos; si te diera error lo quitamos
+          email_confirm: true as any,
         } as any);
       }
     }
 
-    // 3) Opcional: actualizar tu tabla worker_profiles
-    // (solo si tu tabla tiene columnas "name" y "role")
+    // worker_profiles update (opcional)
     if (body.name !== undefined || body.role !== undefined) {
       const update: any = {};
       if (body.name !== undefined) update.name = body.name;
@@ -69,9 +102,7 @@ export async function POST(req: Request) {
         .update(update)
         .eq("id", body.workerId);
 
-      if (e2) {
-        return NextResponse.json({ ok: false, error: e2.message }, { status: 400 });
-      }
+      if (e2) return NextResponse.json({ ok: false, error: e2.message }, { status: 400 });
     }
 
     return NextResponse.json({ ok: true });
