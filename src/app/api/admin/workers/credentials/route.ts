@@ -29,7 +29,6 @@ export async function POST(req: Request) {
       auth: { persistSession: false },
     });
 
-    // auth bearer
     const authHeader = req.headers.get("authorization") || "";
     const token = authHeader.toLowerCase().startsWith("bearer ")
       ? authHeader.slice(7).trim()
@@ -46,7 +45,6 @@ export async function POST(req: Request) {
 
     const callerId = u.user.id;
 
-    // solo admin activo
     const { data: caller, error: cErr } = await supabaseAdmin
       .from("worker_profiles")
       .select("role,is_active")
@@ -58,7 +56,6 @@ export async function POST(req: Request) {
     if (!caller.is_active) return NextResponse.json({ ok: false, error: "User disabled" }, { status: 403 });
     if (caller.role !== "admin") return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
 
-    // body
     const body = (await req.json()) as Body;
     const workerId = String(body.workerId || "").trim();
     const email = body.email ? String(body.email).trim().toLowerCase() : null;
@@ -74,7 +71,6 @@ export async function POST(req: Request) {
     const { error: upErr } = await supabaseAdmin.auth.admin.updateUserById(workerId, patch);
     if (upErr) return NextResponse.json({ ok: false, error: upErr.message }, { status: 400 });
 
-    // opcional: confirmar email automáticamente
     if (email) {
       await supabaseAdmin.auth.admin.updateUserById(workerId, { email_confirm: true } as any);
     }
