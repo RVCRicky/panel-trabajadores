@@ -25,18 +25,6 @@ type RankRow = {
   cliente_pct: number;
 };
 
-function monthStartMadridISO() {
-  // YYYY-MM-01 (Europe/Madrid) como DATE string
-  const now = new Date();
-  // truco simple: tomamos fecha en ISO pero ajustando a Madrid con toLocaleString
-  const madrid = new Date(
-    new Date().toLocaleString("en-US", { timeZone: "Europe/Madrid" })
-  );
-  const y = madrid.getFullYear();
-  const m = String(madrid.getMonth() + 1).padStart(2, "0");
-  return `${y}-${m}-01`;
-}
-
 function pct(n: number, d: number) {
   if (!d) return 0;
   return Math.round((n / d) * 1000) / 10; // 1 decimal
@@ -50,16 +38,14 @@ export async function GET(req: Request) {
     const url = getEnv("NEXT_PUBLIC_SUPABASE_URL");
     const service = getEnv("SUPABASE_SERVICE_ROLE_KEY");
 
-    // service client: valida token + lee tablas
     const db = createClient(url, service, { auth: { persistSession: false } });
 
-    // validar user
+    // 1) validar user
     const { data: u, error: eu } = await db.auth.getUser(token);
     if (eu || !u?.user) return NextResponse.json({ ok: false, error: "BAD_TOKEN" }, { status: 401 });
-
     const uid = u.user.id;
 
-    // worker del usuario
+    // 2) worker del usuario
     const { data: me, error: eme } = await db
       .from("workers")
       .select("id, user_id, role, display_name, is_active")
@@ -70,9 +56,32 @@ export async function GET(req: Request) {
     if (!me) return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
     if (!me.is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
 
-    const month_date = monthStartMadridISO();
+    // ✅ 3) coger el último mes disponible en attendance_rows
+    const { data: lastMonthRow, error: emonth } = await db
+      .from("attendance_rows")
+      .select("month_date")
+      .order("month_date", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    // Traemos filas del mes + nombre/rol del worker (join manual seguro)
+    if (emonth) return NextResponse.json({ ok: false, error: emonth.message }, { status: 500 });
+
+    const month_date: string | null = (lastMonthRow as any)?.month_date || null;
+
+    if (!month_date) {
+      // no hay datos todavía
+      return NextResponse.json({
+        ok: true,
+        month_date: null,
+        user: { isAdmin: me.role === "admin", worker: me },
+        rankings: { minutes: [], repite_pct: [], cliente_pct: [], captadas: [] },
+        myEarnings: null,
+        winnerTeam: null,
+        bonusRules: [],
+      });
+    }
+
+    // 4) filas del mes
     const { data: rows, error: erows } = await db
       .from("attendance_rows")
       .select("worker_id, minutes, calls, codigo, captado")
@@ -83,17 +92,30 @@ export async function GET(req: Request) {
 
     const workerIds = Array.from(new Set((rows || []).map((r: any) => r.worker_id).filter(Boolean)));
 
+    if (workerIds.length === 0) {
+      return NextResponse.json({
+        ok: true,
+        month_date,
+        user: { isAdmin: me.role === "admin", worker: me },
+        rankings: { minutes: [], repite_pct: [], cliente_pct: [], captadas: [] },
+        myEarnings: null,
+        winnerTeam: null,
+        bonusRules: [],
+      });
+    }
+
+    // 5) workers de esos ids
     const { data: ws, error: ews } = await db
       .from("workers")
       .select("id, display_name, role")
-      .in("id", workerIds.length ? workerIds : ["00000000-0000-0000-0000-000000000000"]);
+      .in("id", workerIds);
 
     if (ews) return NextResponse.json({ ok: false, error: ews.message }, { status: 500 });
 
     const wMap = new Map<string, { name: string; role: string }>();
     for (const w of ws || []) wMap.set((w as any).id, { name: (w as any).display_name, role: (w as any).role });
 
-    // agregación
+    // 6) agregación
     const agg = new Map<
       string,
       {
@@ -101,7 +123,6 @@ export async function GET(req: Request) {
         name: string;
         role: string;
         minutes: number;
-        calls: number;
         captadas: number;
         cliente_min: number;
         repite_min: number;
@@ -121,7 +142,6 @@ export async function GET(req: Request) {
           name: w.name,
           role: w.role,
           minutes: 0,
-          calls: 0,
           captadas: 0,
           cliente_min: 0,
           repite_min: 0,
@@ -130,11 +150,8 @@ export async function GET(req: Request) {
 
       const it = agg.get(wid)!;
       const min = Number((r as any).minutes) || 0;
-      const calls = Number((r as any).calls) || 0;
 
       it.minutes += min;
-      it.calls += calls;
-
       if ((r as any).captado) it.captadas += 1;
 
       const codigo = String((r as any).codigo || "").toLowerCase();
@@ -143,8 +160,6 @@ export async function GET(req: Request) {
     }
 
     const all = Array.from(agg.values());
-
-    // rankings
     const tarotistas = all.filter((x) => x.role === "tarotista");
 
     const rankMinutes: RankRow[] = [...tarotistas]
@@ -158,32 +173,17 @@ export async function GET(req: Request) {
         repite_pct: pct(x.repite_min, x.minutes),
       }));
 
-    const rankCaptadas: any[] = [...tarotistas]
+    const rankCaptadas = [...tarotistas]
       .sort((a, b) => b.captadas - a.captadas)
-      .map((x) => ({
-        worker_id: x.worker_id,
-        name: x.name,
-        captadas: x.captadas,
-      }));
+      .map((x) => ({ worker_id: x.worker_id, name: x.name, captadas: x.captadas }));
 
-    const rankCliente: any[] = [...tarotistas]
+    const rankCliente = [...tarotistas]
       .sort((a, b) => pct(b.cliente_min, b.minutes) - pct(a.cliente_min, a.minutes))
-      .map((x) => ({
-        worker_id: x.worker_id,
-        name: x.name,
-        cliente_pct: pct(x.cliente_min, x.minutes),
-      }));
+      .map((x) => ({ worker_id: x.worker_id, name: x.name, cliente_pct: pct(x.cliente_min, x.minutes) }));
 
-    const rankRepite: any[] = [...tarotistas]
+    const rankRepite = [...tarotistas]
       .sort((a, b) => pct(b.repite_min, b.minutes) - pct(a.repite_min, a.minutes))
-      .map((x) => ({
-        worker_id: x.worker_id,
-        name: x.name,
-        repite_pct: pct(x.repite_min, x.minutes),
-      }));
-
-    // my earnings (si es tarotista/central solo como placeholder, sin romper)
-    const myEarnings = null;
+      .map((x) => ({ worker_id: x.worker_id, name: x.name, repite_pct: pct(x.repite_min, x.minutes) }));
 
     return NextResponse.json({
       ok: true,
@@ -195,7 +195,7 @@ export async function GET(req: Request) {
         cliente_pct: rankCliente,
         captadas: rankCaptadas,
       },
-      myEarnings,
+      myEarnings: null,
       winnerTeam: null,
       bonusRules: [],
     });
