@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
+import { Badge } from "@/components/ui/Badge";
+import { QuickLink } from "@/components/ui/QuickLink";
 
 function fmt(n: any) {
   return (Number(n) || 0).toLocaleString("es-ES");
@@ -63,9 +66,6 @@ function labelRanking(k: string) {
   if (key === "cliente_pct") return "Clientes %";
   if (key === "repite_pct") return "Repite %";
   if (key === "minutes") return "Minutos";
-  if (key === "team_win") return "Equipo ganador (central)";
-  if (key === "captadas_steps") return "Captadas por tramos (sin límite)";
-  if (key === "improve_repite") return "Mejora Repite % vs mes anterior";
   return k;
 }
 
@@ -86,21 +86,6 @@ function formatHMS(sec: number) {
   return `${pad(hh)}:${pad(mm)}:${pad(ss)}`;
 }
 
-function pill(state: PresenceState) {
-  const base: any = {
-    display: "inline-block",
-    padding: "6px 10px",
-    borderRadius: 999,
-    fontWeight: 900,
-    border: "1px solid #ddd",
-    fontSize: 12,
-  };
-  if (state === "online") return <span style={{ ...base, background: "#eaffea" }}>ONLINE</span>;
-  if (state === "pause") return <span style={{ ...base, background: "#fff6dd" }}>PAUSA</span>;
-  if (state === "bathroom") return <span style={{ ...base, background: "#e8f4ff" }}>BAÑO</span>;
-  return <span style={{ ...base, background: "#f4f4f4" }}>OFFLINE</span>;
-}
-
 export default function PanelPage() {
   const router = useRouter();
 
@@ -114,12 +99,9 @@ export default function PanelPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<string | null>(null);
 
-  // Cronómetro
+  // Crono
   const [elapsedSec, setElapsedSec] = useState(0);
   const tickRef = useRef<any>(null);
-
-  // Admin: pendientes (incidencias)
-  const [pendingCount, setPendingCount] = useState<number | null>(null);
 
   const isLogged = pState !== "offline";
 
@@ -128,7 +110,6 @@ export default function PanelPage() {
     return data.session?.access_token || null;
   }
 
-  // ✅ Presencia REAL desde backend
   async function loadPresence() {
     try {
       const token = await getToken();
@@ -149,40 +130,6 @@ export default function PanelPage() {
       setStartedAt(j.started_at || null);
     } catch {
       // no rompemos el panel
-    }
-  }
-
-  async function loadAdminPending() {
-    try {
-      // solo si eres admin (si no, ni lo intentes)
-      if (!data?.user?.isAdmin) return;
-
-      const token = await getToken();
-      if (!token) return;
-
-      const res = await fetch("/api/admin/incidents/pending", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      const j = await res.json().catch(() => null);
-      if (!j?.ok) {
-        setPendingCount(null);
-        return;
-      }
-
-      // soporta varios formatos (count / rows.length)
-      const c =
-        typeof j.count === "number"
-          ? j.count
-          : Array.isArray(j.rows)
-          ? j.rows.length
-          : Array.isArray(j.items)
-          ? j.items.length
-          : null;
-
-      setPendingCount(c);
-    } catch {
-      setPendingCount(null);
     }
   }
 
@@ -208,15 +155,9 @@ export default function PanelPage() {
 
       setData(j);
 
-      // presencia solo para central/tarotista
       const role = j?.user?.worker?.role || null;
       if (role === "tarotista" || role === "central") {
         await loadPresence();
-      }
-
-      // admin pendientes
-      if (j?.user?.isAdmin) {
-        await loadAdminPending();
       }
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
@@ -301,10 +242,7 @@ export default function PanelPage() {
     }
 
     const startMs = new Date(startedAt).getTime();
-    const update = () => {
-      const now = Date.now();
-      setElapsedSec(Math.max(0, Math.floor((now - startMs) / 1000)));
-    };
+    const update = () => setElapsedSec(Math.max(0, Math.floor((Date.now() - startMs) / 1000)));
     update();
 
     tickRef.current = setInterval(update, 1000);
@@ -339,152 +277,98 @@ export default function PanelPage() {
     return "";
   }
 
-  const bonusRulesGrouped = useMemo(() => {
-    const rules = (data?.bonusRules || []).filter((r) => String(r.ranking_type || "").toLowerCase() !== "team_winner");
-    const map = new Map<string, any[]>();
-    for (const r of rules) {
-      const key = `${r.role}::${r.ranking_type}`;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(r);
-    }
-    for (const [, arr] of map) arr.sort((a, b) => a.position - b.position);
-    return map;
-  }, [data?.bonusRules]);
+  const stateTone = pState === "online" ? "ok" : pState === "pause" || pState === "bathroom" ? "warn" : "neutral";
+  const stateText =
+    pState === "online" ? "ONLINE" : pState === "pause" ? "PAUSA" : pState === "bathroom" ? "BAÑO" : "OFFLINE";
+
+  const totalEur = data?.myEarnings?.amount_total_eur ?? null;
+  const minutesTotal = data?.myEarnings?.minutes_total ?? null;
+  const captadasTotal = data?.myEarnings?.captadas ?? null;
 
   return (
-    <div style={{ padding: 20, maxWidth: 1100 }}>
-      <h1 style={{ marginTop: 0 }}>Panel</h1>
+    <div style={{ display: "grid", gap: 14 }}>
+      {/* Título + acciones */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <h1 style={{ margin: 0 }}>Panel</h1>
 
-      {/* Barra de acciones */}
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-        <button
-          onClick={load}
-          disabled={loading}
-          style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 800 }}
-        >
-          {loading ? "Actualizando..." : "Actualizar"}
-        </button>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button
+            onClick={load}
+            disabled={loading}
+            style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900 }}
+          >
+            {loading ? "Actualizando..." : "Actualizar"}
+          </button>
 
-        <button
-          onClick={logout}
-          style={{ padding: 10, borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", fontWeight: 800 }}
-        >
-          Cerrar sesión
-        </button>
-
-        <a href="/panel/invoices" style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}>
-          Mis facturas →
-        </a>
-
-        {data?.user?.isAdmin ? (
-          <>
-            <a href="/admin" style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}>
-              Admin →
-            </a>
-            <a
-              href="/admin/live"
-              style={{ padding: 10, borderRadius: 10, border: "1px solid #111", textDecoration: "none", fontWeight: 900 }}
-            >
-              Presencia en directo →
-            </a>
-            <a
-              href="/admin/workers"
-              style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}
-            >
-              Trabajadores →
-            </a>
-          </>
-        ) : null}
+          <button
+            onClick={logout}
+            style={{
+              padding: 10,
+              borderRadius: 10,
+              border: "1px solid #111",
+              background: "#111",
+              color: "#fff",
+              fontWeight: 900,
+            }}
+          >
+            Cerrar sesión
+          </button>
+        </div>
       </div>
 
       {err ? (
-        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10, marginBottom: 12 }}>
-          {err}
-        </div>
+        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
       ) : null}
 
-      {/* ✅ DASHBOARD RESUMEN (tarjetas) */}
-      <div
-        style={{
-          border: "1px solid #ddd",
-          borderRadius: 14,
-          padding: 14,
-          marginBottom: 14,
-        }}
-      >
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
-          {/* Usuario */}
-          <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-            <div style={{ color: "#666", fontSize: 12 }}>Usuario</div>
-            <div style={{ fontWeight: 900, marginTop: 4 }}>{me?.display_name || "—"}</div>
-            <div style={{ color: "#666", marginTop: 4 }}>
-              Rol: <b>{labelRole(me?.role || "—")}</b>
-            </div>
-            <div style={{ color: "#666", marginTop: 4 }}>
-              Mes: <b>{data?.month_date || "—"}</b>
-            </div>
-          </div>
+      {/* Cards arriba */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+        <Card>
+          <CardTitle>Estado</CardTitle>
+          <CardValue>
+            <Badge tone={stateTone as any}>{stateText}</Badge>
+          </CardValue>
+          <CardHint>
+            {sessionId ? <>Sesión: <b>{sessionId.slice(0, 8)}…</b></> : "—"}
+          </CardHint>
+        </Card>
 
-          {/* Presencia */}
-          <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-            <div style={{ color: "#666", fontSize: 12 }}>Presencia</div>
-            <div style={{ marginTop: 6 }}>{pill(pState)}</div>
-            <div style={{ marginTop: 10, color: "#666" }}>
-              Tiempo: <b>{formatHMS(elapsedSec)}</b>
-            </div>
-            {sessionId ? <div style={{ marginTop: 6, color: "#999", fontSize: 12 }}>Sesión {sessionId.slice(0, 8)}…</div> : null}
-          </div>
+        <Card>
+          <CardTitle>Tiempo logueado</CardTitle>
+          <CardValue>{formatHMS(elapsedSec)}</CardValue>
+          <CardHint>Se actualiza en tiempo real.</CardHint>
+        </Card>
 
-          {/* Ganado */}
-          <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-            <div style={{ color: "#666", fontSize: 12 }}>Ganado este mes</div>
-            {data?.myEarnings ? (
-              <>
-                <div style={{ fontWeight: 900, marginTop: 6, fontSize: 18 }}>{eur(data.myEarnings.amount_total_eur)}</div>
-                <div style={{ color: "#666", marginTop: 6 }}>
-                  Base: <b>{eur(data.myEarnings.amount_base_eur)}</b> · Bonos: <b>{eur(data.myEarnings.amount_bonus_eur)}</b>
-                </div>
-                <div style={{ color: "#666", marginTop: 6 }}>
-                  Minutos: <b>{fmt(data.myEarnings.minutes_total)}</b> · Captadas: <b>{fmt(data.myEarnings.captadas)}</b>
-                </div>
-              </>
-            ) : (
-              <div style={{ marginTop: 6, color: "#666" }}>Sin cálculo todavía.</div>
-            )}
-          </div>
+        <Card>
+          <CardTitle>Total € este mes</CardTitle>
+          <CardValue>{totalEur === null ? "—" : eur(totalEur)}</CardValue>
+          <CardHint>
+            Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas:{" "}
+            <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
+          </CardHint>
+        </Card>
 
-          {/* Admin: pendientes */}
-          {data?.user?.isAdmin ? (
-            <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-              <div style={{ color: "#666", fontSize: 12 }}>Incidencias pendientes</div>
-              <div style={{ fontWeight: 900, marginTop: 6, fontSize: 18 }}>
-                {pendingCount === null ? "—" : pendingCount}
-              </div>
-              <div style={{ color: "#666", marginTop: 6, fontSize: 12 }}>
-                (Si es 0 y debería haber, lo revisamos luego)
-              </div>
-            </div>
-          ) : null}
-        </div>
+        <Card>
+          <CardTitle>Mi posición (ranking actual)</CardTitle>
+          <CardValue>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</CardValue>
+          <CardHint>Según el ranking seleccionado abajo.</CardHint>
+        </Card>
       </div>
 
-      {/* ✅ CONTROL HORARIO (botones + crono) */}
-      {me?.role === "tarotista" || me?.role === "central" ? (
-        <div style={{ border: "1px solid #111", borderRadius: 14, padding: 14, marginBottom: 14 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <div>
-              <div style={{ fontWeight: 900 }}>Control horario</div>
-              <div style={{ color: "#666", marginTop: 4 }}>
-                Estado: {pill(pState)}{" "}
-                {sessionId ? <span style={{ color: "#999" }}>· sesión {sessionId.slice(0, 8)}…</span> : null}
-              </div>
-            </div>
+      {/* Accesos rápidos */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+        {data?.user?.isAdmin ? <QuickLink href="/admin" title="Ir a Admin" desc="Presencia, incidencias, trabajadores y más." /> : null}
+        <QuickLink href="/panel/invoices" title="Mis facturas" desc="Descarga y revisa tus facturas." />
+        <QuickLink href="/panel" title="Panel" desc="Resumen del mes, rankings y estado." />
+      </div>
 
-            <div style={{ textAlign: "right" }}>
-              <div style={{ color: "#666", fontSize: 12 }}>Tiempo logueado</div>
-              <div style={{ fontSize: 26, fontWeight: 900 }}>{formatHMS(elapsedSec)}</div>
-            </div>
-          </div>
+      {/* Control horario */}
+      {(me?.role === "tarotista" || me?.role === "central") ? (
+        <Card>
+          <CardTitle>Control horario</CardTitle>
+          <CardHint>
+            Usuario: <b>{me?.display_name || "—"}</b> · Rol: <b>{labelRole(me?.role || "—")}</b> · Mes:{" "}
+            <b>{data?.month_date || "—"}</b>
+          </CardHint>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
             <button
@@ -535,34 +419,34 @@ export default function PanelPage() {
               Desloguear
             </button>
 
-            <button onClick={loadPresence} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}>
+            <button
+              onClick={loadPresence}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}
+            >
               Refrescar estado
             </button>
           </div>
-
-          <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
-            Estado persistente: aunque refresques la página, seguirá ONLINE si hay sesión abierta.
-          </div>
-        </div>
+        </Card>
       ) : null}
 
-      {/* TOP 3 */}
-      <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <h2 style={{ marginTop: 0, fontSize: 18 }}>Top 3 del mes</h2>
+      {/* Top 3 */}
+      <Card>
+        <CardTitle>Top 3 del mes</CardTitle>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginTop: 10 }}>
           {(["minutes", "repite_pct", "cliente_pct", "captadas"] as RankKey[]).map((k) => (
             <div key={k} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-              <div style={{ fontWeight: 900, marginBottom: 6 }}>{labelRanking(k)}</div>
+              <div style={{ fontWeight: 1000, marginBottom: 6 }}>{labelRanking(k)}</div>
+
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <tbody>
                   {top3For(k).map((r: any, idx: number) => (
                     <tr key={r.worker_id || `${k}-${idx}`}>
-                      <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3", width: 48 }}>
+                      <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3", width: 54 }}>
                         {medal(idx + 1)} {idx + 1}
                       </td>
                       <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                      <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 800 }}>
+                      <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>
                         {valueOf(k, r)}
                       </td>
                     </tr>
@@ -579,56 +463,13 @@ export default function PanelPage() {
             </div>
           ))}
         </div>
-      </div>
+      </Card>
 
-      {/* BONOS (solo reglas) */}
-      <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <h2 style={{ marginTop: 0, fontSize: 18 }}>Bonos (reglas)</h2>
+      {/* Rankings */}
+      <Card>
+        <CardTitle>Rankings (tabla completa)</CardTitle>
 
-        {[...bonusRulesGrouped.keys()].length === 0 ? (
-          <div style={{ color: "#666" }}>No hay reglas activas.</div>
-        ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
-            {[...bonusRulesGrouped.entries()].map(([key, rules]) => {
-              const [role, ranking_type] = key.split("::");
-              return (
-                <div key={key} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-                  <div style={{ fontWeight: 900, marginBottom: 6 }}>
-                    {labelRole(role)} · {labelRanking(ranking_type)}
-                  </div>
-
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr>
-                        <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Pos</th>
-                        <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Bono</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rules.map((r: any) => (
-                        <tr key={`${key}-${r.position}`}>
-                          <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
-                            {medal(r.position)} {r.position}
-                          </td>
-                          <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 800 }}>
-                            {eur(r.amount_eur)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* RANKINGS */}
-      <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <h2 style={{ marginTop: 0, fontSize: 18 }}>Rankings (tabla completa)</h2>
-
-        <div style={{ marginBottom: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <select value={rankType} onChange={(e) => setRankType(e.target.value as RankKey)} style={{ padding: 8 }}>
             <option value="minutes">Ranking por Minutos</option>
             <option value="repite_pct">Ranking por Repite %</option>
@@ -641,49 +482,52 @@ export default function PanelPage() {
           </div>
         </div>
 
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
-              <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
-              <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Valor</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ranks.map((r: any, idx: number) => {
-              const pos = idx + 1;
-              const isMe = me?.display_name === r.name;
-              const value =
-                rankType === "minutes"
-                  ? fmt(r.minutes)
-                  : rankType === "captadas"
-                  ? fmt(r.captadas)
-                  : rankType === "repite_pct"
-                  ? `${r.repite_pct} %`
-                  : rankType === "cliente_pct"
-                  ? `${r.cliente_pct} %`
-                  : "";
-
-              return (
-                <tr key={r.worker_id} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 800 : 400 }}>
-                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
-                    {medal(pos)} {pos}
-                  </td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{value}</td>
-                </tr>
-              );
-            })}
-            {ranks.length === 0 ? (
+        <div style={{ overflowX: "auto", marginTop: 10 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 780 }}>
+            <thead>
               <tr>
-                <td colSpan={3} style={{ padding: 10, color: "#666" }}>
-                  Sin datos todavía.
-                </td>
+                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
+                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Nombre</th>
+                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Valor</th>
               </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {ranks.map((r: any, idx: number) => {
+                const pos = idx + 1;
+                const isMe = me?.display_name === r.name;
+                const value =
+                  rankType === "minutes"
+                    ? fmt(r.minutes)
+                    : rankType === "captadas"
+                    ? fmt(r.captadas)
+                    : rankType === "repite_pct"
+                    ? `${r.repite_pct} %`
+                    : rankType === "cliente_pct"
+                    ? `${r.cliente_pct} %`
+                    : "";
+
+                return (
+                  <tr key={r.worker_id} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 900 : 400 }}>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
+                      {medal(pos)} {pos}
+                    </td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{value}</td>
+                  </tr>
+                );
+              })}
+              {ranks.length === 0 ? (
+                <tr>
+                  <td colSpan={3} style={{ padding: 10, color: "#666" }}>
+                    Sin datos.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 }
+
