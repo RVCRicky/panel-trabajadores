@@ -23,7 +23,8 @@ type DashboardResp = {
   ok: boolean;
   error?: string;
 
-  month_date: string;
+  month_date: string | null;
+  months?: string[]; // ✅ NUEVO (selector de mes)
   user: { isAdmin: boolean; worker: any | null };
 
   rankings: {
@@ -86,13 +87,28 @@ function formatHMS(sec: number) {
   return `${pad(hh)}:${pad(mm)}:${pad(ss)}`;
 }
 
+function formatMonthLabel(isoMonthDate: string) {
+  // isoMonthDate: "YYYY-MM-01"
+  const [y, m] = isoMonthDate.split("-");
+  const monthNum = Number(m);
+  const yearNum = Number(y);
+  if (!monthNum || !yearNum) return isoMonthDate;
+
+  const date = new Date(yearNum, monthNum - 1, 1);
+  return date.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
+}
+
 export default function PanelPage() {
   const router = useRouter();
 
   const [rankType, setRankType] = useState<RankKey>("minutes");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
   const [data, setData] = useState<DashboardResp | null>(null);
+
+  // ✅ selector de mes
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   // Presencia (persistente)
   const [pState, setPState] = useState<PresenceState>("offline");
@@ -133,9 +149,10 @@ export default function PanelPage() {
     }
   }
 
-  async function load() {
+  async function load(monthOverride?: string | null) {
     setErr(null);
     setLoading(true);
+
     try {
       const token = await getToken();
       if (!token) {
@@ -143,7 +160,10 @@ export default function PanelPage() {
         return;
       }
 
-      const res = await fetch("/api/dashboard/full", {
+      const month = monthOverride ?? selectedMonth ?? null;
+      const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
+
+      const res = await fetch(`/api/dashboard/full${qs}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
 
@@ -154,6 +174,11 @@ export default function PanelPage() {
       }
 
       setData(j);
+
+      // ✅ sincroniza selector con lo que diga el backend
+      if (j.month_date && j.month_date !== selectedMonth) {
+        setSelectedMonth(j.month_date);
+      }
 
       const role = j?.user?.worker?.role || null;
       if (role === "tarotista" || role === "central") {
@@ -228,9 +253,19 @@ export default function PanelPage() {
   }
 
   useEffect(() => {
-    load();
+    load(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ✅ si cambia el mes (por selector), recargar
+  useEffect(() => {
+    if (!selectedMonth) return;
+    // si aún no hay data, espera a la primera carga
+    if (!data) return;
+    if (data.month_date === selectedMonth) return;
+    load(selectedMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMonth]);
 
   // Cronómetro
   useEffect(() => {
@@ -285,15 +320,45 @@ export default function PanelPage() {
   const minutesTotal = data?.myEarnings?.minutes_total ?? null;
   const captadasTotal = data?.myEarnings?.captadas ?? null;
 
+  const months = data?.months || [];
+  const monthLabel = selectedMonth ? formatMonthLabel(selectedMonth) : data?.month_date ? formatMonthLabel(data.month_date) : "—";
+
   return (
     <div style={{ display: "grid", gap: 14 }}>
       {/* Título + acciones */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <h1 style={{ margin: 0 }}>Panel</h1>
 
+        {/* ✅ Selector de mes */}
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ color: "#666", fontWeight: 800 }}>Mes:</span>
+
+          <select
+            value={selectedMonth || data?.month_date || ""}
+            onChange={(e) => setSelectedMonth(e.target.value || null)}
+            style={{ padding: 8, borderRadius: 10, border: "1px solid #ddd", minWidth: 220 }}
+            disabled={loading || months.length === 0}
+            title={months.length === 0 ? "No hay meses disponibles" : "Selecciona mes"}
+          >
+            {months.length === 0 ? (
+              <option value="">{data?.month_date || "—"}</option>
+            ) : (
+              months.map((m) => (
+                <option key={m} value={m}>
+                  {formatMonthLabel(m)}
+                </option>
+              ))
+            )}
+          </select>
+
+          <span style={{ color: "#666" }}>
+            <b>{monthLabel}</b>
+          </span>
+        </div>
+
         <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
           <button
-            onClick={load}
+            onClick={() => load(selectedMonth)}
             disabled={loading}
             style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900 }}
           >
@@ -327,9 +392,7 @@ export default function PanelPage() {
           <CardValue>
             <Badge tone={stateTone as any}>{stateText}</Badge>
           </CardValue>
-          <CardHint>
-            {sessionId ? <>Sesión: <b>{sessionId.slice(0, 8)}…</b></> : "—"}
-          </CardHint>
+          <CardHint>{sessionId ? <>Sesión: <b>{sessionId.slice(0, 8)}…</b></> : "—"}</CardHint>
         </Card>
 
         <Card>
@@ -362,12 +425,12 @@ export default function PanelPage() {
       </div>
 
       {/* Control horario */}
-      {(me?.role === "tarotista" || me?.role === "central") ? (
+      {me?.role === "tarotista" || me?.role === "central" ? (
         <Card>
           <CardTitle>Control horario</CardTitle>
           <CardHint>
             Usuario: <b>{me?.display_name || "—"}</b> · Rol: <b>{labelRole(me?.role || "—")}</b> · Mes:{" "}
-            <b>{data?.month_date || "—"}</b>
+            <b>{selectedMonth || data?.month_date || "—"}</b>
           </CardHint>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
@@ -419,10 +482,7 @@ export default function PanelPage() {
               Desloguear
             </button>
 
-            <button
-              onClick={loadPresence}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}
-            >
+            <button onClick={loadPresence} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}>
               Refrescar estado
             </button>
           </div>
@@ -530,4 +590,3 @@ export default function PanelPage() {
     </div>
   );
 }
-
