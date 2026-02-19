@@ -9,6 +9,12 @@ function getEnv(name: string) {
   return v;
 }
 
+function bearer(req: Request) {
+  const h = req.headers.get("authorization") || "";
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  return m?.[1] || null;
+}
+
 function pct(part: number, total: number) {
   if (!total || total <= 0) return 0;
   return Math.round((part / total) * 10000) / 100;
@@ -84,7 +90,7 @@ async function closeMonth(db: any, month_date: string): Promise<CloseResult> {
   const map = new Map<string, Agg>();
 
   for (const r of (rows as any[]) || []) {
-    const w = r.worker;
+    const w = (r as any).worker;
     if (!w) continue;
     const id = w.id as string;
 
@@ -105,14 +111,15 @@ async function closeMonth(db: any, month_date: string): Promise<CloseResult> {
     }
 
     const it = map.get(id)!;
-    const mins = Number(r.minutes) || 0;
+    const mins = Number((r as any).minutes) || 0;
     it.minutes += mins;
-    if (r.captado) it.captadas += 1;
+    if ((r as any).captado) it.captadas += 1;
 
-    if (r.codigo === "free") it.free += mins;
-    if (r.codigo === "rueda") it.rueda += mins;
-    if (r.codigo === "cliente") it.cliente += mins;
-    if (r.codigo === "repite") it.repite += mins;
+    const codigo = String((r as any).codigo || "").toLowerCase();
+    if (codigo === "free") it.free += mins;
+    if (codigo === "rueda") it.rueda += mins;
+    if (codigo === "cliente") it.cliente += mins;
+    if (codigo === "repite") it.repite += mins;
   }
 
   for (const it of map.values()) {
@@ -155,7 +162,13 @@ async function closeMonth(db: any, month_date: string): Promise<CloseResult> {
       const rr = (rules as any[]).find(
         (x) => x.ranking_type === ranking_type && x.position === pos && x.role === "tarotista"
       );
-      out.push({ month_date, worker_id: list[i].worker_id, ranking_type, position: pos, amount: rr ? Number(rr.amount) : 0 });
+      out.push({
+        month_date,
+        worker_id: list[i].worker_id,
+        ranking_type,
+        position: pos,
+        amount: rr ? Number((rr as any).amount) : 0,
+      });
     }
     return out;
   }
@@ -172,13 +185,13 @@ async function closeMonth(db: any, month_date: string): Promise<CloseResult> {
 
   const teamMembers = new Map<string, string[]>();
   for (const mm of (members as any[]) || []) {
-    const tid = mm.team_id as string;
-    const wid = mm.tarotista_worker_id as string;
+    const tid = (mm as any).team_id as string;
+    const wid = (mm as any).tarotista_worker_id as string;
     if (!teamMembers.has(tid)) teamMembers.set(tid, []);
     teamMembers.get(tid)!.push(wid);
   }
 
-  const teamStats = (teams as any[] || [])
+  const teamStats = ((teams as any[]) || [])
     .filter((t) => t.is_active)
     .map((t) => {
       const tid = t.id as string;
@@ -195,7 +208,12 @@ async function closeMonth(db: any, month_date: string): Promise<CloseResult> {
         total_cliente += a.cliente;
       }
 
-      return { team_id: tid, total_minutes, total_captadas, total_cliente_pct: pct(total_cliente, total_minutes) };
+      return {
+        team_id: tid,
+        total_minutes,
+        total_captadas,
+        total_cliente_pct: pct(total_cliente, total_minutes),
+      };
     })
     .sort((a, b) => b.total_minutes - a.total_minutes);
 
@@ -214,14 +232,16 @@ async function closeMonth(db: any, month_date: string): Promise<CloseResult> {
   if (teamMonthRows.length) await db.from("team_monthly_results").insert(teamMonthRows);
 
   if (winnerTeam) {
-    const winnerTeamFull = (teams as any[]).find((x) => x.id === winnerTeam.team_id);
+    const winnerTeamFull = ((teams as any[]) || []).find((x) => x.id === winnerTeam.team_id);
     const centralId = winnerTeamFull?.central_worker_id;
 
     const rr = (rules as any[]).find((x) => x.ranking_type === "team_win" && x.position === 1 && x.role === "central");
-    const amount = rr ? Number(rr.amount) : 0;
+    const amount = rr ? Number((rr as any).amount) : 0;
 
     if (centralId) {
-      await db.from("monthly_bonus_results").insert([{ month_date, worker_id: centralId, ranking_type: "team_win", position: 1, amount }]);
+      await db
+        .from("monthly_bonus_results")
+        .insert([{ month_date, worker_id: centralId, ranking_type: "team_win", position: 1, amount }]);
     }
   }
 
@@ -236,17 +256,16 @@ async function closeMonth(db: any, month_date: string): Promise<CloseResult> {
 export async function POST(req: Request) {
   try {
     const secret = getEnv("CRON_SECRET");
-    const got = req.headers.get("x-cron-secret") || "";
-
+    const got = bearer(req);
     if (got !== secret) return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
 
     const supabaseUrl = getEnv("NEXT_PUBLIC_SUPABASE_URL");
     const serviceKey = getEnv("SUPABASE_SERVICE_ROLE_KEY");
-    const db = createClient(supabaseUrl, serviceKey);
+    const db = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
     const targetMonth = prevMonthISO(new Date());
-
     const result = await closeMonth(db, targetMonth);
+
     return NextResponse.json({ ok: true, targetMonth, ...result });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
