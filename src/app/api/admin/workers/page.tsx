@@ -1,7 +1,6 @@
-// src/app/admin/workers/page.tsx
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -21,135 +20,87 @@ type MeOk = {
 type MeErr = { ok: false; error: string };
 type MeResp = MeOk | MeErr;
 
+type WorkerRow = {
+  id: string; // normalmente = auth.users.id
+  display_name: string;
+  role: WorkerRole;
+  is_active: boolean;
+};
+
 export default function AdminWorkersPage() {
   const router = useRouter();
 
   const [status, setStatus] = useState("Cargando...");
   const [meName, setMeName] = useState("");
 
-  // Crear trabajador
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [role, setRole] = useState<WorkerRole>("tarotista");
-  const [displayName, setDisplayName] = useState("");
-  const [externalRef, setExternalRef] = useState("");
+  // LISTADO trabajadores
+  const [workers, setWorkers] = useState<WorkerRow[]>([]);
+  const [loadingWorkers, setLoadingWorkers] = useState(false);
+  const [workersErr, setWorkersErr] = useState<string | null>(null);
+  const [q, setQ] = useState("");
 
-  const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  // Actualizar credenciales
+  // ACTUALIZAR credenciales
   const [targetWorkerId, setTargetWorkerId] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
-
   const [updating, setUpdating] = useState(false);
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
 
+  async function getToken() {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token || null;
+  }
+
+  // comprobar admin
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      const session = data.session;
+      const token = await getToken();
+      if (!token) return router.replace("/login");
 
-      if (!session?.access_token) {
-        router.replace("/login");
-        return;
-      }
+      const res = await fetch("/api/me", { headers: { Authorization: `Bearer ${token}` } });
+      const json = (await res.json().catch(() => null)) as MeResp | null;
 
-      const res = await fetch("/api/me", {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-
-      const json = (await res.json()) as MeResp;
-
-      if (!json.ok) {
-        setStatus(`Error /api/me: ${(json as any).error}`);
-        return;
-      }
-
-      if (!json.worker) {
-        setStatus("No tienes perfil en workers.");
-        return;
-      }
-
-      if (!json.worker.is_active) {
-        setStatus("Usuario desactivado.");
-        return;
-      }
-
-      if (json.worker.role !== "admin") {
-        router.replace("/panel");
-        return;
-      }
+      if (!json?.ok) return setStatus(`Error /api/me: ${(json as any)?.error || "UNKNOWN"}`);
+      if (!json.worker) return setStatus("No tienes perfil en workers.");
+      if (!json.worker.is_active) return setStatus("Usuario desactivado.");
+      if (json.worker.role !== "admin") return router.replace("/panel");
 
       setMeName(json.worker.display_name);
       setStatus("OK");
     })();
   }, [router]);
 
-  async function onCreate(e: React.FormEvent) {
-    e.preventDefault();
-    setMsg(null);
-
-    const e2 = email.trim().toLowerCase();
-    if (!e2 || !password || !displayName.trim()) {
-      setMsg("Rellena email, password y nombre.");
-      return;
-    }
-
-    setSaving(true);
+  async function loadWorkers() {
+    setWorkersErr(null);
+    setLoadingWorkers(true);
     try {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-      if (!token) {
-        router.replace("/login");
+      const token = await getToken();
+      if (!token) return router.replace("/login");
+
+      // OJO: esto lee tu tabla worker_profiles directamente desde el cliente.
+      // Si tu RLS lo permite para admin, perfecto.
+      // Si NO lo permite, te hago un endpoint /api/admin/workers/list y listo.
+      const { data, error } = await supabase
+        .from("worker_profiles")
+        .select("id,display_name,role,is_active")
+        .order("display_name", { ascending: true });
+
+      if (error) {
+        setWorkersErr(error.message);
         return;
       }
 
-      const r = await fetch("/api/admin/create-worker", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          email: e2,
-          password,
-          role,
-          display_name: displayName.trim(),
-          external_ref: externalRef.trim() || null,
-        }),
-      });
-
-      const raw = await r.text();
-      let j: any = null;
-      try {
-        j = raw ? JSON.parse(raw) : null;
-      } catch {
-        j = null;
-      }
-
-      if (!r.ok) {
-        setMsg(`Error HTTP ${r.status}. Respuesta: ${raw || "(vacía)"}`);
-        return;
-      }
-
-      if (!j?.ok) {
-        setMsg(`Error: ${j?.error || raw || "UNKNOWN"}`);
-        return;
-      }
-
-      setMsg(`✅ Creado: ${e2} (user_id: ${j.user_id})`);
-      setEmail("");
-      setPassword("");
-      setDisplayName("");
-      setExternalRef("");
-      setRole("tarotista");
-    } catch (err: any) {
-      setMsg(err?.message || "Error inesperado");
+      setWorkers((data as any[]) as WorkerRow[]);
     } finally {
-      setSaving(false);
+      setLoadingWorkers(false);
     }
   }
+
+  const filtered = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    if (!t) return workers;
+    return workers.filter((w) => (w.display_name || "").toLowerCase().includes(t));
+  }, [workers, q]);
 
   async function onUpdateCredentials(e: React.FormEvent) {
     e.preventDefault();
@@ -159,23 +110,13 @@ export default function AdminWorkersPage() {
     const e2 = newEmail.trim().toLowerCase();
     const p2 = newPassword;
 
-    if (!wid) {
-      setUpdateMsg("Pon el Worker UUID (auth.users.id).");
-      return;
-    }
-    if (!e2 && !p2) {
-      setUpdateMsg("Pon email y/o contraseña.");
-      return;
-    }
+    if (!wid) return setUpdateMsg("Selecciona un trabajador (o pega el UUID).");
+    if (!e2 && !p2) return setUpdateMsg("Pon email y/o contraseña.");
 
     setUpdating(true);
     try {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-      if (!token) {
-        router.replace("/login");
-        return;
-      }
+      const token = await getToken();
+      if (!token) return router.replace("/login");
 
       const r = await fetch("/api/admin/workers/credentials", {
         method: "POST",
@@ -218,111 +159,135 @@ export default function AdminWorkersPage() {
   }
 
   return (
-    <div style={{ padding: 18, maxWidth: 720 }}>
-      <h1 style={{ marginTop: 0 }}>Admin · Trabajadores</h1>
+    <div style={{ padding: 18, maxWidth: 980 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <h1 style={{ margin: 0 }}>Admin · Trabajadores</h1>
+        <div style={{ marginLeft: "auto", color: "#666" }}>
+          Estado: <b style={{ color: "#111" }}>{status}</b>
+          {status === "OK" ? (
+            <>
+              {" "}
+              · Admin: <b style={{ color: "#111" }}>{meName}</b>
+            </>
+          ) : null}
+        </div>
 
-      <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <p style={{ margin: 0 }}>
-          Estado: <b>{status}</b>
-        </p>
-        {status === "OK" ? (
-          <p style={{ marginTop: 8, color: "#666" }}>
-            Admin: <b>{meName}</b>
-          </p>
-        ) : null}
+        <button
+          onClick={logout}
+          style={{
+            padding: 10,
+            borderRadius: 10,
+            border: "1px solid #111",
+            background: "#111",
+            color: "#fff",
+            cursor: "pointer",
+            fontWeight: 700,
+          }}
+        >
+          Cerrar sesión
+        </button>
       </div>
 
-      {/* Crear trabajador */}
+      {/* LISTA */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
-        <h2 style={{ marginTop: 0, fontSize: 18 }}>Crear trabajador</h2>
-
-        <form onSubmit={onCreate} style={{ display: "grid", gap: 10 }}>
-          <label style={{ display: "grid", gap: 6 }}>
-            <span>Email</span>
-            <input
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              type="email"
-              placeholder="persona@correo.com"
-              required
-              style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
-            />
-          </label>
-
-          <label style={{ display: "grid", gap: 6 }}>
-            <span>Password</span>
-            <input
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              type="text"
-              placeholder="contraseña temporal"
-              required
-              style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
-            />
-          </label>
-
-          <label style={{ display: "grid", gap: 6 }}>
-            <span>Nombre a mostrar</span>
-            <input
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              type="text"
-              placeholder="Ej: África"
-              required
-              style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
-            />
-          </label>
-
-          <label style={{ display: "grid", gap: 6 }}>
-            <span>Rol</span>
-            <select
-              value={role}
-              onChange={(e) => setRole(e.target.value as WorkerRole)}
-              style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
-            >
-              <option value="tarotista">Tarotista</option>
-              <option value="central">Central</option>
-              <option value="admin">Admin</option>
-            </select>
-          </label>
-
-          <label style={{ display: "grid", gap: 6 }}>
-            <span>External Ref (para casar con Google Sheets)</span>
-            <input
-              value={externalRef}
-              onChange={(e) => setExternalRef(e.target.value)}
-              type="text"
-              placeholder="Ej: africa / ext-101 / lo-que-uséis"
-              style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
-            />
-          </label>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>Seleccionar trabajador</h2>
 
           <button
-            type="submit"
-            disabled={saving || status !== "OK"}
+            onClick={loadWorkers}
+            disabled={loadingWorkers || status !== "OK"}
             style={{
-              padding: 12,
+              padding: 10,
               borderRadius: 10,
               border: "1px solid #111",
-              background: saving ? "#eee" : "#111",
-              color: saving ? "#111" : "#fff",
-              cursor: saving ? "not-allowed" : "pointer",
-              fontWeight: 700,
-              marginTop: 6,
+              background: loadingWorkers ? "#eee" : "#fff",
+              cursor: loadingWorkers ? "not-allowed" : "pointer",
+              fontWeight: 800,
             }}
           >
-            {saving ? "Creando..." : "Crear trabajador"}
+            {loadingWorkers ? "Cargando..." : "Cargar trabajadores"}
           </button>
 
-          {msg ? (
-            <div style={{ padding: 10, borderRadius: 10, background: "#f6f6f6", border: "1px solid #e5e5e5" }}>
-              {msg}
-            </div>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Buscar por nombre..."
+            style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc", minWidth: 240 }}
+          />
+
+          <div style={{ marginLeft: "auto", color: "#666" }}>
+            {workers.length ? (
+              <>
+                Total: <b style={{ color: "#111" }}>{workers.length}</b>
+              </>
+            ) : (
+              "—"
+            )}
+          </div>
+        </div>
+
+        {workersErr ? (
+          <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: "#fff3f3", border: "1px solid #ffcccc" }}>
+            {workersErr}
+          </div>
+        ) : null}
+
+        <div style={{ marginTop: 10, overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #eee" }}>Nombre</th>
+                <th style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #eee" }}>Rol</th>
+                <th style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #eee" }}>Activo</th>
+                <th style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #eee" }}>UUID</th>
+                <th style={{ textAlign: "right", padding: 8, borderBottom: "1px solid #eee" }}>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={5} style={{ padding: 10, color: "#666" }}>
+                    {workers.length === 0 ? "Pulsa “Cargar trabajadores”." : "Sin resultados."}
+                  </td>
+                </tr>
+              ) : (
+                filtered.slice(0, 50).map((w) => (
+                  <tr key={w.id}>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{w.display_name}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{w.role}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{w.is_active ? "sí" : "no"}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", fontFamily: "monospace", fontSize: 12 }}>{w.id}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>
+                      <button
+                        onClick={() => {
+                          setTargetWorkerId(w.id);
+                          setUpdateMsg(null);
+                        }}
+                        style={{
+                          padding: "8px 10px",
+                          borderRadius: 10,
+                          border: "1px solid #111",
+                          background: "#111",
+                          color: "#fff",
+                          cursor: "pointer",
+                          fontWeight: 800,
+                        }}
+                      >
+                        Usar
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+          {filtered.length > 50 ? (
+            <div style={{ marginTop: 8, color: "#666" }}>Mostrando 50 resultados (refina la búsqueda).</div>
           ) : null}
-        </form>
+        </div>
       </div>
 
-      {/* Cambiar email / contraseña */}
+      {/* CAMBIAR CREDENCIALES */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Cambiar email / contraseña</h2>
 
@@ -333,7 +298,7 @@ export default function AdminWorkersPage() {
               value={targetWorkerId}
               onChange={(e) => setTargetWorkerId(e.target.value)}
               type="text"
-              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              placeholder="Selecciona uno arriba o pega el UUID"
               style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
             />
           </label>
@@ -370,7 +335,7 @@ export default function AdminWorkersPage() {
               background: updating ? "#eee" : "#111",
               color: updating ? "#111" : "#fff",
               cursor: updating ? "not-allowed" : "pointer",
-              fontWeight: 700,
+              fontWeight: 800,
               marginTop: 6,
             }}
           >
@@ -389,21 +354,6 @@ export default function AdminWorkersPage() {
         <a href="/admin" style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}>
           ← Volver a Admin
         </a>
-
-        <button
-          onClick={logout}
-          style={{
-            padding: 10,
-            borderRadius: 10,
-            border: "1px solid #111",
-            background: "#111",
-            color: "#fff",
-            cursor: "pointer",
-            fontWeight: 600,
-          }}
-        >
-          Cerrar sesión
-        </button>
       </div>
     </div>
   );
