@@ -1,3 +1,4 @@
+// src/app/admin/workers/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -20,8 +21,8 @@ type MeErr = { ok: false; error: string };
 type MeResp = MeOk | MeErr;
 
 type WorkerRow = {
-  id: string;
-  display_name: string;
+  id: string; // normalmente = auth.users.id
+  name: string;
   role: WorkerRole;
   is_active: boolean;
 };
@@ -32,11 +33,13 @@ export default function AdminWorkersPage() {
   const [status, setStatus] = useState("Cargando...");
   const [meName, setMeName] = useState("");
 
+  // LISTADO trabajadores
   const [workers, setWorkers] = useState<WorkerRow[]>([]);
   const [loadingWorkers, setLoadingWorkers] = useState(false);
   const [workersErr, setWorkersErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
 
+  // ACTUALIZAR credenciales
   const [targetWorkerId, setTargetWorkerId] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -48,6 +51,7 @@ export default function AdminWorkersPage() {
     return data.session?.access_token || null;
   }
 
+  // comprobar admin
   useEffect(() => {
     (async () => {
       const token = await getToken();
@@ -70,15 +74,17 @@ export default function AdminWorkersPage() {
     setWorkersErr(null);
     setLoadingWorkers(true);
     try {
+      // ✅ TU TABLA REAL ES "workers"
       const { data, error } = await supabase
         .from("workers")
         .select("id,name,role,is_active")
-        .order("display_name", { ascending: true });
+        .order("name", { ascending: true });
 
       if (error) {
         setWorkersErr(error.message);
         return;
       }
+
       setWorkers((data as any[]) as WorkerRow[]);
     } finally {
       setLoadingWorkers(false);
@@ -171,13 +177,14 @@ export default function AdminWorkersPage() {
             background: "#111",
             color: "#fff",
             cursor: "pointer",
-            fontWeight: 800,
+            fontWeight: 900,
           }}
         >
           Cerrar sesión
         </button>
       </div>
 
+      {/* LISTA */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <h2 style={{ margin: 0, fontSize: 18 }}>Seleccionar trabajador</h2>
@@ -270,10 +277,12 @@ export default function AdminWorkersPage() {
               )}
             </tbody>
           </table>
+
           {filtered.length > 50 ? <div style={{ marginTop: 8, color: "#666" }}>Mostrando 50 resultados (refina la búsqueda).</div> : null}
         </div>
       </div>
 
+      {/* CAMBIAR CREDENCIALES */}
       <div style={{ marginTop: 14, border: "1px solid #ddd", borderRadius: 12, padding: 14 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>Cambiar email / contraseña</h2>
 
