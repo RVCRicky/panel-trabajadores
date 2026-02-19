@@ -53,7 +53,7 @@ export async function POST(req: Request) {
     const { data: caller, error: cErr } = await supabaseAdmin
       .from("workers")
       .select("role,is_active")
-      .eq("id", callerId)
+      .eq("user_id", callerId)
       .maybeSingle();
 
     if (cErr) return NextResponse.json({ ok: false, error: cErr.message }, { status: 400 });
