@@ -6,7 +6,7 @@
     },
     {
       "path": "/api/cron/rebuild-monthly",
-      "schedule": "0 * * * *"
+      "schedule": "15 3 * * *"
     }
   ]
 }
