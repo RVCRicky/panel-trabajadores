@@ -20,37 +20,18 @@ function normRole(r: any) {
   return String(r || "").trim().toLowerCase();
 }
 
-function normCode(c: any) {
-  return String(c || "").trim().toLowerCase();
-}
-
-/**
- * Normaliza nombres para comparaciones “de negocio”.
- * - lower
- * - quita espacios
- * - quita todo lo que no sea [a-z0-9]
- * Ej: "Call 111" -> "call111"
- */
-function normNameKey(n: any) {
-  return String(n || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "")
-    .replace(/[^a-z0-9]/g, "");
-}
-
-type RankRow = {
+type RankRowMinutes = {
   worker_id: string;
   name: string;
   minutes: number;
   captadas: number;
-  repite_pct: number;
   cliente_pct: number;
+  repite_pct: number;
 };
 
-function pct(n: number, d: number) {
-  if (!d) return 0;
-  return Math.round((n / d) * 1000) / 10; // 1 decimal
+function toNum(n: any) {
+  const x = Number(n);
+  return Number.isFinite(x) ? x : 0;
 }
 
 export async function GET(req: Request) {
@@ -78,23 +59,32 @@ export async function GET(req: Request) {
     if (!me) return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
     if (!(me as any).is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
 
-    // 3) último mes disponible (ignorando NULL)
-    const { data: lastMonthRow, error: emonth } = await db
-      .from("attendance_rows")
+    // 3) mes seleccionado (opcional) + lista de meses disponibles
+    const urlObj = new URL(req.url);
+    const monthParam = urlObj.searchParams.get("month_date"); // "YYYY-MM-01"
+    let month_date: string | null = monthParam || null;
+
+    // meses disponibles (para selector en UI)
+    const { data: monthsRows, error: emonths } = await db
+      .from("monthly_rankings")
       .select("month_date")
-      .not("month_date", "is", null)
       .order("month_date", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(36);
 
-    if (emonth) return NextResponse.json({ ok: false, error: emonth.message }, { status: 500 });
+    if (emonths) return NextResponse.json({ ok: false, error: emonths.message }, { status: 500 });
 
-    const month_date: string | null = (lastMonthRow as any)?.month_date || null;
+    const months = Array.from(
+      new Set((monthsRows || []).map((r: any) => r.month_date).filter(Boolean))
+    ) as string[];
+
+    // si no pasan month_date, usar el más reciente
+    if (!month_date) month_date = months[0] || null;
 
     if (!month_date) {
       return NextResponse.json({
         ok: true,
         month_date: null,
+        months: [],
         user: { isAdmin: normRole((me as any).role) === "admin", worker: me },
         rankings: { minutes: [], repite_pct: [], cliente_pct: [], captadas: [] },
         myEarnings: null,
@@ -103,147 +93,65 @@ export async function GET(req: Request) {
       });
     }
 
-    // 4) códigos excluidos (opcional)
-    let excludedCodes = new Set<string>();
-    const exCodes = await db.from("ranking_excluded_codes").select("codigo");
-    if (!exCodes.error) excludedCodes = new Set((exCodes.data || []).map((r: any) => normCode(r.codigo)));
-    else excludedCodes = new Set(["call111"]); // fallback legacy
-
-    // 5) workers excluidos por id (tu regla para Call 111 debe estar aquí)
-    let excludedWorkers = new Set<string>();
-    const exWorkers = await db.from("ranking_excluded_workers").select("worker_id");
-    if (!exWorkers.error) excludedWorkers = new Set((exWorkers.data || []).map((r: any) => String(r.worker_id)));
-
-    // 6) nombres excluidos (blindaje extra)
-    // "Call 111" -> normNameKey => "call111"
-    const excludedNameKeys = new Set<string>(["call111"]);
-
-    // 7) filas del mes
-    const { data: rowsRaw, error: erows } = await db
-      .from("attendance_rows")
-      .select("worker_id, minutes, calls, codigo, captado")
+    // 4) sacar rankings del mes desde monthly_rankings + join a workers
+    const { data: mr, error: emr } = await db
+      .from("monthly_rankings")
+      .select(
+        `
+        worker_id,
+        minutes_total,
+        captadas_total,
+        cliente_pct,
+        repite_pct,
+        workers:workers (
+          id,
+          display_name,
+          role
+        )
+      `
+      )
       .eq("month_date", month_date)
-      .limit(100000);
+      .limit(5000);
 
-    if (erows) return NextResponse.json({ ok: false, error: erows.message }, { status: 500 });
+    if (emr) return NextResponse.json({ ok: false, error: emr.message }, { status: 500 });
 
-    // filtro de filas por worker_id/codigo (aún no tenemos nombre)
-    const rows0 = (rowsRaw || []).filter((r: any) => {
-      const wid = String(r.worker_id || "");
-      if (!wid) return false;
-      if (excludedWorkers.has(wid)) return false;
-      if (excludedCodes.has(normCode(r.codigo))) return false;
-      return true;
-    });
+    // 5) normalizar filas
+    const rows = (mr || [])
+      .map((x: any) => {
+        const w = x.workers || null;
+        return {
+          worker_id: x.worker_id,
+          name: w?.display_name || "—",
+          role: w?.role || "",
+          minutes: toNum(x.minutes_total),
+          captadas: toNum(x.captadas_total),
+          cliente_pct: toNum(x.cliente_pct),
+          repite_pct: toNum(x.repite_pct),
+        };
+      })
+      .filter((x: any) => x.worker_id);
 
-    const workerIds = Array.from(new Set(rows0.map((r: any) => r.worker_id).filter(Boolean)));
+    // solo tarotistas para ranking principal
+    const tarotistas = rows.filter((x: any) => normRole(x.role) === "tarotista");
 
-    if (workerIds.length === 0) {
-      return NextResponse.json({
-        ok: true,
-        month_date,
-        user: { isAdmin: normRole((me as any).role) === "admin", worker: me },
-        rankings: { minutes: [], repite_pct: [], cliente_pct: [], captadas: [] },
-        myEarnings: null,
-        winnerTeam: null,
-        bonusRules: [],
-      });
-    }
-
-    // 8) workers
-    const { data: ws, error: ews } = await db.from("workers").select("id, display_name, role").in("id", workerIds);
-    if (ews) return NextResponse.json({ ok: false, error: ews.message }, { status: 500 });
-
-    const wMap = new Map<string, { name: string; role: string; nameKey: string }>();
-    for (const w of ws || []) {
-      const id = (w as any).id as string;
-      const name = (w as any).display_name ?? "";
-      const role = (w as any).role ?? "";
-      wMap.set(id, { name, role, nameKey: normNameKey(name) });
-    }
-
-    // ✅ 9) filtro final por nombre normalizado (Call 111 -> call111)
-    const rows = rows0.filter((r: any) => {
-      const wid = String(r.worker_id || "");
-      const w = wMap.get(wid);
-      if (!w) return false;
-      if (excludedNameKeys.has(w.nameKey)) return false;
-      return true;
-    });
-
-    // 10) agregación
-    const agg = new Map<
-      string,
-      {
-        worker_id: string;
-        name: string;
-        role: string;
-        minutes: number;
-        captadas: number;
-        cliente_min: number;
-        repite_min: number;
-      }
-    >();
-
-    for (const r of rows) {
-      const wid = String((r as any).worker_id || "");
-      if (!wid) continue;
-
-      const w = wMap.get(wid);
-      if (!w) continue;
-
-      if (!agg.has(wid)) {
-        agg.set(wid, {
-          worker_id: wid,
-          name: w.name,
-          role: w.role,
-          minutes: 0,
-          captadas: 0,
-          cliente_min: 0,
-          repite_min: 0,
-        });
-      }
-
-      const it = agg.get(wid)!;
-      const min = Number((r as any).minutes) || 0;
-
-      it.minutes += min;
-      if ((r as any).captado) it.captadas += 1;
-
-      const codigo = normCode((r as any).codigo);
-      if (codigo === "cliente") it.cliente_min += min;
-      if (codigo === "repite") it.repite_min += min;
-    }
-
-    const all = Array.from(agg.values());
-    const tarotistas = all.filter((x) => normRole(x.role) === "tarotista");
-
-    const rankMinutes: RankRow[] = [...tarotistas]
-      .sort((a, b) => b.minutes - a.minutes)
-      .map((x) => ({
-        worker_id: x.worker_id,
-        name: x.name,
-        minutes: x.minutes,
-        captadas: x.captadas,
-        cliente_pct: pct(x.cliente_min, x.minutes),
-        repite_pct: pct(x.repite_min, x.minutes),
-      }));
+    const rankMinutes: RankRowMinutes[] = [...tarotistas].sort((a, b) => b.minutes - a.minutes);
 
     const rankCaptadas = [...tarotistas]
       .sort((a, b) => b.captadas - a.captadas)
       .map((x) => ({ worker_id: x.worker_id, name: x.name, captadas: x.captadas }));
 
     const rankCliente = [...tarotistas]
-      .sort((a, b) => pct(b.cliente_min, b.minutes) - pct(a.cliente_min, a.minutes))
-      .map((x) => ({ worker_id: x.worker_id, name: x.name, cliente_pct: pct(x.cliente_min, x.minutes) }));
+      .sort((a, b) => b.cliente_pct - a.cliente_pct)
+      .map((x) => ({ worker_id: x.worker_id, name: x.name, cliente_pct: x.cliente_pct }));
 
     const rankRepite = [...tarotistas]
-      .sort((a, b) => pct(b.repite_min, b.minutes) - pct(a.repite_min, a.minutes))
-      .map((x) => ({ worker_id: x.worker_id, name: x.name, repite_pct: pct(x.repite_min, x.minutes) }));
+      .sort((a, b) => b.repite_pct - a.repite_pct)
+      .map((x) => ({ worker_id: x.worker_id, name: x.name, repite_pct: x.repite_pct }));
 
     return NextResponse.json({
       ok: true,
       month_date,
+      months,
       user: { isAdmin: normRole((me as any).role) === "admin", worker: me },
       rankings: {
         minutes: rankMinutes,
