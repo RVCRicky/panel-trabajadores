@@ -22,17 +22,63 @@ type MeOk = {
 type MeErr = { ok: false; error: string };
 type MeResp = MeOk | MeErr;
 
-type AttRow = {
-  minutes: number;
-  calls: number;
-  codigo: "free" | "rueda" | "cliente" | "repite";
-  captado: boolean;
-  worker: { id: string; display_name: string; role: WorkerRole } | null;
-};
-
 function fmt(n: any) {
   return (Number(n) || 0).toLocaleString("es-ES");
 }
+
+function formatMonthLabel(isoMonthDate: string) {
+  // isoMonthDate: "YYYY-MM-01"
+  const [y, m] = String(isoMonthDate || "").split("-");
+  const monthNum = Number(m);
+  const yearNum = Number(y);
+  if (!monthNum || !yearNum) return isoMonthDate;
+  const date = new Date(yearNum, monthNum - 1, 1);
+  return date.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
+}
+
+type OverviewResp = {
+  ok: boolean;
+  error?: string;
+
+  month_date: string | null;
+  months: string[];
+
+  totals: {
+    minutes: number;
+    captadas: number;
+    tarotistas: number;
+  };
+
+  top: {
+    minutes: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
+    captadas: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
+    cliente_pct: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
+    repite_pct: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
+  };
+
+  presence: {
+    online: number;
+    pause: number;
+    bathroom: number;
+    offline: number;
+    total: number;
+  };
+
+  incidents: {
+    pending: number;
+  };
+
+  cronLogs: Array<{
+    id: number;
+    job: string;
+    ok: boolean;
+    details: any;
+    started_at: string;
+    finished_at: string | null;
+  }>;
+
+  dailySeries: Array<{ date: string; minutes: number }>;
+};
 
 export default function AdminPage() {
   const router = useRouter();
@@ -40,25 +86,26 @@ export default function AdminPage() {
   const [status, setStatus] = useState("Cargando...");
   const [meName, setMeName] = useState("");
 
-  // KPI / resumen
-  const [onlineNow, setOnlineNow] = useState<number | null>(null);
-  const [missingNow, setMissingNow] = useState<number | null>(null);
-  const [pendingIncidents, setPendingIncidents] = useState<number | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  // Sync CSV
+  const [overview, setOverview] = useState<OverviewResp | null>(null);
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+
+  // Sync CSV (mantenemos tu bloque)
   const [csvUrl, setCsvUrl] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [syncDebug, setSyncDebug] = useState<string | null>(null);
 
-  // Ranking
-  const [loadingRank, setLoadingRank] = useState(false);
-  const [rankMsg, setRankMsg] = useState<string | null>(null);
-  const [rows, setRows] = useState<AttRow[]>([]);
-
   async function getToken() {
     const { data } = await supabase.auth.getSession();
     return data.session?.access_token || null;
+  }
+
+  async function logout() {
+    await supabase.auth.signOut();
+    router.replace("/login");
   }
 
   // ✅ Comprueba admin
@@ -98,89 +145,54 @@ export default function AdminPage() {
     })();
   }, [router]);
 
-  async function logout() {
-    await supabase.auth.signOut();
-    router.replace("/login");
-  }
-
-  // ✅ KPIs (presencia + pendientes)
-  async function loadKpis() {
+  async function loadOverview(monthOverride?: string | null) {
+    setErr(null);
+    setLoading(true);
     try {
       const token = await getToken();
-      if (!token) return;
+      if (!token) return router.replace("/login");
 
-      // Presencia (incluye missingCount en tu endpoint)
-      const pr = await fetch("/api/admin/presence/live?show=all", {
+      const month = monthOverride ?? selectedMonth ?? null;
+      const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
+
+      const r = await fetch(`/api/admin/dashboard/overview${qs}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      const pj = await pr.json().catch(() => null);
 
-      if (pj?.ok) {
-        const rows = Array.isArray(pj.rows) ? pj.rows : [];
-        const online = rows.filter((r: any) => r.state && r.state !== "offline").length;
-        setOnlineNow(online);
-        setMissingNow(typeof pj.missingCount === "number" ? pj.missingCount : 0);
-      } else {
-        setOnlineNow(null);
-        setMissingNow(null);
+      const j = (await r.json().catch(() => null)) as OverviewResp | null;
+      if (!j?.ok) {
+        setErr(j?.error || `Error overview (HTTP ${r.status})`);
+        return;
       }
 
-      // Incidencias pendientes (si el endpoint existe)
-      const ir = await fetch("/api/admin/incidents/pending", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const ij = await ir.json().catch(() => null);
-      if (ij?.ok) {
-        const count =
-          typeof ij.count === "number"
-            ? ij.count
-            : Array.isArray(ij.items)
-            ? ij.items.length
-            : Array.isArray(ij.rows)
-            ? ij.rows.length
-            : 0;
-        setPendingIncidents(count);
-      } else {
-        // si no existe todavía o falla, no rompemos
-        setPendingIncidents(null);
-      }
-    } catch {
-      setOnlineNow(null);
-      setMissingNow(null);
-      setPendingIncidents(null);
+      setOverview(j);
+
+      // sincronizar selector con backend
+      if (j.month_date && j.month_date !== selectedMonth) setSelectedMonth(j.month_date);
+    } catch (e: any) {
+      setErr(e?.message || "Error overview");
+    } finally {
+      setLoading(false);
     }
   }
 
+  // carga inicial + refresco cada 30s (KPIs, cron, presencia, etc.)
   useEffect(() => {
     if (status !== "OK") return;
-    loadKpis();
-    const t = setInterval(loadKpis, 10000);
+    loadOverview(null);
+    const t = setInterval(() => loadOverview(selectedMonth), 30000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
-  async function loadRankings() {
-    setRankMsg(null);
-    setLoadingRank(true);
-    try {
-      const { data: att, error } = await supabase
-        .from("attendance_rows")
-        .select("minutes,calls,codigo,captado,worker:workers(id,display_name,role)")
-        .order("id", { ascending: false })
-        .limit(50000);
-
-      if (error) {
-        setRankMsg(`Error leyendo attendance_rows: ${error.message}`);
-        return;
-      }
-
-      setRows((att as any) || []);
-    } catch (e: any) {
-      setRankMsg(e?.message || "Error inesperado");
-    } finally {
-      setLoadingRank(false);
-    }
-  }
+  // si cambia el mes manualmente
+  useEffect(() => {
+    if (status !== "OK") return;
+    if (!selectedMonth) return;
+    if (overview?.month_date === selectedMonth) return;
+    loadOverview(selectedMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMonth]);
 
   async function runSync() {
     setSyncMsg(null);
@@ -217,49 +229,94 @@ export default function AdminPage() {
         return;
       }
 
-      setSyncMsg(`✅ Sync OK. Insertadas: ${j.inserted}. Saltadas sin worker: ${j.skippedNoWorker}. Filas malas: ${j.skippedBad}. Total CSV: ${j.totalRows}`);
+      setSyncMsg(
+        `✅ Sync OK. Insertadas: ${j.inserted}. Saltadas sin worker: ${j.skippedNoWorker}. Filas malas: ${j.skippedBad}. Total CSV: ${j.totalRows}`
+      );
 
-      await loadRankings();
-      await loadKpis();
+      // refrescar overview después del sync
+      await loadOverview(selectedMonth);
     } finally {
       setSyncing(false);
     }
   }
 
-  const ranking = useMemo(() => {
-    const m = new Map<
-      string,
-      { name: string; role: WorkerRole; minutes: number; captadas: number }
-    >();
+  const months = overview?.months || [];
+  const monthLabel = overview?.month_date ? formatMonthLabel(overview.month_date) : "—";
 
-    for (const r of rows) {
-      if (!r.worker) continue;
-      const id = r.worker.id;
-      if (!m.has(id)) {
-        m.set(id, { name: r.worker.display_name, role: r.worker.role, minutes: 0, captadas: 0 });
-      }
-      const it = m.get(id)!;
-      it.minutes += Number(r.minutes) || 0;
-      if (r.captado) it.captadas += 1;
-    }
+  const presence = overview?.presence || null;
+  const pending = overview?.incidents?.pending ?? null;
 
-    const arr = Array.from(m.values()).filter((x) => x.role === "tarotista");
-    arr.sort((a, b) => b.minutes - a.minutes);
-    return arr.slice(0, 10);
-  }, [rows]);
+  const toneOnline = (presence?.online ?? 0) > 0 ? "ok" : "neutral";
+  const toneMissingLike = (pending ?? 0) > 0 ? "warn" : "ok";
 
-  const toneMissing = missingNow && missingNow > 0 ? "warn" : "ok";
-  const tonePending = pendingIncidents && pendingIncidents > 0 ? "warn" : "ok";
-  const toneOnline = onlineNow && onlineNow > 0 ? "ok" : "neutral";
+  const lastCron = useMemo(() => {
+    const logs = overview?.cronLogs || [];
+    return logs.length ? logs[0] : null;
+  }, [overview?.cronLogs]);
+
+  function cronBadge(log: any) {
+    if (!log) return { tone: "neutral", text: "Sin logs" };
+    return log.ok ? { tone: "ok", text: "OK" } : { tone: "warn", text: "FAIL" };
+  }
+
+  const cronInfo = cronBadge(lastCron);
+  const cronDuration =
+    lastCron?.details?.duration_ms != null ? `${fmt(lastCron.details.duration_ms)} ms` : lastCron?.details?.duration ? String(lastCron.details.duration) : "—";
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
-      {/* Header interno (tu layout ya pone el menú arriba) */}
+      {/* Header */}
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <h1 style={{ margin: 0 }}>Dashboard Admin</h1>
+
+        {/* Selector de mes */}
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ color: "#666", fontWeight: 900 }}>Mes:</span>
+          <select
+            value={selectedMonth || overview?.month_date || ""}
+            onChange={(e) => setSelectedMonth(e.target.value || null)}
+            style={{ padding: 8, borderRadius: 10, border: "1px solid #ddd", minWidth: 220 }}
+            disabled={loading || months.length === 0 || status !== "OK"}
+          >
+            {months.length === 0 ? (
+              <option value="">{overview?.month_date || "—"}</option>
+            ) : (
+              months.map((m) => (
+                <option key={m} value={m}>
+                  {formatMonthLabel(m)}
+                </option>
+              ))
+            )}
+          </select>
+          <span style={{ color: "#666" }}>
+            <b>{monthLabel}</b>
+          </span>
+        </div>
+
         <span style={{ marginLeft: "auto", color: "#666" }}>
-          Estado: <b style={{ color: "#111" }}>{status}</b> {status === "OK" ? <>· Admin: <b style={{ color: "#111" }}>{meName}</b></> : null}
+          Estado: <b style={{ color: "#111" }}>{status}</b>
+          {status === "OK" ? (
+            <>
+              {" "}
+              · Admin: <b style={{ color: "#111" }}>{meName}</b>
+            </>
+          ) : null}
         </span>
+
+        <button
+          onClick={() => loadOverview(selectedMonth)}
+          disabled={loading || status !== "OK"}
+          style={{
+            padding: 10,
+            borderRadius: 10,
+            border: "1px solid #111",
+            fontWeight: 900,
+            cursor: loading ? "not-allowed" : "pointer",
+          }}
+        >
+          {loading ? "Actualizando..." : "Actualizar"}
+        </button>
+
         <button
           onClick={logout}
           style={{
@@ -276,47 +333,51 @@ export default function AdminPage() {
         </button>
       </div>
 
+      {err ? (
+        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
+      ) : null}
+
       {/* KPIs */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
         <Card>
-          <CardTitle>Presencia online ahora</CardTitle>
-          <CardValue>{onlineNow === null ? "—" : fmt(onlineNow)}</CardValue>
+          <CardTitle>Totales mes (tarotistas)</CardTitle>
+          <CardValue>{overview?.totals ? `${fmt(overview.totals.minutes)} min` : "—"}</CardValue>
           <CardHint>
-            <Badge tone={toneOnline as any}>{onlineNow && onlineNow > 0 ? "OK" : "Sin datos"}</Badge> · Se actualiza cada 10s
+            Captadas: <b>{overview?.totals ? fmt(overview.totals.captadas) : "—"}</b> · Tarotistas:{" "}
+            <b>{overview?.totals ? fmt(overview.totals.tarotistas) : "—"}</b>
           </CardHint>
         </Card>
 
         <Card>
-          <CardTitle>Deberían estar y no están</CardTitle>
-          <CardValue>{missingNow === null ? "—" : fmt(missingNow)}</CardValue>
+          <CardTitle>Presencia ahora</CardTitle>
+          <CardValue>{presence ? fmt(presence.online) : "—"}</CardValue>
           <CardHint>
-            <Badge tone={toneMissing as any}>{missingNow && missingNow > 0 ? "Revisar" : "Todo bien"}</Badge> · Turnos actuales
+            <Badge tone={toneOnline as any}>ONLINE</Badge> · Pausa: <b>{presence ? fmt(presence.pause) : "—"}</b> · Baño:{" "}
+            <b>{presence ? fmt(presence.bathroom) : "—"}</b>
           </CardHint>
         </Card>
 
         <Card>
           <CardTitle>Incidencias pendientes</CardTitle>
-          <CardValue>{pendingIncidents === null ? "—" : fmt(pendingIncidents)}</CardValue>
+          <CardValue>{pending === null ? "—" : fmt(pending)}</CardValue>
           <CardHint>
-            <Badge tone={tonePending as any}>{pendingIncidents && pendingIncidents > 0 ? "Acción" : "OK"}</Badge> · Justificar / No justificar
+            <Badge tone={toneMissingLike as any}>{pending && pending > 0 ? "Revisar" : "OK"}</Badge> · Acciones en /admin/incidents
           </CardHint>
         </Card>
 
         <Card>
-          <CardTitle>Acciones rápidas</CardTitle>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
-            <a href="/admin/live" style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none", fontWeight: 900 }}>
-              Ver presencia →
-            </a>
-            <a href="/admin/incidents" style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none", fontWeight: 900 }}>
-              Ver incidencias →
-            </a>
-          </div>
-          <CardHint>Todo en 1 click.</CardHint>
+          <CardTitle>Cron (rebuild mensual)</CardTitle>
+          <CardValue>
+            <Badge tone={cronInfo.tone as any}>{cronInfo.text}</Badge>
+          </CardValue>
+          <CardHint>
+            Duración: <b>{cronDuration}</b> · Último:{" "}
+            <b>{lastCron?.started_at ? new Date(lastCron.started_at).toLocaleString("es-ES") : "—"}</b>
+          </CardHint>
         </Card>
       </div>
 
-      {/* Accesos a secciones */}
+      {/* Accesos */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
         <QuickLink href="/admin/live" title="Presencia" desc="Quién está online / pausa / baño y quién falta." />
         <QuickLink href="/admin/incidents" title="Incidencias" desc="Justificar / No justificar, historial y control." />
@@ -354,40 +415,23 @@ export default function AdminPage() {
             </button>
 
             <button
-              onClick={loadRankings}
-              disabled={loadingRank || status !== "OK"}
+              onClick={() => loadOverview(selectedMonth)}
+              disabled={loading || status !== "OK"}
               style={{
                 padding: 12,
                 borderRadius: 10,
                 border: "1px solid #ddd",
                 background: "#fff",
-                cursor: loadingRank ? "not-allowed" : "pointer",
+                cursor: loading ? "not-allowed" : "pointer",
                 fontWeight: 900,
               }}
             >
-              {loadingRank ? "Cargando..." : "Actualizar ranking"}
-            </button>
-
-            <button
-              onClick={loadKpis}
-              disabled={status !== "OK"}
-              style={{
-                padding: 12,
-                borderRadius: 10,
-                border: "1px solid #ddd",
-                background: "#fff",
-                cursor: status !== "OK" ? "not-allowed" : "pointer",
-                fontWeight: 900,
-              }}
-            >
-              Refrescar KPIs
+              {loading ? "Cargando..." : "Refrescar dashboard"}
             </button>
           </div>
 
           {syncMsg ? (
-            <div style={{ padding: 10, borderRadius: 10, background: "#f6f6f6", border: "1px solid #e5e5e5" }}>
-              {syncMsg}
-            </div>
+            <div style={{ padding: 10, borderRadius: 10, background: "#f6f6f6", border: "1px solid #e5e5e5" }}>{syncMsg}</div>
           ) : null}
 
           {syncDebug ? (
@@ -396,46 +440,191 @@ export default function AdminPage() {
               <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{syncDebug}</pre>
             </div>
           ) : null}
-
-          {rankMsg ? (
-            <div style={{ padding: 10, borderRadius: 10, background: "#fff3f3", border: "1px solid #ffcccc" }}>
-              {rankMsg}
-            </div>
-          ) : null}
         </div>
       </Card>
 
-      {/* Mini ranking */}
+      {/* Top tables */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
+        <Card>
+          <CardTitle>Top 10 (Minutos)</CardTitle>
+          <CardHint>Ranking del mes seleccionado.</CardHint>
+
+          <div style={{ overflowX: "auto", marginTop: 10 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Min</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Cap</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(overview?.top?.minutes || []).length === 0 ? (
+                  <tr>
+                    <td colSpan={4} style={{ padding: 10, color: "#666" }}>
+                      Sin datos.
+                    </td>
+                  </tr>
+                ) : (
+                  (overview?.top?.minutes || []).map((r, idx) => (
+                    <tr key={r.worker_id}>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{fmt(r.minutes)}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(r.captadas)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
+        <Card>
+          <CardTitle>Top 10 (Captadas)</CardTitle>
+          <CardHint>Ranking del mes seleccionado.</CardHint>
+
+          <div style={{ overflowX: "auto", marginTop: 10 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Cap</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(overview?.top?.captadas || []).length === 0 ? (
+                  <tr>
+                    <td colSpan={3} style={{ padding: 10, color: "#666" }}>
+                      Sin datos.
+                    </td>
+                  </tr>
+                ) : (
+                  (overview?.top?.captadas || []).map((r, idx) => (
+                    <tr key={r.worker_id}>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{fmt(r.captadas)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
+        <Card>
+          <CardTitle>Top 10 (Cliente %)</CardTitle>
+          <CardHint>Ranking del mes seleccionado.</CardHint>
+
+          <div style={{ overflowX: "auto", marginTop: 10 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(overview?.top?.cliente_pct || []).length === 0 ? (
+                  <tr>
+                    <td colSpan={3} style={{ padding: 10, color: "#666" }}>
+                      Sin datos.
+                    </td>
+                  </tr>
+                ) : (
+                  (overview?.top?.cliente_pct || []).map((r, idx) => (
+                    <tr key={r.worker_id}>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{fmt(r.cliente_pct)} %</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
+        <Card>
+          <CardTitle>Top 10 (Repite %)</CardTitle>
+          <CardHint>Ranking del mes seleccionado.</CardHint>
+
+          <div style={{ overflowX: "auto", marginTop: 10 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(overview?.top?.repite_pct || []).length === 0 ? (
+                  <tr>
+                    <td colSpan={3} style={{ padding: 10, color: "#666" }}>
+                      Sin datos.
+                    </td>
+                  </tr>
+                ) : (
+                  (overview?.top?.repite_pct || []).map((r, idx) => (
+                    <tr key={r.worker_id}>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{fmt(r.repite_pct)} %</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+
+      {/* Cron logs (últimos 10) */}
       <Card>
-        <CardTitle>Top 10 tarotistas (minutos)</CardTitle>
-        <CardHint>Para ver el ranking completo, entra en tu /panel.</CardHint>
+        <CardTitle>Últimas ejecuciones CRON</CardTitle>
+        <CardHint>Si aquí ves FAIL, hay que revisar logs de Functions.</CardHint>
 
         <div style={{ overflowX: "auto", marginTop: 10 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 740 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
             <thead>
               <tr>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Minutos</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Captadas</th>
+                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Fecha</th>
+                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Job</th>
+                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Estado</th>
+                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Duración</th>
+                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Detalle</th>
               </tr>
             </thead>
             <tbody>
-              {ranking.length === 0 ? (
+              {(overview?.cronLogs || []).length === 0 ? (
                 <tr>
-                  <td colSpan={4} style={{ padding: 10, color: "#666" }}>
-                    Aún no hay datos. Pulsa “Sync ahora”.
+                  <td colSpan={5} style={{ padding: 10, color: "#666" }}>
+                    Sin logs aún. Ejecuta el cron manual una vez.
                   </td>
                 </tr>
               ) : (
-                ranking.map((r, idx) => (
-                  <tr key={r.name}>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{fmt(r.minutes)}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(r.captadas)}</td>
-                  </tr>
-                ))
+                (overview?.cronLogs || []).slice(0, 10).map((l) => {
+                  const tone = l.ok ? "ok" : "warn";
+                  const dur = l.details?.duration_ms != null ? `${fmt(l.details.duration_ms)} ms` : "—";
+                  const msg = l.ok ? "OK" : "FAIL";
+                  const detail = l.ok ? JSON.stringify(l.details?.rebuilt || l.details?.stage || "ok") : String(l.details?.error || "error");
+                  return (
+                    <tr key={l.id}>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{new Date(l.started_at).toLocaleString("es-ES")}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{l.job}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
+                        <Badge tone={tone as any}>{msg}</Badge>
+                      </td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{dur}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", color: "#555" }}>{detail}</td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
