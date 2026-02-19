@@ -16,6 +16,10 @@ function bearer(req: Request) {
   return m?.[1] || null;
 }
 
+function normRole(r: any) {
+  return String(r || "").trim().toLowerCase();
+}
+
 type RankRow = {
   worker_id: string;
   name: string;
@@ -31,6 +35,9 @@ function pct(n: number, d: number) {
 }
 
 export async function GET(req: Request) {
+  const urlObj = new URL(req.url);
+  const debug = urlObj.searchParams.get("debug") === "1";
+
   try {
     const token = bearer(req);
     if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
@@ -40,7 +47,7 @@ export async function GET(req: Request) {
 
     const db = createClient(url, service, { auth: { persistSession: false } });
 
-    // 1) validar user
+    // 1) validar user (token del cliente)
     const { data: u, error: eu } = await db.auth.getUser(token);
     if (eu || !u?.user) return NextResponse.json({ ok: false, error: "BAD_TOKEN" }, { status: 401 });
     const uid = u.user.id;
@@ -54,9 +61,9 @@ export async function GET(req: Request) {
 
     if (eme) return NextResponse.json({ ok: false, error: eme.message }, { status: 500 });
     if (!me) return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
-    if (!me.is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
+    if (!(me as any).is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
 
-    // ✅ 3) coger el último mes disponible en attendance_rows
+    // 3) último mes disponible
     const { data: lastMonthRow, error: emonth } = await db
       .from("attendance_rows")
       .select("month_date")
@@ -69,15 +76,15 @@ export async function GET(req: Request) {
     const month_date: string | null = (lastMonthRow as any)?.month_date || null;
 
     if (!month_date) {
-      // no hay datos todavía
       return NextResponse.json({
         ok: true,
         month_date: null,
-        user: { isAdmin: me.role === "admin", worker: me },
+        user: { isAdmin: normRole((me as any).role) === "admin", worker: me },
         rankings: { minutes: [], repite_pct: [], cliente_pct: [], captadas: [] },
         myEarnings: null,
         winnerTeam: null,
         bonusRules: [],
+        ...(debug ? { debug: { step: "no_month_date" } } : {}),
       });
     }
 
@@ -96,24 +103,33 @@ export async function GET(req: Request) {
       return NextResponse.json({
         ok: true,
         month_date,
-        user: { isAdmin: me.role === "admin", worker: me },
+        user: { isAdmin: normRole((me as any).role) === "admin", worker: me },
         rankings: { minutes: [], repite_pct: [], cliente_pct: [], captadas: [] },
         myEarnings: null,
         winnerTeam: null,
         bonusRules: [],
+        ...(debug
+          ? {
+              debug: {
+                step: "no_worker_ids",
+                month_date,
+                rows_count: (rows || []).length,
+              },
+            }
+          : {}),
       });
     }
 
     // 5) workers de esos ids
-    const { data: ws, error: ews } = await db
-      .from("workers")
-      .select("id, display_name, role")
-      .in("id", workerIds);
+    const { data: ws, error: ews } = await db.from("workers").select("id, display_name, role").in("id", workerIds);
 
     if (ews) return NextResponse.json({ ok: false, error: ews.message }, { status: 500 });
 
     const wMap = new Map<string, { name: string; role: string }>();
-    for (const w of ws || []) wMap.set((w as any).id, { name: (w as any).display_name, role: (w as any).role });
+    for (const w of ws || []) {
+      const id = (w as any).id as string;
+      wMap.set(id, { name: (w as any).display_name, role: (w as any).role });
+    }
 
     // 6) agregación
     const agg = new Map<
@@ -154,13 +170,15 @@ export async function GET(req: Request) {
       it.minutes += min;
       if ((r as any).captado) it.captadas += 1;
 
-      const codigo = String((r as any).codigo || "").toLowerCase();
+      const codigo = String((r as any).codigo || "").trim().toLowerCase();
       if (codigo === "cliente") it.cliente_min += min;
       if (codigo === "repite") it.repite_min += min;
     }
 
     const all = Array.from(agg.values());
-    const tarotistas = all.filter((x) => x.role === "tarotista");
+
+    // ✅ FIX: role robusto (mayúsculas/espacios)
+    const tarotistas = all.filter((x) => normRole(x.role) === "tarotista");
 
     const rankMinutes: RankRow[] = [...tarotistas]
       .sort((a, b) => b.minutes - a.minutes)
@@ -188,7 +206,7 @@ export async function GET(req: Request) {
     return NextResponse.json({
       ok: true,
       month_date,
-      user: { isAdmin: me.role === "admin", worker: me },
+      user: { isAdmin: normRole((me as any).role) === "admin", worker: me },
       rankings: {
         minutes: rankMinutes,
         repite_pct: rankRepite,
@@ -198,6 +216,19 @@ export async function GET(req: Request) {
       myEarnings: null,
       winnerTeam: null,
       bonusRules: [],
+      ...(debug
+        ? {
+            debug: {
+              month_date,
+              rows_count: (rows || []).length,
+              worker_ids_count: workerIds.length,
+              workers_found_count: (ws || []).length,
+              agg_count: all.length,
+              tarotistas_count: tarotistas.length,
+              roles_sample: (ws || []).slice(0, 20).map((w: any) => ({ id: w.id, role: w.role, name: w.display_name })),
+            },
+          }
+        : {}),
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
