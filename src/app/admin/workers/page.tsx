@@ -20,8 +20,9 @@ type MeErr = { ok: false; error: string };
 type MeResp = MeOk | MeErr;
 
 type WorkerRow = {
-  id: string; // normalmente = auth.users.id
-  display_name: string;
+  id: string; // id interno de la tabla workers
+  user_id: string | null; // ✅ ESTE ES EL UID DE AUTH (auth.users.id)
+  display_name: string | null;
   role: WorkerRole;
   is_active: boolean;
 };
@@ -32,14 +33,14 @@ export default function AdminWorkersPage() {
   const [status, setStatus] = useState("Cargando...");
   const [meName, setMeName] = useState("");
 
-  // LISTADO trabajadores
   const [workers, setWorkers] = useState<WorkerRow[]>([]);
   const [loadingWorkers, setLoadingWorkers] = useState(false);
   const [workersErr, setWorkersErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
 
-  // ACTUALIZAR credenciales
-  const [targetWorkerId, setTargetWorkerId] = useState("");
+  // ✅ aquí guardamos el UID real de auth.users.id
+  const [targetAuthUserId, setTargetAuthUserId] = useState("");
+
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [updating, setUpdating] = useState(false);
@@ -75,7 +76,7 @@ export default function AdminWorkersPage() {
     try {
       const { data, error } = await supabase
         .from("workers")
-        .select("id,display_name,role,is_active")
+        .select("id,user_id,display_name,role,is_active")
         .order("display_name", { ascending: true });
 
       if (error) {
@@ -99,11 +100,11 @@ export default function AdminWorkersPage() {
     e.preventDefault();
     setUpdateMsg(null);
 
-    const wid = targetWorkerId.trim();
+    const authId = targetAuthUserId.trim();
     const e2 = newEmail.trim().toLowerCase();
     const p2 = newPassword;
 
-    if (!wid) return setUpdateMsg("Selecciona un trabajador (o pega el UUID).");
+    if (!authId) return setUpdateMsg("Selecciona un trabajador (necesito su user_id de Auth).");
     if (!e2 && !p2) return setUpdateMsg("Pon email y/o contraseña.");
 
     setUpdating(true);
@@ -118,7 +119,8 @@ export default function AdminWorkersPage() {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          workerId: wid,
+          // ✅ IMPORTANTE: enviamos el UID de auth.users.id
+          workerId: authId,
           email: e2 || null,
           password: p2 || null,
         }),
@@ -152,7 +154,7 @@ export default function AdminWorkersPage() {
   }
 
   return (
-    <div style={{ padding: 18, maxWidth: 980 }}>
+    <div style={{ padding: 18, maxWidth: 1100 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <h1 style={{ margin: 0 }}>Admin · Trabajadores</h1>
 
@@ -227,51 +229,67 @@ export default function AdminWorkersPage() {
         ) : null}
 
         <div style={{ marginTop: 10, overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
             <thead>
               <tr>
                 <th style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #eee" }}>Nombre</th>
                 <th style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #eee" }}>Rol</th>
                 <th style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #eee" }}>Activo</th>
-                <th style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #eee" }}>UUID</th>
+                <th style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #eee" }}>user_id (Auth UID)</th>
+                <th style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #eee" }}>workers.id</th>
                 <th style={{ textAlign: "right", padding: 8, borderBottom: "1px solid #eee" }}>Acción</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={5} style={{ padding: 10, color: "#666" }}>
+                  <td colSpan={6} style={{ padding: 10, color: "#666" }}>
                     {workers.length === 0 ? "Pulsa “Cargar trabajadores”." : "Sin resultados."}
                   </td>
                 </tr>
               ) : (
-                filtered.slice(0, 50).map((w) => (
-                  <tr key={w.id}>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{w.display_name}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{w.role}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{w.is_active ? "sí" : "no"}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", fontFamily: "monospace", fontSize: 12 }}>{w.id}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>
-                      <button
-                        onClick={() => {
-                          setTargetWorkerId(w.id);
-                          setUpdateMsg(null);
-                        }}
-                        style={{
-                          padding: "8px 10px",
-                          borderRadius: 10,
-                          border: "1px solid #111",
-                          background: "#111",
-                          color: "#fff",
-                          cursor: "pointer",
-                          fontWeight: 900,
-                        }}
-                      >
-                        Usar
-                      </button>
-                    </td>
-                  </tr>
-                ))
+                filtered.slice(0, 50).map((w) => {
+                  const authUid = w.user_id || "";
+                  const canUse = !!w.user_id;
+
+                  return (
+                    <tr key={w.id}>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{w.display_name || "—"}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{w.role}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{w.is_active ? "sí" : "no"}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", fontFamily: "monospace", fontSize: 12 }}>
+                        {authUid || "SIN user_id (no existe en Auth)"}
+                      </td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", fontFamily: "monospace", fontSize: 12 }}>
+                        {w.id}
+                      </td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>
+                        <button
+                          onClick={() => {
+                            if (!w.user_id) {
+                              setUpdateMsg("Este trabajador no tiene user_id. No se le puede cambiar contraseña hasta crearlo en Auth.");
+                              return;
+                            }
+                            setTargetAuthUserId(w.user_id);
+                            setUpdateMsg(null);
+                          }}
+                          disabled={!canUse}
+                          style={{
+                            padding: "8px 10px",
+                            borderRadius: 10,
+                            border: "1px solid #111",
+                            background: canUse ? "#111" : "#eee",
+                            color: canUse ? "#fff" : "#666",
+                            cursor: canUse ? "pointer" : "not-allowed",
+                            fontWeight: 900,
+                          }}
+                        >
+                          Usar
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -286,12 +304,12 @@ export default function AdminWorkersPage() {
 
         <form onSubmit={onUpdateCredentials} style={{ display: "grid", gap: 10 }}>
           <label style={{ display: "grid", gap: 6 }}>
-            <span>Worker UUID (auth.users.id)</span>
+            <span>Auth UID (user_id)</span>
             <input
-              value={targetWorkerId}
-              onChange={(e) => setTargetWorkerId(e.target.value)}
+              value={targetAuthUserId}
+              onChange={(e) => setTargetAuthUserId(e.target.value)}
               type="text"
-              placeholder="Selecciona uno arriba o pega el UUID"
+              placeholder="Selecciona uno arriba (columna user_id)"
               style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
             />
           </label>
@@ -320,7 +338,7 @@ export default function AdminWorkersPage() {
 
           <button
             type="submit"
-            disabled={updating || status !== "OK" || !targetWorkerId.trim() || (!newEmail.trim() && !newPassword)}
+            disabled={updating || status !== "OK" || !targetAuthUserId.trim() || (!newEmail.trim() && !newPassword)}
             style={{
               padding: 12,
               borderRadius: 10,
