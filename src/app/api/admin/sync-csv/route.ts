@@ -137,7 +137,7 @@ function normalizeDate(v: any): string | null {
   return null;
 }
 
-type Body = { csvUrl: string };
+type Body = { csvUrl?: string };
 
 export async function OPTIONS() {
   return NextResponse.json({ ok: true });
@@ -149,30 +149,42 @@ export async function POST(req: Request) {
     const anonKey = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
     const serviceKey = getEnv("SUPABASE_SERVICE_ROLE_KEY");
 
-    const auth = req.headers.get("authorization") || "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-    if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
+    // ✅ NUEVO: permitir llamada CRON sin login usando x-cron-secret
+    const CRON_SECRET = process.env.CRON_SECRET || "";
+    const cronHeader = (req.headers.get("x-cron-secret") || "").trim();
+    const isCronCall = !!CRON_SECRET && cronHeader === CRON_SECRET;
 
-    const body = (await req.json()) as Body;
-    const csvUrl = (body.csvUrl || "").trim();
+    // ✅ leer body "safe"
+    const body = (await req.json().catch(() => ({} as any))) as Body;
+
+    // ✅ NUEVO: si no viene csvUrl, usar SYNC_CSV_URL
+    const csvUrl = String(body?.csvUrl || process.env.SYNC_CSV_URL || "").trim();
     if (!csvUrl) return NextResponse.json({ ok: false, error: "MISSING_CSV_URL" }, { status: 400 });
 
-    const userClient = createClient(supabaseUrl, anonKey, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-    });
+    // ✅ auth/admin check SOLO si NO es cron
+    if (!isCronCall) {
+      const auth = req.headers.get("authorization") || "";
+      const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+      if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
 
-    const { data: me, error: meErr } = await userClient.auth.getUser();
-    if (meErr || !me?.user) return NextResponse.json({ ok: false, error: "NOT_AUTH" }, { status: 401 });
+      const userClient = createClient(supabaseUrl, anonKey, {
+        global: { headers: { Authorization: `Bearer ${token}` } },
+      });
 
-    const { data: adminRow, error: aErr } = await userClient
-      .from("app_admins")
-      .select("user_id")
-      .eq("user_id", me.user.id)
-      .maybeSingle();
+      const { data: me, error: meErr } = await userClient.auth.getUser();
+      if (meErr || !me?.user) return NextResponse.json({ ok: false, error: "NOT_AUTH" }, { status: 401 });
 
-    if (aErr) return NextResponse.json({ ok: false, error: aErr.message }, { status: 400 });
-    if (!adminRow) return NextResponse.json({ ok: false, error: "NOT_ADMIN" }, { status: 403 });
+      const { data: adminRow, error: aErr } = await userClient
+        .from("app_admins")
+        .select("user_id")
+        .eq("user_id", me.user.id)
+        .maybeSingle();
 
+      if (aErr) return NextResponse.json({ ok: false, error: aErr.message }, { status: 400 });
+      if (!adminRow) return NextResponse.json({ ok: false, error: "NOT_ADMIN" }, { status: 403 });
+    }
+
+    // ✅ fetch CSV
     const r = await fetch(csvUrl);
     if (!r.ok) return NextResponse.json({ ok: false, error: `CSV_FETCH_FAILED_${r.status}` }, { status: 400 });
 
@@ -209,6 +221,7 @@ export async function POST(req: Request) {
       if (kName) workersByName.set(kName, w.id);
     }
 
+    // ⚠️ Esto borra TODO y vuelve a insertar (lo dejas así como lo tenías)
     const del = await adminClient.from("attendance_rows").delete().neq("id", 0);
     if (del.error) return NextResponse.json({ ok: false, error: del.error.message }, { status: 400 });
 
@@ -239,7 +252,7 @@ export async function POST(req: Request) {
 
       const source_date = normalizeDate(row["FECHA"]);
 
-      // 1) Si no hay tarotista -> ignorar (no es un dato útil)
+      // 1) Si no hay tarotista -> ignorar
       if (!tarotistaKey) {
         skippedBad++;
         continue;
@@ -248,7 +261,7 @@ export async function POST(req: Request) {
       // 2) LlamadaCall true sin código -> ignorar
       if (!codigo && llamadaCall) continue;
 
-      // 3) Si CODIGO vacío pero hay minutos -> lo tratamos como "cliente"
+      // 3) Si CODIGO vacío pero hay minutos -> cliente
       if (!codigo && minutes > 0) {
         codigo = "cliente";
         defaultedCodigoToCliente++;
@@ -336,6 +349,10 @@ export async function POST(req: Request) {
       },
       note:
         "Regla nueva: CODIGO vacío + TIEMPO>0 => cliente. Las filas con TAROTISTA vacío se consideran basura y se saltan.",
+      cron: {
+        isCronCall,
+        usingEnvCsvUrl: !body?.csvUrl,
+      },
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
