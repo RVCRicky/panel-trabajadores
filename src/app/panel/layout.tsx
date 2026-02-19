@@ -10,7 +10,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
   const router = useRouter();
   const pathname = usePathname();
 
-  const [name, setName] = useState<string>("");
+  const [name, setName] = useState("");
   const [role, setRole] = useState<WorkerRole | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -18,6 +18,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     (async () => {
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token;
+
       if (!token) {
         router.replace("/login");
         return;
@@ -31,14 +32,14 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
         return;
       }
 
-      // Si es admin, lo mandamos al admin panel (para no mezclar)
-      if (j.worker.role === "admin") {
-        router.replace("/admin");
+      if (!j.worker.is_active) {
+        router.replace("/login");
         return;
       }
 
+      // ✅ IMPORTANTE: NO redirigimos a admin. Admin puede ver /panel.
       setName(j.worker.display_name || "");
-      setRole(j.worker.role);
+      setRole((j.worker.role as WorkerRole) || null);
       setLoading(false);
     })();
   }, [router]);
@@ -49,11 +50,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
   }
 
   if (loading) {
-    return (
-      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", color: "#666" }}>
-        Cargando…
-      </div>
-    );
+    return <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", color: "#666" }}>Cargando…</div>;
   }
 
   const linkStyle = (href: string) => ({
@@ -61,7 +58,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     borderRadius: 10,
     border: "1px solid #ddd",
     textDecoration: "none",
-    fontWeight: 800,
+    fontWeight: 900 as const,
     background: pathname === href ? "#111" : "#fff",
     color: pathname === href ? "#fff" : "#111",
   });
@@ -69,22 +66,40 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
   return (
     <div>
       {/* Header */}
-      <div
-        style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 10,
-          background: "#fff",
-          borderBottom: "1px solid #eee",
-        }}
-      >
-        <div style={{ maxWidth: 1100, margin: "0 auto", padding: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      <div style={{ position: "sticky", top: 0, zIndex: 10, background: "#fff", borderBottom: "1px solid #eee" }}>
+        <div
+          style={{
+            maxWidth: 1100,
+            margin: "0 auto",
+            padding: 14,
+            display: "flex",
+            gap: 10,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
           <div style={{ fontWeight: 1000, letterSpacing: 0.2 }}>Tarot Celestial · Panel</div>
 
           <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <span style={{ color: "#666" }}>
-              {name} · <b style={{ color: "#111" }}>{role}</b>
+              {role ? (
+                <>
+                  {role === "admin" ? "Admin" : role === "central" ? "Central" : "Tarotista"}:{" "}
+                  <b style={{ color: "#111" }}>{name}</b>
+                </>
+              ) : (
+                <>
+                  Usuario: <b style={{ color: "#111" }}>{name}</b>
+                </>
+              )}
             </span>
+
+            {/* ✅ SOLO si es admin mostramos botón para ir a Admin */}
+            {role === "admin" ? (
+              <a href="/admin" style={{ ...linkStyle("/admin"), fontWeight: 900 }}>
+                Ir a Admin →
+              </a>
+            ) : null}
 
             <button
               onClick={logout}
@@ -103,7 +118,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
           </div>
         </div>
 
-        {/* Menu */}
+        {/* Menu Panel */}
         <div style={{ maxWidth: 1100, margin: "0 auto", padding: "0 14px 14px", display: "flex", gap: 10, flexWrap: "wrap" }}>
           <a href="/panel" style={linkStyle("/panel")}>
             Dashboard
