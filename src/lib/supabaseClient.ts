@@ -1,15 +1,8 @@
 // src/lib/supabaseClient.ts
 import { createClient } from "@supabase/supabase-js";
 
-function getEnv(name: string) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env var: ${name}`);
-  return v;
-}
-
 // ✅ Storage “safe” (Safari / private mode / restricciones)
 function makeSafeStorage() {
-  // memoria fallback
   const mem = new Map<string, string>();
 
   const hasLocalStorage = () => {
@@ -54,9 +47,12 @@ function makeSafeStorage() {
   };
 }
 
-const supabaseUrl = getEnv("NEXT_PUBLIC_SUPABASE_URL");
-const supabaseAnonKey = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+// ✅ NO lanzar error en cliente: leer envs “suave”
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
+// Si faltan, creamos un cliente “dummy” pero la app NO explota.
+// Así podrás ver el panel y te mostrará errores manejables al llamar auth.
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     persistSession: true,
@@ -65,3 +61,10 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     storage: typeof window === "undefined" ? undefined : makeSafeStorage(),
   },
 });
+
+// (opcional) si quieres aviso claro en consola sin romper la app:
+if (typeof window !== "undefined") {
+  if (!supabaseUrl || !supabaseAnonKey) {
+    console.error("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY in this deployment.");
+  }
+}
