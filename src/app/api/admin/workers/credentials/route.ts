@@ -9,19 +9,6 @@ function getEnv(name: string) {
   return v;
 }
 
-const SUPABASE_URL = getEnv("SUPABASE_URL");
-const ANON_KEY = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
-const SERVICE_ROLE = getEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE, {
-  auth: { persistSession: false },
-});
-
-// cliente normal solo para validar token
-const supabaseAuth = createClient(SUPABASE_URL, ANON_KEY, {
-  auth: { persistSession: false },
-});
-
 type Body = {
   workerId: string;
   email?: string | null;
@@ -30,6 +17,19 @@ type Body = {
 
 export async function POST(req: Request) {
   try {
+    // ✅ leer env vars dentro del handler (evita crash en build)
+    const SUPABASE_URL = getEnv("SUPABASE_URL");
+    const ANON_KEY = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+    const SERVICE_ROLE = getEnv("SUPABASE_SERVICE_ROLE_KEY");
+
+    const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE, {
+      auth: { persistSession: false },
+    });
+
+    const supabaseAuth = createClient(SUPABASE_URL, ANON_KEY, {
+      auth: { persistSession: false },
+    });
+
     // 1) token
     const authHeader = req.headers.get("authorization") || "";
     const token = authHeader.toLowerCase().startsWith("bearer ")
@@ -87,6 +87,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
+    // ✅ si faltan env vars ahora NO rompe build; devuelve error cuando se llama
     return NextResponse.json({ ok: false, error: e?.message || "Server error" }, { status: 500 });
   }
 }
