@@ -16,6 +16,14 @@ function bearer(req: Request) {
   return m?.[1] || null;
 }
 
+function normRole(r: any) {
+  return String(r || "").trim().toLowerCase();
+}
+
+function normCode(c: any) {
+  return String(c || "").trim().toLowerCase();
+}
+
 type RankRow = {
   worker_id: string;
   name: string;
@@ -30,14 +38,6 @@ function pct(n: number, d: number) {
   return Math.round((n / d) * 1000) / 10; // 1 decimal
 }
 
-function normRole(r: any) {
-  return String(r || "").trim().toLowerCase();
-}
-
-function normCode(c: any) {
-  return String(c || "").trim().toLowerCase();
-}
-
 export async function GET(req: Request) {
   try {
     const token = bearer(req);
@@ -45,10 +45,9 @@ export async function GET(req: Request) {
 
     const url = getEnv("NEXT_PUBLIC_SUPABASE_URL");
     const service = getEnv("SUPABASE_SERVICE_ROLE_KEY");
-
     const db = createClient(url, service, { auth: { persistSession: false } });
 
-    // 1) validar user
+    // 1) validar user (token del cliente)
     const { data: u, error: eu } = await db.auth.getUser(token);
     if (eu || !u?.user) return NextResponse.json({ ok: false, error: "BAD_TOKEN" }, { status: 401 });
     const uid = u.user.id;
@@ -64,7 +63,7 @@ export async function GET(req: Request) {
     if (!me) return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
     if (!(me as any).is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
 
-    // 3) último mes disponible (ignorando NULL)
+    // ✅ 3) último mes disponible (ignorando NULL)
     const { data: lastMonthRow, error: emonth } = await db
       .from("attendance_rows")
       .select("month_date")
@@ -89,20 +88,27 @@ export async function GET(req: Request) {
       });
     }
 
-    // 4) filas del mes
-    // ✅ EXCLUSIÓN: codigo = call111 NO PARTICIPA EN RANKINGS
-    // Nota: .neq() funciona si el valor está normalizado en DB (exact match).
-    // Para máxima robustez, filtramos también en JS (por si viene "CALL111" o " call111 ").
+    // ✅ 4) cargar códigos excluidos desde DB (si no existe la tabla, seguimos sin romper)
+    let excludedSet = new Set<string>();
+    const ex = await db.from("ranking_excluded_codes").select("codigo");
+    if (!ex.error) {
+      excludedSet = new Set((ex.data || []).map((r: any) => normCode(r.codigo)));
+    } else {
+      // fallback: regla legacy
+      excludedSet = new Set(["call111"]);
+    }
+
+    // 5) filas del mes
     const { data: rowsRaw, error: erows } = await db
       .from("attendance_rows")
       .select("worker_id, minutes, calls, codigo, captado")
       .eq("month_date", month_date)
-      .neq("codigo", "call111")
       .limit(100000);
 
     if (erows) return NextResponse.json({ ok: false, error: erows.message }, { status: 500 });
 
-    const rows = (rowsRaw || []).filter((r: any) => normCode(r.codigo) !== "call111");
+    // filtro robusto por códigos excluidos
+    const rows = (rowsRaw || []).filter((r: any) => !excludedSet.has(normCode(r.codigo)));
 
     const workerIds = Array.from(new Set((rows || []).map((r: any) => r.worker_id).filter(Boolean)));
 
@@ -118,7 +124,7 @@ export async function GET(req: Request) {
       });
     }
 
-    // 5) workers de esos ids
+    // 6) workers de esos ids
     const { data: ws, error: ews } = await db
       .from("workers")
       .select("id, display_name, role")
@@ -128,10 +134,11 @@ export async function GET(req: Request) {
 
     const wMap = new Map<string, { name: string; role: string }>();
     for (const w of ws || []) {
-      wMap.set((w as any).id, { name: (w as any).display_name, role: (w as any).role });
+      const id = (w as any).id as string;
+      wMap.set(id, { name: (w as any).display_name, role: (w as any).role });
     }
 
-    // 6) agregación
+    // 7) agregación
     const agg = new Map<
       string,
       {
