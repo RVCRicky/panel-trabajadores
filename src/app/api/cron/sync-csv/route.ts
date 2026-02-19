@@ -10,16 +10,15 @@ function getEnv(name: string) {
 
 export async function GET(req: Request) {
   try {
-    const CRON_SECRET = getEnv("CRON_SECRET");
+    const secret = getEnv("CRON_SECRET");
 
     const url = new URL(req.url);
-    const got = url.searchParams.get("secret") || "";
+    const got = (url.searchParams.get("secret") || "").trim();
 
-    if (got !== CRON_SECRET) {
+    if (got !== secret) {
       return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
     }
 
-    // Llamamos al sync existente, pero con un header secreto (sin sesión)
     const origin =
       req.headers.get("x-forwarded-proto") && req.headers.get("x-forwarded-host")
         ? `${req.headers.get("x-forwarded-proto")}://${req.headers.get("x-forwarded-host")}`
@@ -29,9 +28,9 @@ export async function GET(req: Request) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-cron-secret": CRON_SECRET,
+        "x-cron-secret": secret,
       },
-      body: JSON.stringify({}), // el sync cogerá SYNC_CSV_URL por env (lo ajustamos en el paso 1.B)
+      body: JSON.stringify({}),
     });
 
     const raw = await r.text();
