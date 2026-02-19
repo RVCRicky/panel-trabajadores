@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/close-month",
       "schedule": "0 2 1 * *"
+    },
+    {
+      "path": "/api/cron/rebuild-monthly?secret=TU_CRON_SECRET",
+      "schedule": "0 * * * *"
     }
   ]
 }
