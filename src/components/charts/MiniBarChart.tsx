@@ -15,20 +15,20 @@ function shortDate(iso: string) {
 }
 
 export type MiniBarPoint = {
-  date: string;     // "YYYY-MM-DD"
-  value: number;    // minutes
+  date: string;  // "YYYY-MM-DD"
+  value: number; // value
 };
 
 export function MiniBarChart({
   data,
-  height = 140,
-  title,
-  subtitle,
+  height = 160,
+  unit = "",
+  valueFormatter,
 }: {
   data: MiniBarPoint[];
   height?: number;
-  title?: string;
-  subtitle?: string;
+  unit?: string; // "min" | "cap" | ""
+  valueFormatter?: (n: number) => string; // override
 }) {
   const rows = Array.isArray(data) ? data : [];
 
@@ -51,15 +51,14 @@ export function MiniBarChart({
     return { max, sum, avg, peak, peakDate, count: rows.length };
   }, [rows]);
 
+  const fmtVal = (n: number) => {
+    if (valueFormatter) return valueFormatter(n);
+    return unit ? `${fmt(n)} ${unit}` : fmt(n);
+    // si no quieres unidad, deja unit=""
+  };
+
   return (
     <div style={{ display: "grid", gap: 10 }}>
-      {(title || subtitle) ? (
-        <div>
-          {title ? <div style={{ fontWeight: 1000 }}>{title}</div> : null}
-          {subtitle ? <div style={{ color: "#666", marginTop: 2 }}>{subtitle}</div> : null}
-        </div>
-      ) : null}
-
       <div
         style={{
           height,
@@ -93,7 +92,7 @@ export function MiniBarChart({
               return (
                 <div key={r.date} style={{ display: "grid", gap: 6 }}>
                   <div
-                    title={`${r.date} · ${fmt(v)}`}
+                    title={`${r.date} · ${fmtVal(v)}`}
                     style={{
                       height: `${pct * 100}%`,
                       borderRadius: 10,
@@ -124,13 +123,13 @@ export function MiniBarChart({
           Días: <b style={{ color: "#111" }}>{fmt(stats.count)}</b>
         </span>
         <span>
-          Total: <b style={{ color: "#111" }}>{fmt(stats.sum)}</b>
+          Total: <b style={{ color: "#111" }}>{fmtVal(Number(stats.sum) || 0)}</b>
         </span>
         <span>
-          Media/día: <b style={{ color: "#111" }}>{fmt(stats.avg.toFixed(0))}</b>
+          Media/día: <b style={{ color: "#111" }}>{fmtVal(Number(stats.avg.toFixed(0)) || 0)}</b>
         </span>
         <span>
-          Pico: <b style={{ color: "#111" }}>{fmt(stats.peak)}</b>
+          Pico: <b style={{ color: "#111" }}>{fmtVal(Number(stats.peak) || 0)}</b>
           {stats.peakDate ? <span> ({stats.peakDate})</span> : null}
         </span>
       </div>
