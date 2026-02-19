@@ -28,7 +28,6 @@ function fmt(n: any) {
 }
 
 function formatMonthLabel(isoMonthDate: string) {
-  // isoMonthDate: "YYYY-MM-01"
   const [y, m] = String(isoMonthDate || "").split("-");
   const monthNum = Number(m);
   const yearNum = Number(y);
@@ -44,58 +43,17 @@ type OverviewResp = {
   month_date: string | null;
   months: string[];
 
-  totals: {
-    minutes: number;
-    captadas: number;
-    tarotistas: number;
-  };
+  totals: { minutes: number; captadas: number; tarotistas: number };
 
   top: {
-    minutes: Array<{
-      worker_id: string;
-      name: string;
-      minutes: number;
-      captadas: number;
-      cliente_pct: number;
-      repite_pct: number;
-    }>;
-    captadas: Array<{
-      worker_id: string;
-      name: string;
-      minutes: number;
-      captadas: number;
-      cliente_pct: number;
-      repite_pct: number;
-    }>;
-    cliente_pct: Array<{
-      worker_id: string;
-      name: string;
-      minutes: number;
-      captadas: number;
-      cliente_pct: number;
-      repite_pct: number;
-    }>;
-    repite_pct: Array<{
-      worker_id: string;
-      name: string;
-      minutes: number;
-      captadas: number;
-      cliente_pct: number;
-      repite_pct: number;
-    }>;
+    minutes: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
+    captadas: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
+    cliente_pct: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
+    repite_pct: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
   };
 
-  presence: {
-    online: number;
-    pause: number;
-    bathroom: number;
-    offline: number;
-    total: number;
-  };
-
-  incidents: {
-    pending: number;
-  };
+  presence: { online: number; pause: number; bathroom: number; offline: number; total: number };
+  incidents: { pending: number };
 
   cronLogs: Array<{
     id: number;
@@ -106,8 +64,16 @@ type OverviewResp = {
     finished_at: string | null;
   }>;
 
+  // minutos por día
   dailySeries: Array<{ date: string; minutes: number }>;
+
+  // captadas por día (soportamos varios nombres para no romper)
+  dailyCaptadasSeries?: Array<{ date: string; captadas: number }>;
+  captadasDailySeries?: Array<{ date: string; captadas: number }>;
+  dailySeriesCaptadas?: Array<{ date: string; captadas: number }>;
 };
+
+type ChartMode = "minutes" | "captadas";
 
 export default function AdminPage() {
   const router = useRouter();
@@ -120,6 +86,8 @@ export default function AdminPage() {
 
   const [overview, setOverview] = useState<OverviewResp | null>(null);
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+
+  const [chartMode, setChartMode] = useState<ChartMode>("minutes");
 
   // Sync CSV
   const [csvUrl, setCsvUrl] = useState("");
@@ -141,33 +109,15 @@ export default function AdminPage() {
   useEffect(() => {
     (async () => {
       const token = await getToken();
-      if (!token) {
-        router.replace("/login");
-        return;
-      }
+      if (!token) return router.replace("/login");
 
       const res = await fetch("/api/me", { headers: { Authorization: `Bearer ${token}` } });
       const json = (await res.json().catch(() => null)) as MeResp | null;
 
-      if (!json?.ok) {
-        setStatus(`Error /api/me: ${(json as any)?.error || "UNKNOWN"}`);
-        return;
-      }
-
-      if (!json.worker) {
-        setStatus("No tienes perfil en workers.");
-        return;
-      }
-
-      if (!json.worker.is_active) {
-        setStatus("Usuario desactivado.");
-        return;
-      }
-
-      if (json.worker.role !== "admin") {
-        router.replace("/panel");
-        return;
-      }
+      if (!json?.ok) return setStatus(`Error /api/me: ${(json as any)?.error || "UNKNOWN"}`);
+      if (!json.worker) return setStatus("No tienes perfil en workers.");
+      if (!json.worker.is_active) return setStatus("Usuario desactivado.");
+      if (json.worker.role !== "admin") return router.replace("/panel");
 
       setMeName(json.worker.display_name);
       setStatus("OK");
@@ -196,8 +146,11 @@ export default function AdminPage() {
 
       setOverview(j);
 
-      // sincronizar selector con backend
       if (j.month_date && j.month_date !== selectedMonth) setSelectedMonth(j.month_date);
+
+      // si no viene captadas por día, fuerza modo minutes para no quedar vacío
+      const cap = (j.dailyCaptadasSeries || j.captadasDailySeries || j.dailySeriesCaptadas || []) as any[];
+      if ((!cap || cap.length === 0) && chartMode === "captadas") setChartMode("minutes");
     } catch (e: any) {
       setErr(e?.message || "Error overview");
     } finally {
@@ -229,10 +182,7 @@ export default function AdminPage() {
     setSyncing(true);
     try {
       const token = await getToken();
-      if (!token) {
-        router.replace("/login");
-        return;
-      }
+      if (!token) return router.replace("/login");
 
       const r = await fetch("/api/admin/sync-csv", {
         method: "POST",
@@ -291,12 +241,28 @@ export default function AdminPage() {
     return { tone, text, dur, when };
   }, [lastCron]);
 
-  const dailyData = useMemo(() => {
+  const dailyMinutesData = useMemo(() => {
     return (overview?.dailySeries || []).map((x) => ({
       date: x.date,
-      value: Number(x.minutes) || 0,
+      value: Number((x as any).minutes) || 0,
     }));
   }, [overview?.dailySeries]);
+
+  const dailyCaptadasData = useMemo(() => {
+    const src =
+      (overview?.dailyCaptadasSeries ||
+        overview?.captadasDailySeries ||
+        overview?.dailySeriesCaptadas ||
+        []) as Array<any>;
+
+    return (src || []).map((x) => ({
+      date: String(x.date),
+      value: Number(x.captadas) || 0,
+    }));
+  }, [overview?.dailyCaptadasSeries, overview?.captadasDailySeries, overview?.dailySeriesCaptadas]);
+
+  const chartData = chartMode === "minutes" ? dailyMinutesData : dailyCaptadasData;
+  const chartUnit = chartMode === "minutes" ? "min" : "cap";
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
@@ -419,13 +385,50 @@ export default function AdminPage() {
         <QuickLink href="/admin/mappings" title="Mappings" desc="Enlaces de CSV/Drive con trabajadores." />
       </div>
 
-      {/* Gráfico simple */}
+      {/* Gráfico con toggle */}
       <Card>
-        <CardTitle>Minutos por día</CardTitle>
-        <CardHint>Mes seleccionado · Gráfico simple (sin librerías).</CardHint>
+        <CardTitle>Serie diaria</CardTitle>
+        <CardHint>Mes seleccionado · Toggle Minutos / Captadas.</CardHint>
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+          <button
+            onClick={() => setChartMode("minutes")}
+            style={{
+              padding: 10,
+              borderRadius: 12,
+              border: "1px solid #111",
+              fontWeight: 900,
+              background: chartMode === "minutes" ? "#111" : "#fff",
+              color: chartMode === "minutes" ? "#fff" : "#111",
+            }}
+          >
+            Minutos
+          </button>
+
+          <button
+            onClick={() => setChartMode("captadas")}
+            disabled={dailyCaptadasData.length === 0}
+            style={{
+              padding: 10,
+              borderRadius: 12,
+              border: "1px solid #111",
+              fontWeight: 900,
+              background: chartMode === "captadas" ? "#111" : "#fff",
+              color: chartMode === "captadas" ? "#fff" : "#111",
+              opacity: dailyCaptadasData.length === 0 ? 0.5 : 1,
+              cursor: dailyCaptadasData.length === 0 ? "not-allowed" : "pointer",
+            }}
+          >
+            Captadas
+          </button>
+
+          <div style={{ marginLeft: "auto", color: "#666", display: "flex", alignItems: "center" }}>
+            Mostrando: <b style={{ color: "#111", marginLeft: 6 }}>{chartMode === "minutes" ? "Minutos/día" : "Captadas/día"}</b>
+          </div>
+        </div>
 
         <div style={{ marginTop: 10 }}>
-          <MiniBarChart data={dailyData} height={170} />
+          <MiniBarChart data={chartData} height={180} unit={chartUnit} />
         </div>
       </Card>
 
@@ -498,8 +501,7 @@ export default function AdminPage() {
           { key: "repite_pct", title: "Top 10 (Repite %)" },
         ].map((box) => {
           const list: any[] = (overview?.top as any)?.[box.key] || [];
-          const label =
-            box.key === "minutes" ? "Min" : box.key === "captadas" ? "Cap" : "%";
+          const label = box.key === "minutes" ? "Min" : box.key === "captadas" ? "Cap" : "%";
 
           return (
             <Card key={box.key}>
