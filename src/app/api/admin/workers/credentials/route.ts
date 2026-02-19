@@ -17,20 +17,20 @@ const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE, {
   auth: { persistSession: false },
 });
 
-// cliente “normal” solo para validar el token y obtener el userId que llama
+// cliente normal solo para validar token
 const supabaseAuth = createClient(SUPABASE_URL, ANON_KEY, {
   auth: { persistSession: false },
 });
 
 type Body = {
-  workerId: string;        // id del trabajador (uuid auth.users.id)
+  workerId: string;
   email?: string | null;
   password?: string | null;
 };
 
 export async function POST(req: Request) {
   try {
-    // 1) validar token del que llama
+    // 1) token
     const authHeader = req.headers.get("authorization") || "";
     const token = authHeader.toLowerCase().startsWith("bearer ")
       ? authHeader.slice(7).trim()
@@ -47,7 +47,7 @@ export async function POST(req: Request) {
 
     const callerId = u.user.id;
 
-    // 2) comprobar que el que llama es admin activo
+    // 2) check admin
     const { data: caller, error: cErr } = await supabaseAdmin
       .from("worker_profiles")
       .select("role,is_active")
@@ -72,7 +72,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Provide email and/or password" }, { status: 400 });
     }
 
-    // 4) update AUTH
+    // 4) update auth user
     const patch: any = {};
     if (email) patch.email = email;
     if (password) patch.password = password;
@@ -80,9 +80,9 @@ export async function POST(req: Request) {
     const { error: upErr } = await supabaseAdmin.auth.admin.updateUserById(workerId, patch);
     if (upErr) return NextResponse.json({ ok: false, error: upErr.message }, { status: 400 });
 
-    // opcional: confirmar email automáticamente al cambiarlo (si te molesta quitarlo, lo quitamos)
+    // opcional: confirmar email
     if (email) {
-      await supabaseAdmin.auth.admin.updateUserById(workerId, { email_confirm: true as any } as any);
+      await supabaseAdmin.auth.admin.updateUserById(workerId, { email_confirm: true } as any);
     }
 
     return NextResponse.json({ ok: true });
