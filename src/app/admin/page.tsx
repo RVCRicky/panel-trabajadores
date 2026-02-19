@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { QuickLink } from "@/components/ui/QuickLink";
+import { MiniBarChart } from "@/components/charts/MiniBarChart";
 
 type WorkerRole = "admin" | "central" | "tarotista";
 
@@ -50,10 +51,38 @@ type OverviewResp = {
   };
 
   top: {
-    minutes: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
-    captadas: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
-    cliente_pct: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
-    repite_pct: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
+    minutes: Array<{
+      worker_id: string;
+      name: string;
+      minutes: number;
+      captadas: number;
+      cliente_pct: number;
+      repite_pct: number;
+    }>;
+    captadas: Array<{
+      worker_id: string;
+      name: string;
+      minutes: number;
+      captadas: number;
+      cliente_pct: number;
+      repite_pct: number;
+    }>;
+    cliente_pct: Array<{
+      worker_id: string;
+      name: string;
+      minutes: number;
+      captadas: number;
+      cliente_pct: number;
+      repite_pct: number;
+    }>;
+    repite_pct: Array<{
+      worker_id: string;
+      name: string;
+      minutes: number;
+      captadas: number;
+      cliente_pct: number;
+      repite_pct: number;
+    }>;
   };
 
   presence: {
@@ -92,7 +121,7 @@ export default function AdminPage() {
   const [overview, setOverview] = useState<OverviewResp | null>(null);
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
-  // Sync CSV (mantenemos tu bloque)
+  // Sync CSV
   const [csvUrl, setCsvUrl] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
@@ -176,7 +205,7 @@ export default function AdminPage() {
     }
   }
 
-  // carga inicial + refresco cada 30s (KPIs, cron, presencia, etc.)
+  // carga inicial + refresco cada 30s
   useEffect(() => {
     if (status !== "OK") return;
     loadOverview(null);
@@ -233,7 +262,6 @@ export default function AdminPage() {
         `✅ Sync OK. Insertadas: ${j.inserted}. Saltadas sin worker: ${j.skippedNoWorker}. Filas malas: ${j.skippedBad}. Total CSV: ${j.totalRows}`
       );
 
-      // refrescar overview después del sync
       await loadOverview(selectedMonth);
     } finally {
       setSyncing(false);
@@ -247,21 +275,28 @@ export default function AdminPage() {
   const pending = overview?.incidents?.pending ?? null;
 
   const toneOnline = (presence?.online ?? 0) > 0 ? "ok" : "neutral";
-  const toneMissingLike = (pending ?? 0) > 0 ? "warn" : "ok";
+  const tonePending = (pending ?? 0) > 0 ? "warn" : "ok";
 
   const lastCron = useMemo(() => {
     const logs = overview?.cronLogs || [];
     return logs.length ? logs[0] : null;
   }, [overview?.cronLogs]);
 
-  function cronBadge(log: any) {
-    if (!log) return { tone: "neutral", text: "Sin logs" };
-    return log.ok ? { tone: "ok", text: "OK" } : { tone: "warn", text: "FAIL" };
-  }
+  const cronInfo = useMemo(() => {
+    if (!lastCron) return { tone: "neutral", text: "Sin logs", dur: "—", when: "—" };
+    const tone = lastCron.ok ? "ok" : "warn";
+    const text = lastCron.ok ? "OK" : "FAIL";
+    const dur = lastCron.details?.duration_ms != null ? `${fmt(lastCron.details.duration_ms)} ms` : "—";
+    const when = lastCron.started_at ? new Date(lastCron.started_at).toLocaleString("es-ES") : "—";
+    return { tone, text, dur, when };
+  }, [lastCron]);
 
-  const cronInfo = cronBadge(lastCron);
-  const cronDuration =
-    lastCron?.details?.duration_ms != null ? `${fmt(lastCron.details.duration_ms)} ms` : lastCron?.details?.duration ? String(lastCron.details.duration) : "—";
+  const dailyData = useMemo(() => {
+    return (overview?.dailySeries || []).map((x) => ({
+      date: x.date,
+      value: Number(x.minutes) || 0,
+    }));
+  }, [overview?.dailySeries]);
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
@@ -361,7 +396,7 @@ export default function AdminPage() {
           <CardTitle>Incidencias pendientes</CardTitle>
           <CardValue>{pending === null ? "—" : fmt(pending)}</CardValue>
           <CardHint>
-            <Badge tone={toneMissingLike as any}>{pending && pending > 0 ? "Revisar" : "OK"}</Badge> · Acciones en /admin/incidents
+            <Badge tone={tonePending as any}>{pending && pending > 0 ? "Revisar" : "OK"}</Badge> · Acciones en /admin/incidents
           </CardHint>
         </Card>
 
@@ -371,8 +406,7 @@ export default function AdminPage() {
             <Badge tone={cronInfo.tone as any}>{cronInfo.text}</Badge>
           </CardValue>
           <CardHint>
-            Duración: <b>{cronDuration}</b> · Último:{" "}
-            <b>{lastCron?.started_at ? new Date(lastCron.started_at).toLocaleString("es-ES") : "—"}</b>
+            Duración: <b>{cronInfo.dur}</b> · Último: <b>{cronInfo.when}</b>
           </CardHint>
         </Card>
       </div>
@@ -384,6 +418,16 @@ export default function AdminPage() {
         <QuickLink href="/admin/workers" title="Trabajadores" desc="Altas, bajas, roles, activar/desactivar." />
         <QuickLink href="/admin/mappings" title="Mappings" desc="Enlaces de CSV/Drive con trabajadores." />
       </div>
+
+      {/* Gráfico simple */}
+      <Card>
+        <CardTitle>Minutos por día</CardTitle>
+        <CardHint>Mes seleccionado · Gráfico simple (sin librerías).</CardHint>
+
+        <div style={{ marginTop: 10 }}>
+          <MiniBarChart data={dailyData} height={170} />
+        </div>
+      </Card>
 
       {/* Sync CSV */}
       <Card>
@@ -431,7 +475,9 @@ export default function AdminPage() {
           </div>
 
           {syncMsg ? (
-            <div style={{ padding: 10, borderRadius: 10, background: "#f6f6f6", border: "1px solid #e5e5e5" }}>{syncMsg}</div>
+            <div style={{ padding: 10, borderRadius: 10, background: "#f6f6f6", border: "1px solid #e5e5e5" }}>
+              {syncMsg}
+            </div>
           ) : null}
 
           {syncDebug ? (
@@ -445,149 +491,70 @@ export default function AdminPage() {
 
       {/* Top tables */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
-        <Card>
-          <CardTitle>Top 10 (Minutos)</CardTitle>
-          <CardHint>Ranking del mes seleccionado.</CardHint>
+        {[
+          { key: "minutes", title: "Top 10 (Minutos)" },
+          { key: "captadas", title: "Top 10 (Captadas)" },
+          { key: "cliente_pct", title: "Top 10 (Cliente %)" },
+          { key: "repite_pct", title: "Top 10 (Repite %)" },
+        ].map((box) => {
+          const list: any[] = (overview?.top as any)?.[box.key] || [];
+          const label =
+            box.key === "minutes" ? "Min" : box.key === "captadas" ? "Cap" : "%";
 
-          <div style={{ overflowX: "auto", marginTop: 10 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Min</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Cap</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(overview?.top?.minutes || []).length === 0 ? (
-                  <tr>
-                    <td colSpan={4} style={{ padding: 10, color: "#666" }}>
-                      Sin datos.
-                    </td>
-                  </tr>
-                ) : (
-                  (overview?.top?.minutes || []).map((r, idx) => (
-                    <tr key={r.worker_id}>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{fmt(r.minutes)}</td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(r.captadas)}</td>
+          return (
+            <Card key={box.key}>
+              <CardTitle>{box.title}</CardTitle>
+              <CardHint>Mes seleccionado.</CardHint>
+
+              <div style={{ overflowX: "auto", marginTop: 10 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
+                      <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
+                      <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>{label}</th>
+                      {box.key === "minutes" ? (
+                        <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Cap</th>
+                      ) : null}
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-
-        <Card>
-          <CardTitle>Top 10 (Captadas)</CardTitle>
-          <CardHint>Ranking del mes seleccionado.</CardHint>
-
-          <div style={{ overflowX: "auto", marginTop: 10 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Cap</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(overview?.top?.captadas || []).length === 0 ? (
-                  <tr>
-                    <td colSpan={3} style={{ padding: 10, color: "#666" }}>
-                      Sin datos.
-                    </td>
-                  </tr>
-                ) : (
-                  (overview?.top?.captadas || []).map((r, idx) => (
-                    <tr key={r.worker_id}>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{fmt(r.captadas)}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-
-        <Card>
-          <CardTitle>Top 10 (Cliente %)</CardTitle>
-          <CardHint>Ranking del mes seleccionado.</CardHint>
-
-          <div style={{ overflowX: "auto", marginTop: 10 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>%</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(overview?.top?.cliente_pct || []).length === 0 ? (
-                  <tr>
-                    <td colSpan={3} style={{ padding: 10, color: "#666" }}>
-                      Sin datos.
-                    </td>
-                  </tr>
-                ) : (
-                  (overview?.top?.cliente_pct || []).map((r, idx) => (
-                    <tr key={r.worker_id}>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{fmt(r.cliente_pct)} %</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-
-        <Card>
-          <CardTitle>Top 10 (Repite %)</CardTitle>
-          <CardHint>Ranking del mes seleccionado.</CardHint>
-
-          <div style={{ overflowX: "auto", marginTop: 10 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>%</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(overview?.top?.repite_pct || []).length === 0 ? (
-                  <tr>
-                    <td colSpan={3} style={{ padding: 10, color: "#666" }}>
-                      Sin datos.
-                    </td>
-                  </tr>
-                ) : (
-                  (overview?.top?.repite_pct || []).map((r, idx) => (
-                    <tr key={r.worker_id}>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{fmt(r.repite_pct)} %</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+                  </thead>
+                  <tbody>
+                    {list.length === 0 ? (
+                      <tr>
+                        <td colSpan={box.key === "minutes" ? 4 : 3} style={{ padding: 10, color: "#666" }}>
+                          Sin datos.
+                        </td>
+                      </tr>
+                    ) : (
+                      list.map((r: any, idx: number) => (
+                        <tr key={r.worker_id}>
+                          <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>
+                            {box.key === "minutes"
+                              ? fmt(r.minutes)
+                              : box.key === "captadas"
+                              ? fmt(r.captadas)
+                              : `${fmt(box.key === "cliente_pct" ? r.cliente_pct : r.repite_pct)} %`}
+                          </td>
+                          {box.key === "minutes" ? (
+                            <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(r.captadas)}</td>
+                          ) : null}
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          );
+        })}
       </div>
 
-      {/* Cron logs (últimos 10) */}
+      {/* Cron logs */}
       <Card>
         <CardTitle>Últimas ejecuciones CRON</CardTitle>
-        <CardHint>Si aquí ves FAIL, hay que revisar logs de Functions.</CardHint>
+        <CardHint>Si ves FAIL, revisa Vercel Functions Logs.</CardHint>
 
         <div style={{ overflowX: "auto", marginTop: 10 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
@@ -604,7 +571,7 @@ export default function AdminPage() {
               {(overview?.cronLogs || []).length === 0 ? (
                 <tr>
                   <td colSpan={5} style={{ padding: 10, color: "#666" }}>
-                    Sin logs aún. Ejecuta el cron manual una vez.
+                    Sin logs aún.
                   </td>
                 </tr>
               ) : (
@@ -612,10 +579,15 @@ export default function AdminPage() {
                   const tone = l.ok ? "ok" : "warn";
                   const dur = l.details?.duration_ms != null ? `${fmt(l.details.duration_ms)} ms` : "—";
                   const msg = l.ok ? "OK" : "FAIL";
-                  const detail = l.ok ? JSON.stringify(l.details?.rebuilt || l.details?.stage || "ok") : String(l.details?.error || "error");
+                  const detail = l.ok
+                    ? JSON.stringify(l.details?.rebuilt || l.details?.stage || "ok")
+                    : String(l.details?.error || "error");
+
                   return (
                     <tr key={l.id}>
-                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{new Date(l.started_at).toLocaleString("es-ES")}</td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
+                        {new Date(l.started_at).toLocaleString("es-ES")}
+                      </td>
                       <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{l.job}</td>
                       <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
                         <Badge tone={tone as any}>{msg}</Badge>
