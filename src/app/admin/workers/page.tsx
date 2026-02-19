@@ -71,8 +71,8 @@ export default function AdminWorkersPage() {
     setLoadingWorkers(true);
     try {
       const { data, error } = await supabase
-        .from("worker_profiles")
-        .select("id,display_name,role,is_active")
+        .from("workers")
+        .select("id,name,role,is_active")
         .order("display_name", { ascending: true });
 
       if (error) {
@@ -88,7 +88,7 @@ export default function AdminWorkersPage() {
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return workers;
-    return workers.filter((w) => (w.display_name || "").toLowerCase().includes(t));
+    return workers.filter((w) => (w.name || "").toLowerCase().includes(t));
   }, [workers, q]);
 
   async function onUpdateCredentials(e: React.FormEvent) {
@@ -242,7 +242,7 @@ export default function AdminWorkersPage() {
               ) : (
                 filtered.slice(0, 50).map((w) => (
                   <tr key={w.id}>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{w.display_name}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{w.name}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{w.role}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{w.is_active ? "sí" : "no"}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", fontFamily: "monospace", fontSize: 12 }}>{w.id}</td>
