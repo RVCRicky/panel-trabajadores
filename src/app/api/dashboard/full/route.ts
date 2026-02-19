@@ -34,6 +34,10 @@ function normRole(r: any) {
   return String(r || "").trim().toLowerCase();
 }
 
+function normCode(c: any) {
+  return String(c || "").trim().toLowerCase();
+}
+
 export async function GET(req: Request) {
   try {
     const token = bearer(req);
@@ -60,7 +64,7 @@ export async function GET(req: Request) {
     if (!me) return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
     if (!(me as any).is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
 
-    // ✅ 3) coger el último mes disponible en attendance_rows (IGNORANDO NULL)
+    // 3) último mes disponible (ignorando NULL)
     const { data: lastMonthRow, error: emonth } = await db
       .from("attendance_rows")
       .select("month_date")
@@ -74,7 +78,6 @@ export async function GET(req: Request) {
     const month_date: string | null = (lastMonthRow as any)?.month_date || null;
 
     if (!month_date) {
-      // no hay datos con month_date todavía
       return NextResponse.json({
         ok: true,
         month_date: null,
@@ -87,13 +90,19 @@ export async function GET(req: Request) {
     }
 
     // 4) filas del mes
-    const { data: rows, error: erows } = await db
+    // ✅ EXCLUSIÓN: codigo = call111 NO PARTICIPA EN RANKINGS
+    // Nota: .neq() funciona si el valor está normalizado en DB (exact match).
+    // Para máxima robustez, filtramos también en JS (por si viene "CALL111" o " call111 ").
+    const { data: rowsRaw, error: erows } = await db
       .from("attendance_rows")
       .select("worker_id, minutes, calls, codigo, captado")
       .eq("month_date", month_date)
+      .neq("codigo", "call111")
       .limit(100000);
 
     if (erows) return NextResponse.json({ ok: false, error: erows.message }, { status: 500 });
+
+    const rows = (rowsRaw || []).filter((r: any) => normCode(r.codigo) !== "call111");
 
     const workerIds = Array.from(new Set((rows || []).map((r: any) => r.worker_id).filter(Boolean)));
 
@@ -118,7 +127,9 @@ export async function GET(req: Request) {
     if (ews) return NextResponse.json({ ok: false, error: ews.message }, { status: 500 });
 
     const wMap = new Map<string, { name: string; role: string }>();
-    for (const w of ws || []) wMap.set((w as any).id, { name: (w as any).display_name, role: (w as any).role });
+    for (const w of ws || []) {
+      wMap.set((w as any).id, { name: (w as any).display_name, role: (w as any).role });
+    }
 
     // 6) agregación
     const agg = new Map<
@@ -159,7 +170,7 @@ export async function GET(req: Request) {
       it.minutes += min;
       if ((r as any).captado) it.captadas += 1;
 
-      const codigo = String((r as any).codigo || "").trim().toLowerCase();
+      const codigo = normCode((r as any).codigo);
       if (codigo === "cliente") it.cliente_min += min;
       if (codigo === "repite") it.repite_min += min;
     }
