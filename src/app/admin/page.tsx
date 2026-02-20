@@ -90,6 +90,13 @@ type InvoiceRow = {
   total_eur: number;
 };
 
+type WorkerRow = {
+  id: string;
+  role: WorkerRole;
+  display_name: string;
+  is_active?: boolean;
+};
+
 export default function AdminPage() {
   const router = useRouter();
 
@@ -104,7 +111,7 @@ export default function AdminPage() {
 
   const [chartMode, setChartMode] = useState<ChartMode>("minutes");
 
-  // ===== NUEVO: Facturación real (worker_invoices) =====
+  // ===== Facturación real (worker_invoices) =====
   const [billingTotal, setBillingTotal] = useState<number | null>(null);
   const [billingTop3, setBillingTop3] = useState<Array<{ worker_id: string; name: string; total_eur: number }>>([]);
   const [billingErr, setBillingErr] = useState<string | null>(null);
@@ -144,8 +151,9 @@ export default function AdminPage() {
     })();
   }, [router]);
 
-  // ===== NUEVO: cargar facturación real del mes desde worker_invoices =====
-  async function loadBilling(monthDate: string | null, ov?: OverviewResp | null) {
+  // ===== Cargar facturación real del mes desde worker_invoices
+  // y Top3 SOLO tarotistas con nombre real =====
+  async function loadBilling(monthDate: string | null) {
     setBillingErr(null);
     setBillingTotal(null);
     setBillingTop3([]);
@@ -153,40 +161,63 @@ export default function AdminPage() {
     if (!monthDate) return;
 
     try {
-      // Intento lectura directa desde supabase client (depende RLS)
-      const { data, error } = await supabase
+      const { data: inv, error: invErr } = await supabase
         .from("worker_invoices")
         .select("worker_id, month_date, total_eur")
         .eq("month_date", monthDate);
 
-      if (error) {
-        setBillingErr(error.message || "Sin permisos para leer worker_invoices");
+      if (invErr) {
+        setBillingErr(invErr.message || "Sin permisos para leer worker_invoices");
         return;
       }
 
-      const rows = (data || []) as unknown as InvoiceRow[];
+      const rows = (inv || []) as unknown as InvoiceRow[];
 
+      // Total general (si quieres luego lo separamos por rol)
       const total = rows.reduce((acc, r) => acc + (Number(r.total_eur) || 0), 0);
       setBillingTotal(total);
 
-      // Top3 por total_eur
-      const top = [...rows]
+      // Worker IDs implicados
+      const workerIds = Array.from(new Set(rows.map((r) => r.worker_id).filter(Boolean)));
+      if (workerIds.length === 0) {
+        setBillingTop3([]);
+        return;
+      }
+
+      // Traer workers para saber roles + nombres reales
+      const { data: wrk, error: wrkErr } = await supabase
+        .from("workers")
+        .select("id, role, display_name, is_active")
+        .in("id", workerIds);
+
+      if (wrkErr) {
+        setBillingErr(wrkErr.message || "Sin permisos para leer workers");
+        return;
+      }
+
+      const workers = (wrk || []) as unknown as WorkerRow[];
+      const tarotistMap = new Map<string, WorkerRow>();
+      workers.forEach((w) => {
+        if (w.role === "tarotista") tarotistMap.set(w.id, w);
+      });
+
+      // Filtrar facturas a SOLO tarotistas
+      const tarotRows = rows.filter((r) => tarotistMap.has(r.worker_id));
+
+      // Top3 por €
+      const top = [...tarotRows]
         .sort((a, b) => (Number(b.total_eur) || 0) - (Number(a.total_eur) || 0))
-        .slice(0, 3);
+        .slice(0, 3)
+        .map((t) => {
+          const w = tarotistMap.get(t.worker_id)!;
+          return {
+            worker_id: t.worker_id,
+            name: w.display_name || t.worker_id.slice(0, 8),
+            total_eur: Number(t.total_eur) || 0,
+          };
+        });
 
-      // Resolver nombre con overview.top.minutes (ya trae worker_id + name)
-      const nameMap = new Map<string, string>();
-      const ovUse = ov || overview;
-      (ovUse?.top?.minutes || []).forEach((x) => nameMap.set(x.worker_id, x.name));
-      (ovUse?.top?.captadas || []).forEach((x) => nameMap.set(x.worker_id, x.name));
-
-      const top3Resolved = top.map((t) => ({
-        worker_id: t.worker_id,
-        name: nameMap.get(t.worker_id) || t.worker_id.slice(0, 8),
-        total_eur: Number(t.total_eur) || 0,
-      }));
-
-      setBillingTop3(top3Resolved);
+      setBillingTop3(top);
     } catch (e: any) {
       setBillingErr(e?.message || "Error cargando facturación");
     }
@@ -216,12 +247,11 @@ export default function AdminPage() {
 
       if (j.month_date && j.month_date !== selectedMonth) setSelectedMonth(j.month_date);
 
-      // si no viene captadas por día, fuerza modo minutes para no quedar vacío
       const cap = (j.dailyCaptadasSeries || j.captadasDailySeries || j.dailySeriesCaptadas || []) as any[];
       if ((!cap || cap.length === 0) && chartMode === "captadas") setChartMode("minutes");
 
-      // ✅ NUEVO: cargar facturación real del mes (worker_invoices)
-      await loadBilling(j.month_date, j);
+      // ✅ Facturación real
+      await loadBilling(j.month_date);
     } catch (e: any) {
       setErr(e?.message || "Error overview");
     } finally {
@@ -229,7 +259,6 @@ export default function AdminPage() {
     }
   }
 
-  // carga inicial + refresco cada 30s
   useEffect(() => {
     if (status !== "OK") return;
     loadOverview(null);
@@ -238,7 +267,6 @@ export default function AdminPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
-  // si cambia el mes manualmente
   useEffect(() => {
     if (status !== "OK") return;
     if (!selectedMonth) return;
@@ -455,7 +483,7 @@ export default function AdminPage() {
           </div>
         </div>
 
-        {/* KPIs reales */}
+        {/* KPIs */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
           <Card>
             <CardTitle>Facturación mes</CardTitle>
@@ -485,13 +513,13 @@ export default function AdminPage() {
           </Card>
         </div>
 
-        {/* Top 3 € + Alertas */}
+        {/* Top 3 tarotistas por € + Alertas */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
           <Card>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
               <div>
                 <CardTitle>Top 3 del mes (€)</CardTitle>
-                <CardHint>Basado en worker_invoices.total_eur</CardHint>
+                <CardHint>Solo tarotistas · worker_invoices.total_eur</CardHint>
               </div>
               <span style={{ padding: "8px 12px", borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", fontSize: 13 }}>
                 🏆 Ranking
@@ -501,10 +529,10 @@ export default function AdminPage() {
             <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
               {billingErr ? (
                 <div style={{ color: "#b45309" }}>
-                  No se puede leer worker_invoices: <b>{billingErr}</b>
+                  No se puede cargar el ranking: <b>{billingErr}</b>
                 </div>
               ) : billingTop3.length === 0 ? (
-                <div style={{ color: "#6b7280" }}>Sin datos de facturación aún.</div>
+                <div style={{ color: "#6b7280" }}>Sin datos de tarotistas para este mes.</div>
               ) : (
                 billingTop3.map((r, idx) => {
                   const max = Math.max(1, ...billingTop3.map((x) => x.total_eur || 0));
@@ -543,7 +571,7 @@ export default function AdminPage() {
 
                           <div>
                             <div style={{ fontWeight: 900, fontSize: 16 }}>{r.name}</div>
-                            <div style={{ fontSize: 12, color: "#6b7280" }}>Worker: {r.worker_id.slice(0, 8)}…</div>
+                            <div style={{ fontSize: 12, color: "#6b7280" }}>Tarotista</div>
                           </div>
                         </div>
 
