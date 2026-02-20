@@ -29,12 +29,10 @@ type TeamRow = {
   total_captadas: number;
   member_count: number;
 
-  // ✅ NUEVO (para el ranking global)
   team_cliente_pct?: number;
   team_repite_pct?: number;
   team_score?: number;
 
-  // ✅ NUEVO (para ver quién es de cada equipo)
   members?: TeamMember[];
 };
 
@@ -311,6 +309,8 @@ export default function PanelPage() {
 
   const me = data?.user?.worker || null;
   const myRole = String(me?.role || "").toLowerCase();
+  const isCentral = myRole === "central";
+  const isTarot = myRole === "tarotista";
 
   const ranks = data?.rankings?.[rankType] || [];
 
@@ -321,13 +321,14 @@ export default function PanelPage() {
     return idx === -1 ? null : idx + 1;
   }, [me?.display_name, ranks]);
 
-  const myRank = myRole === "central" ? (data?.myTeamRank ?? null) : myRankTarot;
+  const myRank = isCentral ? (data?.myTeamRank ?? null) : myRankTarot;
 
   function top3For(k: RankKey) {
     const list = data?.rankings?.[k] || [];
     return list.slice(0, 3);
   }
 
+  // ✅ Para central: NO mostrar % en tablas (solo minutos/captadas)
   function valueOf(k: RankKey, r: any) {
     if (k === "minutes") return fmt(r.minutes);
     if (k === "captadas") return fmt(r.captadas);
@@ -340,6 +341,7 @@ export default function PanelPage() {
   const stateText = pState === "online" ? "ONLINE" : pState === "pause" ? "PAUSA" : pState === "bathroom" ? "BAÑO" : "OFFLINE";
 
   const totalEur = data?.myEarnings?.amount_total_eur ?? null;
+  const bonusOnly = data?.myEarnings?.amount_bonus_eur ?? null;
   const minutesTotal = data?.myEarnings?.minutes_total ?? null;
   const captadasTotal = data?.myEarnings?.captadas ?? null;
 
@@ -420,12 +422,10 @@ export default function PanelPage() {
         </div>
       </div>
 
-      {err ? (
-        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
-      ) : null}
+      {err ? <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div> : null}
 
-      {/* ✅ MARCADOR TOP — SOLO CENTRAL */}
-      {myRole === "central" && teams.length > 0 ? (
+      {/* ✅ MARCADOR TOP — SOLO CENTRAL (SIN € TAROTISTAS) */}
+      {isCentral && teams.length > 0 ? (
         <div
           style={{
             border: "2px solid #111",
@@ -463,19 +463,21 @@ export default function PanelPage() {
                   }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                    <div style={{ fontWeight: 1100, fontSize: 16 }}>
-                      {t ? `${medal(pos)} #${pos} ${t.team_name}` : "—"}
-                    </div>
+                    <div style={{ fontWeight: 1100, fontSize: 16 }}>{t ? `${medal(pos)} #${pos} ${t.team_name}` : "—"}</div>
                     {isMine ? (
-                      <span style={{ border: "1px solid #111", borderRadius: 999, padding: "4px 10px", fontWeight: 1000 }}>Tu equipo</span>
+                      <span style={{ border: "1px solid #111", borderRadius: 999, padding: "4px 10px", fontWeight: 1000 }}>
+                        Tu equipo
+                      </span>
                     ) : null}
                   </div>
 
-                  <div style={{ fontSize: 30, fontWeight: 1200, marginTop: 8 }}>{t ? eur(t.total_eur_month) : "—"}</div>
+                  {/* ✅ En central: mostramos SCORE (no €) */}
+                  <div style={{ fontSize: 34, fontWeight: 1300, marginTop: 10 }}>
+                    {t?.team_score ?? "—"} <span style={{ fontSize: 14, fontWeight: 1000, color: "#666" }}>score</span>
+                  </div>
 
                   <div style={{ color: "#666", marginTop: 6, fontWeight: 900 }}>
-                    Score global: <b>{t?.team_score ?? "—"}</b> · Clientes: <b>{t?.team_cliente_pct ?? "—"}%</b> · Repite:{" "}
-                    <b>{t?.team_repite_pct ?? "—"}%</b>
+                    Clientes: <b>{t?.team_cliente_pct ?? "—"}%</b> · Repite: <b>{t?.team_repite_pct ?? "—"}%</b>
                   </div>
 
                   <div style={{ color: "#666", marginTop: 6 }}>
@@ -531,18 +533,28 @@ export default function PanelPage() {
           <CardHint>Se actualiza en tiempo real.</CardHint>
         </Card>
 
-        <Card>
-          <CardTitle>Total € este mes</CardTitle>
-          <CardValue>{totalEur === null ? "—" : eur(totalEur)}</CardValue>
-          <CardHint>
-            Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas: <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
-          </CardHint>
-        </Card>
+        {/* ✅ Tarotista ve €; Central ve solo BONUS */}
+        {isTarot ? (
+          <Card>
+            <CardTitle>Total € este mes</CardTitle>
+            <CardValue>{totalEur === null ? "—" : eur(totalEur)}</CardValue>
+            <CardHint>
+              Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas:{" "}
+              <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
+            </CardHint>
+          </Card>
+        ) : isCentral ? (
+          <Card>
+            <CardTitle>Bono del mes</CardTitle>
+            <CardValue>{bonusOnly === null ? "—" : eur(bonusOnly)}</CardValue>
+            <CardHint>Solo se muestra el bono por posición del equipo.</CardHint>
+          </Card>
+        ) : null}
 
         <Card>
           <CardTitle>Mi posición (ranking actual)</CardTitle>
           <CardValue>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</CardValue>
-          <CardHint>{myRole === "central" ? "Según ranking global de equipos." : "Según el ranking seleccionado abajo."}</CardHint>
+          <CardHint>{isCentral ? "Según ranking global de equipos." : "Según el ranking seleccionado abajo."}</CardHint>
         </Card>
       </div>
 
@@ -566,13 +578,7 @@ export default function PanelPage() {
             <button
               onClick={presenceLogin}
               disabled={isLogged}
-              style={{
-                padding: 10,
-                borderRadius: 12,
-                border: "1px solid #111",
-                fontWeight: 900,
-                opacity: isLogged ? 0.5 : 1,
-              }}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #111", fontWeight: 900, opacity: isLogged ? 0.5 : 1 }}
             >
               Loguear
             </button>
@@ -580,13 +586,7 @@ export default function PanelPage() {
             <button
               onClick={() => presenceSet("pause")}
               disabled={!isLogged}
-              style={{
-                padding: 10,
-                borderRadius: 12,
-                border: "1px solid #ddd",
-                fontWeight: 900,
-                opacity: !isLogged ? 0.5 : 1,
-              }}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900, opacity: !isLogged ? 0.5 : 1 }}
             >
               Pausa
             </button>
@@ -594,13 +594,7 @@ export default function PanelPage() {
             <button
               onClick={() => presenceSet("bathroom")}
               disabled={!isLogged}
-              style={{
-                padding: 10,
-                borderRadius: 12,
-                border: "1px solid #ddd",
-                fontWeight: 900,
-                opacity: !isLogged ? 0.5 : 1,
-              }}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900, opacity: !isLogged ? 0.5 : 1 }}
             >
               Baño
             </button>
@@ -608,13 +602,7 @@ export default function PanelPage() {
             <button
               onClick={() => presenceSet("online")}
               disabled={!isLogged}
-              style={{
-                padding: 10,
-                borderRadius: 12,
-                border: "1px solid #ddd",
-                fontWeight: 900,
-                opacity: !isLogged ? 0.5 : 1,
-              }}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900, opacity: !isLogged ? 0.5 : 1 }}
             >
               Volver (Online)
             </button>
@@ -635,10 +623,7 @@ export default function PanelPage() {
               Desloguear
             </button>
 
-            <button
-              onClick={loadPresence}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}
-            >
+            <button onClick={loadPresence} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}>
               Refrescar estado
             </button>
           </div>
@@ -650,7 +635,7 @@ export default function PanelPage() {
         <CardTitle>Top 3 del mes</CardTitle>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginTop: 10 }}>
-          {(["minutes", "repite_pct", "cliente_pct", "captadas"] as RankKey[]).map((k) => (
+          {(isCentral ? (["minutes", "captadas"] as RankKey[]) : (["minutes", "repite_pct", "cliente_pct", "captadas"] as RankKey[])).map((k) => (
             <div key={k} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
               <div style={{ fontWeight: 1000, marginBottom: 6 }}>{labelRanking(k)}</div>
 
@@ -688,9 +673,9 @@ export default function PanelPage() {
         <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <select value={rankType} onChange={(e) => setRankType(e.target.value as RankKey)} style={{ padding: 8 }}>
             <option value="minutes">Ranking por Minutos</option>
-            <option value="repite_pct">Ranking por Repite %</option>
-            <option value="cliente_pct">Ranking por Clientes %</option>
             <option value="captadas">Ranking por Captadas</option>
+            {!isCentral ? <option value="repite_pct">Ranking por Repite %</option> : null}
+            {!isCentral ? <option value="cliente_pct">Ranking por Clientes %</option> : null}
           </select>
 
           <div style={{ color: "#666" }}>
@@ -711,6 +696,7 @@ export default function PanelPage() {
               {ranks.map((r: any, idx: number) => {
                 const pos = idx + 1;
                 const isMe = me?.display_name === r.name;
+
                 const value =
                   rankType === "minutes"
                     ? fmt(r.minutes)
