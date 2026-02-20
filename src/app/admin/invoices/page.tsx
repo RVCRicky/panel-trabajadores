@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
-type Worker = { id: string; display_name: string; role: string; is_active: boolean };
 type Invoice = {
   id: string;
   worker_id: string;
@@ -62,7 +61,7 @@ export default function AdminInvoicesPage() {
     router.replace("/login");
   }
 
-  // ✅ check admin via /api/me (igual que haces en admin dashboard)
+  // ✅ check admin via /api/me
   useEffect(() => {
     (async () => {
       const token = await getToken();
@@ -105,9 +104,16 @@ export default function AdminInvoicesPage() {
         return;
       }
 
-      setInvoices(j.invoices || []);
-      // autoselect primera
-      if ((j.invoices || []).length && !selectedInvoice) setSelectedInvoice(j.invoices[0]);
+      const list: Invoice[] = j.invoices || [];
+      setInvoices(list);
+
+      // mantener seleccionado si existe
+      if (selectedInvoice) {
+        const again = list.find((x) => x.id === selectedInvoice.id) || null;
+        setSelectedInvoice(again || (list.length ? list[0] : null));
+      } else {
+        if (list.length) setSelectedInvoice(list[0]);
+      }
     } finally {
       setLoading(false);
     }
@@ -159,6 +165,11 @@ export default function AdminInvoicesPage() {
     setErr(null);
     if (!selectedInvoice) return;
 
+    if (selectedInvoice.locked_at) {
+      setErr("Esta factura está CERRADA. Reábrela para poder modificarla.");
+      return;
+    }
+
     const amount = Number(String(lineAmount).replace(",", "."));
     if (!lineLabel.trim() || !Number.isFinite(amount)) {
       setErr("Rellena concepto y amount (número). Para sanción usa negativo, ej: -20");
@@ -199,7 +210,47 @@ export default function AdminInvoicesPage() {
       setLineLabel("");
       setLineAmount("");
 
-      // recargar todo
+      await loadInvoices();
+      await loadLines(selectedInvoice.id);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function toggleLock(lock: boolean) {
+    setErr(null);
+    if (!selectedInvoice) return;
+
+    setLoading(true);
+    try {
+      const token = await getToken();
+      if (!token) return router.replace("/login");
+
+      const r = await fetch("/api/admin/invoices/lock", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          invoiceId: selectedInvoice.id,
+          lock,
+        }),
+      });
+
+      const raw = await r.text();
+      let j: any = null;
+      try {
+        j = raw ? JSON.parse(raw) : null;
+      } catch {
+        j = null;
+      }
+
+      if (!r.ok || !j?.ok) {
+        setErr(`Error HTTP ${r.status}. ${j?.error || raw || "(vacío)"}`);
+        return;
+      }
+
       await loadInvoices();
       await loadLines(selectedInvoice.id);
     } finally {
@@ -214,6 +265,7 @@ export default function AdminInvoicesPage() {
       month: selectedInvoice.month_date,
       status: selectedInvoice.status,
       total: euro(selectedInvoice.total_eur),
+      locked: !!selectedInvoice.locked_at,
     };
   }, [selectedInvoice]);
 
@@ -235,14 +287,22 @@ export default function AdminInvoicesPage() {
         <button
           onClick={loadInvoices}
           disabled={loading || status !== "OK"}
-          style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900 }}
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900, cursor: "pointer" }}
         >
           {loading ? "Cargando..." : "Actualizar"}
         </button>
 
         <button
           onClick={logout}
-          style={{ padding: 10, borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", fontWeight: 900 }}
+          style={{
+            padding: 10,
+            borderRadius: 10,
+            border: "1px solid #111",
+            background: "#111",
+            color: "#fff",
+            fontWeight: 900,
+            cursor: "pointer",
+          }}
         >
           Cerrar sesión
         </button>
@@ -261,6 +321,7 @@ export default function AdminInvoicesPage() {
             ) : (
               invoices.map((i) => {
                 const active = selectedInvoice?.id === i.id;
+                const locked = !!i.locked_at;
                 return (
                   <button
                     key={i.id}
@@ -276,7 +337,8 @@ export default function AdminInvoicesPage() {
                   >
                     <div style={{ fontWeight: 900 }}>{i.worker?.display_name || "—"}</div>
                     <div style={{ color: "#666", fontSize: 13 }}>
-                      {i.month_date} · {i.status} · <b style={{ color: "#111" }}>{euro(i.total_eur)}</b>
+                      {i.month_date} · {locked ? "CERRADA" : "ABIERTA"} · {i.status} ·{" "}
+                      <b style={{ color: "#111" }}>{euro(i.total_eur)}</b>
                     </div>
                   </button>
                 );
@@ -298,6 +360,39 @@ export default function AdminInvoicesPage() {
                 <div style={{ marginLeft: "auto", color: "#666" }}>
                   Estado: <b style={{ color: "#111" }}>{selectedInfo?.status}</b> · Total:{" "}
                   <b style={{ color: "#111" }}>{selectedInfo?.total}</b>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+                {selectedInvoice.locked_at ? (
+                  <button
+                    onClick={() => toggleLock(false)}
+                    disabled={loading}
+                    style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900, cursor: "pointer" }}
+                  >
+                    Reabrir factura
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => toggleLock(true)}
+                    disabled={loading}
+                    style={{
+                      padding: 10,
+                      borderRadius: 10,
+                      border: "1px solid #111",
+                      background: "#111",
+                      color: "#fff",
+                      fontWeight: 900,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Cerrar factura
+                  </button>
+                )}
+
+                <div style={{ color: "#666", display: "flex", alignItems: "center" }}>
+                  Esta factura está:{" "}
+                  <b style={{ color: "#111", marginLeft: 6 }}>{selectedInvoice.locked_at ? "CERRADA" : "ABIERTA"}</b>
                 </div>
               </div>
 
@@ -336,39 +431,43 @@ export default function AdminInvoicesPage() {
                 </table>
               </div>
 
-              <div style={{ marginTop: 14, borderTop: "1px solid #eee", paddingTop: 10 }}>
+              <div style={{ marginTop: 14, borderTop: "1px solid #eee", paddingTop: 10, opacity: selectedInvoice.locked_at ? 0.6 : 1 }}>
                 <div style={{ fontWeight: 900, marginBottom: 8 }}>Añadir extra / sanción (manual)</div>
 
-                <div style={{ display: "grid", gap: 10 }}>
-                  <input
-                    value={lineLabel}
-                    onChange={(e) => setLineLabel(e.target.value)}
-                    placeholder="Ej: Extra productividad / Sanción incidencia"
-                    style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
-                  />
-                  <input
-                    value={lineAmount}
-                    onChange={(e) => setLineAmount(e.target.value)}
-                    placeholder="Ej: 50 (extra) o -20 (sanción)"
-                    style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
-                  />
+                {selectedInvoice.locked_at ? (
+                  <div style={{ color: "#666" }}>Factura cerrada: reábrela para añadir extras/sanciones.</div>
+                ) : (
+                  <div style={{ display: "grid", gap: 10 }}>
+                    <input
+                      value={lineLabel}
+                      onChange={(e) => setLineLabel(e.target.value)}
+                      placeholder="Ej: Extra productividad / Sanción incidencia"
+                      style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
+                    />
+                    <input
+                      value={lineAmount}
+                      onChange={(e) => setLineAmount(e.target.value)}
+                      placeholder="Ej: 50 (extra) o -20 (sanción)"
+                      style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
+                    />
 
-                  <button
-                    onClick={addManualLine}
-                    disabled={loading}
-                    style={{
-                      padding: 12,
-                      borderRadius: 10,
-                      border: "1px solid #111",
-                      background: "#111",
-                      color: "#fff",
-                      fontWeight: 900,
-                      cursor: "pointer",
-                    }}
-                  >
-                    {loading ? "Guardando..." : "Añadir línea y recalcular"}
-                  </button>
-                </div>
+                    <button
+                      onClick={addManualLine}
+                      disabled={loading}
+                      style={{
+                        padding: 12,
+                        borderRadius: 10,
+                        border: "1px solid #111",
+                        background: "#111",
+                        color: "#fff",
+                        fontWeight: 900,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {loading ? "Guardando..." : "Añadir línea y recalcular"}
+                    </button>
+                  </div>
+                )}
               </div>
             </>
           )}
