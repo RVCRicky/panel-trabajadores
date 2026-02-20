@@ -147,8 +147,11 @@ export async function GET(req: Request) {
     const pdfBytes = await pdfDoc.save(); // Uint8Array
 
     const filename = `factura_${workerName.replace(/\s+/g, "_")}_${inv.month_date}.pdf`;
-
-    return new NextResponse(pdfBytes, {
+    const ab = pdfBytes.buffer.slice(
+  pdfBytes.byteOffset,
+  pdfBytes.byteOffset + pdfBytes.byteLength
+);
+    return new NextResponse(ab, {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
