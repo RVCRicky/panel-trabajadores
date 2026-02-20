@@ -24,50 +24,56 @@ export async function POST(req: Request) {
     const supabaseAuth = createClient(SUPABASE_URL, ANON_KEY, { auth: { persistSession: false } });
     const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
 
-    // token
+    // 1) token
     const authHeader = req.headers.get("authorization") || "";
     const token = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : "";
     if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
 
-    // user
     const { data: u, error: uErr } = await supabaseAuth.auth.getUser(token);
     if (uErr || !u?.user?.id) return NextResponse.json({ ok: false, error: "NOT_AUTH" }, { status: 401 });
-
     const callerAuthId = u.user.id;
 
-    // caller worker
-    const { data: caller, error: cErr } = await supabaseAdmin
+    // 2) body
+    const body = (await req.json()) as Body;
+    const invoiceId = String(body.invoiceId || "").trim();
+    const nextStatus = body.status;
+    const workerNote = body.workerNote != null ? String(body.workerNote).trim() : null;
+
+    if (!invoiceId) return NextResponse.json({ ok: false, error: "MISSING_INVOICE_ID" }, { status: 400 });
+    if (!["accepted", "rejected", "review"].includes(nextStatus))
+      return NextResponse.json({ ok: false, error: "BAD_STATUS" }, { status: 400 });
+
+    // 3) worker del caller
+    const { data: meW, error: wErr } = await supabaseAdmin
       .from("workers")
-      .select("id,user_id,is_active")
+      .select("id,is_active")
       .eq("user_id", callerAuthId)
       .maybeSingle();
 
-    if (cErr) return NextResponse.json({ ok: false, error: cErr.message }, { status: 400 });
-    if (!caller) return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
-    if (!caller.is_active) return NextResponse.json({ ok: false, error: "DISABLED" }, { status: 403 });
+    if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 400 });
+    if (!meW || !meW.is_active) return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
 
-    const body = (await req.json()) as Body;
-    const invoiceId = String(body.invoiceId || "").trim();
-    if (!invoiceId) return NextResponse.json({ ok: false, error: "MISSING_INVOICE_ID" }, { status: 400 });
-
-    // invoice belongs to worker
-    const { data: inv, error: iErr } = await supabaseAdmin
+    // 4) factura debe ser suya
+    const { data: inv, error: invErr } = await supabaseAdmin
       .from("worker_invoices")
-      .select("id,worker_id,locked_at,status")
+      .select("id,worker_id,locked_at")
       .eq("id", invoiceId)
       .maybeSingle();
 
-    if (iErr) return NextResponse.json({ ok: false, error: iErr.message }, { status: 400 });
-    if (!inv) return NextResponse.json({ ok: false, error: "INVOICE_NOT_FOUND" }, { status: 404 });
-    if (inv.worker_id !== caller.id) return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
-    if (inv.locked_at) return NextResponse.json({ ok: false, error: "LOCKED" }, { status: 400 });
+    if (invErr) return NextResponse.json({ ok: false, error: invErr.message }, { status: 400 });
+    if (!inv) return NextResponse.json({ ok: false, error: "NOT_FOUND" }, { status: 404 });
+    if (inv.worker_id !== meW.id) return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
 
-    // update status + note
+    // ✅ si quieres obligar a que solo se responda cuando está cerrada, descomenta esto:
+    // if (!inv.locked_at) {
+    //   return NextResponse.json({ ok: false, error: "INVOICE_NOT_CLOSED" }, { status: 400 });
+    // }
+
     const { error: upErr } = await supabaseAdmin
       .from("worker_invoices")
       .update({
-        status: body.status,
-        worker_note: body.workerNote ?? null,
+        status: nextStatus,
+        worker_note: workerNote,
       })
       .eq("id", invoiceId);
 
