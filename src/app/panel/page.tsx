@@ -24,7 +24,7 @@ type DashboardResp = {
   error?: string;
 
   month_date: string | null;
-  months?: string[]; // ✅ NUEVO (selector de mes)
+  months?: string[]; // selector de mes
   user: { isAdmin: boolean; worker: any | null };
 
   rankings: {
@@ -88,7 +88,6 @@ function formatHMS(sec: number) {
 }
 
 function formatMonthLabel(isoMonthDate: string) {
-  // isoMonthDate: "YYYY-MM-01"
   const [y, m] = isoMonthDate.split("-");
   const monthNum = Number(m);
   const yearNum = Number(y);
@@ -107,7 +106,7 @@ export default function PanelPage() {
 
   const [data, setData] = useState<DashboardResp | null>(null);
 
-  // ✅ selector de mes
+  // selector de mes
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   // Presencia (persistente)
@@ -175,7 +174,7 @@ export default function PanelPage() {
 
       setData(j);
 
-      // ✅ sincroniza selector con lo que diga el backend
+      // sincroniza selector con lo que diga el backend
       if (j.month_date && j.month_date !== selectedMonth) {
         setSelectedMonth(j.month_date);
       }
@@ -257,10 +256,9 @@ export default function PanelPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ si cambia el mes (por selector), recargar
+  // si cambia el mes, recargar
   useEffect(() => {
     if (!selectedMonth) return;
-    // si aún no hay data, espera a la primera carga
     if (!data) return;
     if (data.month_date === selectedMonth) return;
     load(selectedMonth);
@@ -316,7 +314,11 @@ export default function PanelPage() {
   const captadasTotal = data?.myEarnings?.captadas ?? null;
 
   const months = data?.months || [];
-  const monthLabel = selectedMonth ? formatMonthLabel(selectedMonth) : data?.month_date ? formatMonthLabel(data.month_date) : "—";
+  const monthLabel = selectedMonth
+    ? formatMonthLabel(selectedMonth)
+    : data?.month_date
+      ? formatMonthLabel(data.month_date)
+      : "—";
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
@@ -324,7 +326,7 @@ export default function PanelPage() {
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <h1 style={{ margin: 0 }}>Panel</h1>
 
-        {/* ✅ Selector de mes */}
+        {/* Selector de mes */}
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <span style={{ color: "#666", fontWeight: 800 }}>Mes:</span>
 
@@ -359,7 +361,8 @@ export default function PanelPage() {
           >
             {loading ? "Actualizando..." : "Actualizar"}
           </button>
-          
+
+          {/* ✅ PASO 1: quitado el segundo botón de cerrar sesión (se queda el de la cabecera) */}
         </div>
       </div>
 
@@ -399,12 +402,13 @@ export default function PanelPage() {
         </Card>
       </div>
 
-      {/* Accesos rápidos */}
-{data?.user?.isAdmin ? (
-  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
-    <QuickLink href="/admin" title="Ir a Admin" desc="Presencia, incidencias, trabajadores y más." />
-  </div>
-) : null}
+      {/* ✅ PASO 1: quitados los 2 cuadritos duplicados "Mis facturas" y "Panel"
+          Solo dejamos Admin si aplica */}
+      {data?.user?.isAdmin ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+          <QuickLink href="/admin" title="Ir a Admin" desc="Presencia, incidencias, trabajadores y más." />
+        </div>
+      ) : null}
 
       {/* Control horario */}
       {me?.role === "tarotista" || me?.role === "central" ? (
@@ -541,12 +545,12 @@ export default function PanelPage() {
                   rankType === "minutes"
                     ? fmt(r.minutes)
                     : rankType === "captadas"
-                    ? fmt(r.captadas)
-                    : rankType === "repite_pct"
-                    ? `${r.repite_pct} %`
-                    : rankType === "cliente_pct"
-                    ? `${r.cliente_pct} %`
-                    : "";
+                      ? fmt(r.captadas)
+                      : rankType === "repite_pct"
+                        ? `${r.repite_pct} %`
+                        : rankType === "cliente_pct"
+                          ? `${r.cliente_pct} %`
+                          : "";
 
                 return (
                   <tr key={r.worker_id} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 900 : 400 }}>
