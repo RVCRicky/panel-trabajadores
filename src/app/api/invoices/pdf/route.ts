@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { PDFDocument, StandardFonts } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 export const runtime = "nodejs";
 
@@ -33,117 +33,187 @@ export async function GET(req: Request) {
     const supabaseAuth = createClient(SUPABASE_URL, ANON_KEY, { auth: { persistSession: false } });
     const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
 
-    // 1) token
+    // ========= AUTH =========
     const authHeader = req.headers.get("authorization") || "";
     const token = authHeader.toLowerCase().startsWith("bearer ")
       ? authHeader.slice(7).trim()
       : "";
     if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
 
-    const { data: u, error: uErr } = await supabaseAuth.auth.getUser(token);
-    if (uErr || !u?.user?.id) return NextResponse.json({ ok: false, error: "NOT_AUTH" }, { status: 401 });
+    const { data: u } = await supabaseAuth.auth.getUser(token);
+    if (!u?.user?.id) return NextResponse.json({ ok: false, error: "NOT_AUTH" }, { status: 401 });
 
     const callerAuthId = u.user.id;
 
-    // 2) invoiceId
     const url = new URL(req.url);
     const invoiceId = (url.searchParams.get("invoiceId") || "").trim();
     if (!invoiceId) return NextResponse.json({ ok: false, error: "MISSING_INVOICE_ID" }, { status: 400 });
 
-    // 3) caller worker
-    const { data: callerWorker, error: cwErr } = await supabaseAdmin
+    const { data: callerWorker } = await supabaseAdmin
       .from("workers")
       .select("id, role, is_active")
       .eq("user_id", callerAuthId)
       .maybeSingle();
 
-    if (cwErr) return NextResponse.json({ ok: false, error: cwErr.message }, { status: 400 });
-    if (!callerWorker || !callerWorker.is_active) return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
+    if (!callerWorker || !callerWorker.is_active)
+      return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
 
     const isAdmin = callerWorker.role === "admin";
 
-    // 4) invoice
-    const { data: inv, error: invErr } = await supabaseAdmin
+    const { data: inv } = await supabaseAdmin
       .from("worker_invoices")
-      .select("id,worker_id,month_date,status,total_eur,worker_note,admin_note")
+      .select("*")
       .eq("id", invoiceId)
       .maybeSingle();
 
-    if (invErr) return NextResponse.json({ ok: false, error: invErr.message }, { status: 400 });
     if (!inv) return NextResponse.json({ ok: false, error: "NOT_FOUND" }, { status: 404 });
 
-    if (!isAdmin && inv.worker_id !== callerWorker.id) {
+    if (!isAdmin && inv.worker_id !== callerWorker.id)
       return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
-    }
 
-    const { data: w, error: wErr } = await supabaseAdmin
+    const { data: w } = await supabaseAdmin
       .from("workers")
       .select("display_name")
       .eq("id", inv.worker_id)
       .maybeSingle();
 
-    if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 400 });
-
     const workerName = w?.display_name || inv.worker_id;
 
-    const { data: lines, error: lErr } = await supabaseAdmin
+    const { data: lines } = await supabaseAdmin
       .from("worker_invoice_lines")
       .select("label, amount_eur")
       .eq("invoice_id", invoiceId)
       .order("created_at", { ascending: true });
 
-    if (lErr) return NextResponse.json({ ok: false, error: lErr.message }, { status: 400 });
+    // =========================
+    // PDF PROFESIONAL
+    // =========================
 
-    // =========================
-    // PDF con pdf-lib (Vercel OK)
-    // =========================
     const pdfDoc = await PDFDocument.create();
     const page = pdfDoc.addPage([595.28, 841.89]); // A4
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const { width } = page.getSize();
 
-    const left = 50;
+    const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+    const margin = 50;
     let y = 800;
 
-    const draw = (text: string, size = 12) => {
-      page.drawText(text, { x: left, y, size, font });
-      y -= size + 6;
-    };
+    // ========= LOGO =========
+    try {
+      const logoUrl = new URL("/logo.png", req.url).toString();
+      const logoRes = await fetch(logoUrl);
+      const logoBytes = await logoRes.arrayBuffer();
+      const logoImage = await pdfDoc.embedPng(logoBytes);
 
-    draw("Factura de trabajador", 18);
-    y -= 6;
+      const scaled = logoImage.scale(0.35);
 
-    draw(`Trabajador: ${workerName}`, 12);
-    draw(`Mes: ${monthLabel(inv.month_date)}`, 12);
-    draw(`Estado: ${String(inv.status || "").toUpperCase()}`, 12);
-    y -= 6;
+      page.drawImage(logoImage, {
+        x: margin,
+        y: y - 40,
+        width: scaled.width,
+        height: scaled.height,
+      });
+    } catch {
+      // Si falla el logo no rompe el PDF
+    }
 
-    draw(`Total: ${euro(inv.total_eur)}`, 14);
-    y -= 10;
+    // ========= CABECERA =========
+    page.drawText("TAROT CELESTIAL", {
+      x: width - 230,
+      y,
+      size: 18,
+      font: fontBold,
+      color: rgb(0.3, 0, 0.4),
+    });
 
-    draw("Detalle:", 12);
-    y -= 4;
+    y -= 40;
+
+    page.drawLine({
+      start: { x: margin, y },
+      end: { x: width - margin, y },
+      thickness: 1,
+      color: rgb(0.7, 0.7, 0.7),
+    });
+
+    y -= 30;
+
+    page.drawText(`Trabajador: ${workerName}`, { x: margin, y, size: 12, font: fontRegular });
+    y -= 18;
+
+    page.drawText(`Periodo: ${monthLabel(inv.month_date)}`, { x: margin, y, size: 12, font: fontRegular });
+    y -= 18;
+
+    page.drawText(`Estado: ${String(inv.status).toUpperCase()}`, { x: margin, y, size: 12, font: fontBold });
+    y -= 30;
+
+    // ========= DETALLE =========
+    page.drawText("Detalle de conceptos", { x: margin, y, size: 14, font: fontBold });
+    y -= 20;
 
     for (const ln of (lines || []) as any[]) {
-      draw(`• ${ln.label} — ${euro(ln.amount_eur)}`, 11);
-      if (y < 80) {
-        // Si algún día hay muchas líneas, aquí lo mejor es paginar.
-        // Para tu caso normal (pocas líneas) no hará falta.
-        y = 80; // evita romper
-      }
+      page.drawText(ln.label, {
+        x: margin,
+        y,
+        size: 11,
+        font: fontRegular,
+      });
+
+      page.drawText(euro(ln.amount_eur), {
+        x: width - margin - 100,
+        y,
+        size: 11,
+        font: fontRegular,
+      });
+
+      y -= 18;
     }
 
-    if (inv.worker_note) {
-      y -= 8;
-      draw(`Nota trabajador: ${inv.worker_note}`, 11);
-    }
-    if (inv.admin_note) {
-      y -= 6;
-      draw(`Nota admin: ${inv.admin_note}`, 11);
-    }
+    y -= 10;
 
-    const pdfBytes = await pdfDoc.save(); // Uint8Array
+    page.drawLine({
+      start: { x: margin, y },
+      end: { x: width - margin, y },
+      thickness: 1,
+    });
 
-    // ✅ CLAVE: devolver Buffer (siempre aceptado por NextResponse en Node runtime)
+    y -= 25;
+
+    page.drawText("TOTAL:", {
+      x: width - margin - 200,
+      y,
+      size: 14,
+      font: fontBold,
+    });
+
+    page.drawText(euro(inv.total_eur), {
+      x: width - margin - 100,
+      y,
+      size: 14,
+      font: fontBold,
+      color: rgb(0.2, 0.2, 0.2),
+    });
+
+    y -= 60;
+
+    // ========= FIRMA =========
+    page.drawText("Firma trabajador:", {
+      x: margin,
+      y,
+      size: 12,
+      font: fontRegular,
+    });
+
+    y -= 40;
+
+    page.drawLine({
+      start: { x: margin, y },
+      end: { x: margin + 200, y },
+      thickness: 1,
+    });
+
+    // ========= SAVE =========
+    const pdfBytes = await pdfDoc.save();
     const buf = Buffer.from(pdfBytes);
 
     const filename = `factura_${workerName.replace(/\s+/g, "_")}_${inv.month_date}.pdf`;
