@@ -75,6 +75,31 @@ type OverviewResp = {
 
 type ChartMode = "minutes" | "captadas";
 
+function clamp(n: number, a = 0, b = 100) {
+  return Math.max(a, Math.min(b, n));
+}
+
+function pctColor(p: number) {
+  if (p >= 85) return "#10b981"; // verde
+  if (p >= 65) return "#f59e0b"; // amarillo
+  return "#ef4444"; // rojo
+}
+
+function pillStyle() {
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "6px 10px",
+    borderRadius: 999,
+    background: "#f9fafb",
+    border: "1px solid #e5e7eb",
+    fontSize: 12,
+    color: "#374151",
+    fontWeight: 800,
+  } as React.CSSProperties;
+}
+
 export default function AdminPage() {
   const router = useRouter();
 
@@ -264,19 +289,155 @@ export default function AdminPage() {
   const chartData = chartMode === "minutes" ? dailyMinutesData : dailyCaptadasData;
   const chartUnit = chartMode === "minutes" ? "min" : "cap";
 
+  // ==========
+  // UI PRO: Top3 + Alertas accionables
+  // ==========
+
+  const topMinutes = useMemo(() => {
+    const list = overview?.top?.minutes || [];
+    return list.slice(0, 3);
+  }, [overview?.top?.minutes]);
+
+  const maxTopMinutes = useMemo(() => {
+    return Math.max(1, ...(topMinutes.map((x) => Number(x.minutes) || 0) || [1]));
+  }, [topMinutes]);
+
+  // KPI didáctico: ritmo del mes basado en serie diaria (solo informativo)
+  const kpiMomentum = useMemo(() => {
+    const s = overview?.dailySeries || [];
+    if (s.length < 6) return { tone: "neutral" as const, text: "Sin tendencia", pct: 0 };
+
+    // compara últimos 3 días vs 3 anteriores
+    const last3 = s.slice(-3).reduce((a, x) => a + (Number(x.minutes) || 0), 0);
+    const prev3 = s.slice(-6, -3).reduce((a, x) => a + (Number(x.minutes) || 0), 0);
+    if (prev3 <= 0) return { tone: "neutral" as const, text: "Tendencia estable", pct: 0 };
+
+    const diff = ((last3 - prev3) / prev3) * 100;
+    const pct = Math.round(diff);
+    if (pct >= 10) return { tone: "ok" as const, text: `Subiendo +${pct}%`, pct };
+    if (pct <= -10) return { tone: "warn" as const, text: `Bajando ${pct}%`, pct };
+    return { tone: "neutral" as const, text: "Estable", pct };
+  }, [overview?.dailySeries]);
+
+  const alerts = useMemo(() => {
+    const a: Array<{ tone: "warn" | "ok" | "neutral"; title: string; desc: string; action?: { label: string; href: string } }> = [];
+
+    const p = overview?.presence;
+    const pend = overview?.incidents?.pending ?? 0;
+
+    // Incidencias
+    if (pend > 0) {
+      a.push({
+        tone: "warn",
+        title: "Incidencias pendientes",
+        desc: `${fmt(pend)} por revisar hoy.`,
+        action: { label: "Abrir incidencias", href: "/admin/incidents" },
+      });
+    } else {
+      a.push({
+        tone: "ok",
+        title: "Incidencias",
+        desc: "Todo al día.",
+      });
+    }
+
+    // Presencia
+    if (p) {
+      const online = p.online || 0;
+      const total = p.total || 0;
+      const ratio = total > 0 ? Math.round((online / total) * 100) : 0;
+
+      if (online === 0) {
+        a.push({
+          tone: "warn",
+          title: "Presencia",
+          desc: "Nadie está ONLINE ahora mismo.",
+          action: { label: "Ver presencia", href: "/admin/live" },
+        });
+      } else if (ratio < 30) {
+        a.push({
+          tone: "warn",
+          title: "Presencia baja",
+          desc: `${fmt(online)} ONLINE de ${fmt(total)} (${ratio}%).`,
+          action: { label: "Ver presencia", href: "/admin/live" },
+        });
+      } else {
+        a.push({
+          tone: "ok",
+          title: "Presencia",
+          desc: `${fmt(online)} ONLINE (${ratio}%).`,
+          action: { label: "Ver detalle", href: "/admin/live" },
+        });
+      }
+    }
+
+    // Cron
+    if (cronInfo.text === "FAIL") {
+      a.push({
+        tone: "warn",
+        title: "CRON fallando",
+        desc: `Último: FAIL · ${cronInfo.when}`,
+      });
+    } else if (cronInfo.text === "OK") {
+      a.push({
+        tone: "ok",
+        title: "CRON",
+        desc: `OK · ${cronInfo.when}`,
+      });
+    } else {
+      a.push({
+        tone: "neutral",
+        title: "CRON",
+        desc: "Sin logs todavía.",
+      });
+    }
+
+    // Momentum (tendencia)
+    a.push({
+      tone: kpiMomentum.tone === "warn" ? "warn" : kpiMomentum.tone === "ok" ? "ok" : "neutral",
+      title: "Tendencia de minutos",
+      desc: kpiMomentum.text,
+    });
+
+    return a.slice(0, 4);
+  }, [overview?.presence, overview?.incidents?.pending, cronInfo.text, cronInfo.when, kpiMomentum]);
+
   return (
     <div style={{ display: "grid", gap: 14 }}>
-      {/* Header */}
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <h1 style={{ margin: 0 }}>Dashboard Admin</h1>
+      {/* ===== HEADER PRO ===== */}
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          alignItems: "center",
+          flexWrap: "wrap",
+          justifyContent: "space-between",
+        }}
+      >
+        <div>
+          <h1 style={{ margin: 0, fontSize: 22, letterSpacing: -0.2 }}>Dashboard Admin</h1>
+          <div style={{ color: "#6b7280", fontSize: 13, marginTop: 4 }}>
+            Centro de control: rendimiento, presencia, incidencias y salud del sistema.
+          </div>
+        </div>
 
-        {/* Selector de mes */}
+        {/* Selector de mes + estado */}
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <span style={{ color: "#666", fontWeight: 900 }}>Mes:</span>
+          <span style={{ ...pillStyle(), fontWeight: 900 }}>
+            Mes: <span style={{ color: "#111" }}>{monthLabel}</span>
+          </span>
+
           <select
             value={selectedMonth || overview?.month_date || ""}
             onChange={(e) => setSelectedMonth(e.target.value || null)}
-            style={{ padding: 8, borderRadius: 10, border: "1px solid #ddd", minWidth: 220 }}
+            style={{
+              padding: 10,
+              borderRadius: 12,
+              border: "1px solid #e5e7eb",
+              minWidth: 240,
+              background: "#fff",
+              fontWeight: 800,
+            }}
             disabled={loading || months.length === 0 || status !== "OK"}
           >
             {months.length === 0 ? (
@@ -289,59 +450,57 @@ export default function AdminPage() {
               ))
             )}
           </select>
-          <span style={{ color: "#666" }}>
-            <b>{monthLabel}</b>
+
+          <span style={{ color: "#6b7280", fontSize: 13 }}>
+            Estado: <b style={{ color: "#111" }}>{status}</b>
+            {status === "OK" ? (
+              <>
+                {" "}
+                · Admin: <b style={{ color: "#111" }}>{meName}</b>
+              </>
+            ) : null}
           </span>
+
+          <button
+            onClick={() => loadOverview(selectedMonth)}
+            disabled={loading || status !== "OK"}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "1px solid #111",
+              fontWeight: 900,
+              cursor: loading ? "not-allowed" : "pointer",
+              background: "#fff",
+            }}
+          >
+            {loading ? "Actualizando..." : "Actualizar"}
+          </button>
+
+          <button
+            onClick={logout}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "1px solid #111",
+              background: "#111",
+              color: "#fff",
+              fontWeight: 900,
+              cursor: "pointer",
+            }}
+          >
+            Cerrar sesión
+          </button>
         </div>
-
-        <span style={{ marginLeft: "auto", color: "#666" }}>
-          Estado: <b style={{ color: "#111" }}>{status}</b>
-          {status === "OK" ? (
-            <>
-              {" "}
-              · Admin: <b style={{ color: "#111" }}>{meName}</b>
-            </>
-          ) : null}
-        </span>
-
-        <button
-          onClick={() => loadOverview(selectedMonth)}
-          disabled={loading || status !== "OK"}
-          style={{
-            padding: 10,
-            borderRadius: 10,
-            border: "1px solid #111",
-            fontWeight: 900,
-            cursor: loading ? "not-allowed" : "pointer",
-          }}
-        >
-          {loading ? "Actualizando..." : "Actualizar"}
-        </button>
-
-        <button
-          onClick={logout}
-          style={{
-            padding: 10,
-            borderRadius: 10,
-            border: "1px solid #111",
-            background: "#111",
-            color: "#fff",
-            fontWeight: 900,
-            cursor: "pointer",
-          }}
-        >
-          Cerrar sesión
-        </button>
       </div>
 
       {err ? (
-        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
+        <div style={{ padding: 12, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 12 }}>{err}</div>
       ) : null}
 
-      {/* KPIs */}
+      {/* ===== KPI EXECUTIVE PRO (4 CARDS) ===== */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
         <Card>
-          <CardTitle>Totales mes (tarotistas)</CardTitle>
+          <CardTitle>Producción del mes</CardTitle>
           <CardValue>{overview?.totals ? `${fmt(overview.totals.minutes)} min` : "—"}</CardValue>
           <CardHint>
             Captadas: <b>{overview?.totals ? fmt(overview.totals.captadas) : "—"}</b> · Tarotistas:{" "}
@@ -354,7 +513,7 @@ export default function AdminPage() {
           <CardValue>{presence ? fmt(presence.online) : "—"}</CardValue>
           <CardHint>
             <Badge tone={toneOnline as any}>ONLINE</Badge> · Pausa: <b>{presence ? fmt(presence.pause) : "—"}</b> · Baño:{" "}
-            <b>{presence ? fmt(presence.bathroom) : "—"}</b>
+            <b>{presence ? fmt(presence.bathroom) : "—"}</b> · Offline: <b>{presence ? fmt(presence.offline) : "—"}</b>
           </CardHint>
         </Card>
 
@@ -367,26 +526,154 @@ export default function AdminPage() {
         </Card>
 
         <Card>
-          <CardTitle>Cron (rebuild mensual)</CardTitle>
+          <CardTitle>Salud del sistema</CardTitle>
           <CardValue>
             <Badge tone={cronInfo.tone as any}>{cronInfo.text}</Badge>
           </CardValue>
           <CardHint>
-            Duración: <b>{cronInfo.dur}</b> · Último: <b>{cronInfo.when}</b>
+            Cron: <b>{cronInfo.text}</b> · Duración: <b>{cronInfo.dur}</b> · Último: <b>{cronInfo.when}</b>
           </CardHint>
         </Card>
       </div>
 
-      {/* Accesos */}
+      {/* ===== BLOQUE PRO: TOP 3 + ALERTAS ===== */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
+        <Card>
+          <CardTitle>Top 3 (Minutos)</CardTitle>
+          <CardHint>Lectura rápida del liderazgo del mes. Motiva y te permite actuar.</CardHint>
+
+          <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+            {topMinutes.length === 0 ? (
+              <div style={{ color: "#6b7280" }}>Sin datos.</div>
+            ) : (
+              topMinutes.map((r, idx) => {
+                const v = Number(r.minutes) || 0;
+                const w = Math.round((v / maxTopMinutes) * 100);
+                const badgeBg = idx === 0 ? "#fef3c7" : idx === 1 ? "#e5e7eb" : "#fee2e2";
+
+                return (
+                  <div
+                    key={r.worker_id}
+                    style={{
+                      border: "1px solid #eee",
+                      borderRadius: 12,
+                      padding: 10,
+                      background: "#fff",
+                      display: "grid",
+                      gap: 8,
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                        <div
+                          style={{
+                            width: 28,
+                            height: 28,
+                            borderRadius: 10,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontWeight: 900,
+                            border: "1px solid #e5e7eb",
+                            background: badgeBg,
+                          }}
+                        >
+                          {idx + 1}
+                        </div>
+                        <div>
+                          <div style={{ fontWeight: 900 }}>{r.name}</div>
+                          <div style={{ fontSize: 12, color: "#6b7280" }}>
+                            Captadas: <b>{fmt(r.captadas)}</b> · Cliente%: <b>{fmt(r.cliente_pct)}%</b> · Repite%:{" "}
+                            <b>{fmt(r.repite_pct)}%</b>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontWeight: 900 }}>{fmt(r.minutes)} min</div>
+                        <div style={{ fontSize: 12, color: "#6b7280" }}>Mes</div>
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        width: "100%",
+                        height: 10,
+                        borderRadius: 999,
+                        background: "#f3f4f6",
+                        border: "1px solid #e5e7eb",
+                        overflow: "hidden",
+                      }}
+                    >
+                      <div style={{ width: `${clamp(w)}%`, height: "100%", background: "#111" }} />
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </Card>
+
+        <Card>
+          <CardTitle>Alertas (Acción)</CardTitle>
+          <CardHint>Lo que necesita decisión hoy, sin perderte en tablas.</CardHint>
+
+          <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+            {alerts.map((a, i) => (
+              <div
+                key={i}
+                style={{
+                  borderRadius: 12,
+                  border: "1px solid #e5e7eb",
+                  padding: 10,
+                  background: a.tone === "warn" ? "#fff7ed" : a.tone === "ok" ? "#f0fdf4" : "#f9fafb",
+                  display: "grid",
+                  gap: 6,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                  <div style={{ fontWeight: 900 }}>{a.title}</div>
+                  <Badge tone={(a.tone === "warn" ? "warn" : a.tone === "ok" ? "ok" : "neutral") as any}>
+                    {a.tone === "warn" ? "ATENCIÓN" : a.tone === "ok" ? "OK" : "INFO"}
+                  </Badge>
+                </div>
+                <div style={{ fontSize: 13, color: "#374151" }}>{a.desc}</div>
+
+                {a.action ? (
+                  <div style={{ marginTop: 4 }}>
+                    <button
+                      onClick={() => router.push(a.action!.href)}
+                      style={{
+                        padding: "10px 12px",
+                        borderRadius: 12,
+                        border: "1px solid #111",
+                        background: "#111",
+                        color: "#fff",
+                        fontWeight: 900,
+                        cursor: "pointer",
+                        width: "fit-content",
+                      }}
+                    >
+                      {a.action.label}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+
+      {/* ===== ACCESOS ===== */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
         <QuickLink href="/admin/live" title="Presencia" desc="Quién está online / pausa / baño y quién falta." />
         <QuickLink href="/admin/incidents" title="Incidencias" desc="Justificar / No justificar, historial y control." />
         <QuickLink href="/admin/workers" title="Trabajadores" desc="Altas, bajas, roles, activar/desactivar." />
         <QuickLink href="/admin/mappings" title="Mappings" desc="Enlaces de CSV/Drive con trabajadores." />
-        <QuickLink href="/admin/invoices" title="Facturas" desc="Ver facturas, añadir extras y sanciones."/>
+        <QuickLink href="/admin/invoices" title="Facturas" desc="Ver facturas, añadir extras y sanciones." />
       </div>
 
-      {/* Gráfico con toggle */}
+      {/* ===== GRÁFICO CON TOGGLE ===== */}
       <Card>
         <CardTitle>Serie diaria</CardTitle>
         <CardHint>Mes seleccionado · Toggle Minutos / Captadas.</CardHint>
@@ -423,8 +710,11 @@ export default function AdminPage() {
             Captadas
           </button>
 
-          <div style={{ marginLeft: "auto", color: "#666", display: "flex", alignItems: "center" }}>
-            Mostrando: <b style={{ color: "#111", marginLeft: 6 }}>{chartMode === "minutes" ? "Minutos/día" : "Captadas/día"}</b>
+          <div style={{ marginLeft: "auto", color: "#6b7280", display: "flex", alignItems: "center" }}>
+            Mostrando:{" "}
+            <b style={{ color: "#111", marginLeft: 6 }}>
+              {chartMode === "minutes" ? "Minutos/día" : "Captadas/día"}
+            </b>
           </div>
         </div>
 
@@ -433,7 +723,7 @@ export default function AdminPage() {
         </div>
       </Card>
 
-      {/* Sync CSV */}
+      {/* ===== SYNC CSV ===== */}
       <Card>
         <CardTitle>Sincronizar Google Sheets (CSV)</CardTitle>
 
@@ -442,7 +732,7 @@ export default function AdminPage() {
             value={csvUrl}
             onChange={(e) => setCsvUrl(e.target.value)}
             placeholder="https://docs.google.com/spreadsheets/d/e/.../pub?gid=...&single=true&output=csv"
-            style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
+            style={{ padding: 10, borderRadius: 12, border: "1px solid #e5e7eb" }}
           />
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -451,7 +741,7 @@ export default function AdminPage() {
               disabled={syncing || status !== "OK" || !csvUrl.trim()}
               style={{
                 padding: 12,
-                borderRadius: 10,
+                borderRadius: 12,
                 border: "1px solid #111",
                 background: syncing ? "#eee" : "#111",
                 color: syncing ? "#111" : "#fff",
@@ -467,8 +757,8 @@ export default function AdminPage() {
               disabled={loading || status !== "OK"}
               style={{
                 padding: 12,
-                borderRadius: 10,
-                border: "1px solid #ddd",
+                borderRadius: 12,
+                border: "1px solid #e5e7eb",
                 background: "#fff",
                 cursor: loading ? "not-allowed" : "pointer",
                 fontWeight: 900,
@@ -479,13 +769,13 @@ export default function AdminPage() {
           </div>
 
           {syncMsg ? (
-            <div style={{ padding: 10, borderRadius: 10, background: "#f6f6f6", border: "1px solid #e5e5e5" }}>
+            <div style={{ padding: 12, borderRadius: 12, background: "#f9fafb", border: "1px solid #e5e7eb" }}>
               {syncMsg}
             </div>
           ) : null}
 
           {syncDebug ? (
-            <div style={{ padding: 10, borderRadius: 10, background: "#fff", border: "1px solid #e5e5e5" }}>
+            <div style={{ padding: 12, borderRadius: 12, background: "#fff", border: "1px solid #e5e7eb" }}>
               <b>DEBUG:</b>
               <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{syncDebug}</pre>
             </div>
@@ -493,7 +783,7 @@ export default function AdminPage() {
         </div>
       </Card>
 
-      {/* Top tables */}
+      {/* ===== TOP TABLES ===== */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
         {[
           { key: "minutes", title: "Top 10 (Minutos)" },
@@ -524,7 +814,7 @@ export default function AdminPage() {
                   <tbody>
                     {list.length === 0 ? (
                       <tr>
-                        <td colSpan={box.key === "minutes" ? 4 : 3} style={{ padding: 10, color: "#666" }}>
+                        <td colSpan={box.key === "minutes" ? 4 : 3} style={{ padding: 10, color: "#6b7280" }}>
                           Sin datos.
                         </td>
                       </tr>
@@ -554,7 +844,7 @@ export default function AdminPage() {
         })}
       </div>
 
-      {/* Cron logs */}
+      {/* ===== CRON LOGS ===== */}
       <Card>
         <CardTitle>Últimas ejecuciones CRON</CardTitle>
         <CardHint>Si ves FAIL, revisa Vercel Functions Logs.</CardHint>
@@ -573,7 +863,7 @@ export default function AdminPage() {
             <tbody>
               {(overview?.cronLogs || []).length === 0 ? (
                 <tr>
-                  <td colSpan={5} style={{ padding: 10, color: "#666" }}>
+                  <td colSpan={5} style={{ padding: 10, color: "#6b7280" }}>
                     Sin logs aún.
                   </td>
                 </tr>
