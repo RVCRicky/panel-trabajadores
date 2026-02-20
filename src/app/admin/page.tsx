@@ -53,6 +53,16 @@ type OverviewResp = {
 
   totals: { minutes: number; captadas: number; tarotistas: number };
 
+  // ✅ NUEVO: finanzas reales (ingresos vs gastos)
+  finance?: {
+    revenue_eur: number; // FACTURACIÓN: SUM(attendance_rows.importe)
+    expenses_total_eur: number; // GASTO total: SUM(worker_invoices.total_eur)
+    expenses_tarotistas_eur: number;
+    expenses_centrales_eur: number;
+    margin_eur: number; // revenue - expenses
+    top3_expense_tarotistas: Array<{ worker_id: string; name: string; role: string; total_eur: number }>;
+  };
+
   top: {
     minutes: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
     captadas: Array<{ worker_id: string; name: string; minutes: number; captadas: number; cliente_pct: number; repite_pct: number }>;
@@ -84,19 +94,6 @@ function clamp(n: number, a = 0, b = 100) {
   return Math.max(a, Math.min(b, n));
 }
 
-type InvoiceRow = {
-  worker_id: string;
-  month_date: string;
-  total_eur: number;
-};
-
-type WorkerRow = {
-  id: string;
-  role: WorkerRole;
-  display_name: string;
-  is_active?: boolean;
-};
-
 export default function AdminPage() {
   const router = useRouter();
 
@@ -110,11 +107,6 @@ export default function AdminPage() {
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   const [chartMode, setChartMode] = useState<ChartMode>("minutes");
-
-  // ===== Facturación real (worker_invoices) =====
-  const [billingTotal, setBillingTotal] = useState<number | null>(null);
-  const [billingTop3, setBillingTop3] = useState<Array<{ worker_id: string; name: string; total_eur: number }>>([]);
-  const [billingErr, setBillingErr] = useState<string | null>(null);
 
   // Sync CSV
   const [csvUrl, setCsvUrl] = useState("");
@@ -151,78 +143,6 @@ export default function AdminPage() {
     })();
   }, [router]);
 
-  // ===== Cargar facturación real del mes desde worker_invoices
-  // y Top3 SOLO tarotistas con nombre real =====
-  async function loadBilling(monthDate: string | null) {
-    setBillingErr(null);
-    setBillingTotal(null);
-    setBillingTop3([]);
-
-    if (!monthDate) return;
-
-    try {
-      const { data: inv, error: invErr } = await supabase
-        .from("worker_invoices")
-        .select("worker_id, month_date, total_eur")
-        .eq("month_date", monthDate);
-
-      if (invErr) {
-        setBillingErr(invErr.message || "Sin permisos para leer worker_invoices");
-        return;
-      }
-
-      const rows = (inv || []) as unknown as InvoiceRow[];
-
-      // Total general (si quieres luego lo separamos por rol)
-      const total = rows.reduce((acc, r) => acc + (Number(r.total_eur) || 0), 0);
-      setBillingTotal(total);
-
-      // Worker IDs implicados
-      const workerIds = Array.from(new Set(rows.map((r) => r.worker_id).filter(Boolean)));
-      if (workerIds.length === 0) {
-        setBillingTop3([]);
-        return;
-      }
-
-      // Traer workers para saber roles + nombres reales
-      const { data: wrk, error: wrkErr } = await supabase
-        .from("workers")
-        .select("id, role, display_name, is_active")
-        .in("id", workerIds);
-
-      if (wrkErr) {
-        setBillingErr(wrkErr.message || "Sin permisos para leer workers");
-        return;
-      }
-
-      const workers = (wrk || []) as unknown as WorkerRow[];
-      const tarotistMap = new Map<string, WorkerRow>();
-      workers.forEach((w) => {
-        if (w.role === "tarotista") tarotistMap.set(w.id, w);
-      });
-
-      // Filtrar facturas a SOLO tarotistas
-      const tarotRows = rows.filter((r) => tarotistMap.has(r.worker_id));
-
-      // Top3 por €
-      const top = [...tarotRows]
-        .sort((a, b) => (Number(b.total_eur) || 0) - (Number(a.total_eur) || 0))
-        .slice(0, 3)
-        .map((t) => {
-          const w = tarotistMap.get(t.worker_id)!;
-          return {
-            worker_id: t.worker_id,
-            name: w.display_name || t.worker_id.slice(0, 8),
-            total_eur: Number(t.total_eur) || 0,
-          };
-        });
-
-      setBillingTop3(top);
-    } catch (e: any) {
-      setBillingErr(e?.message || "Error cargando facturación");
-    }
-  }
-
   async function loadOverview(monthOverride?: string | null) {
     setErr(null);
     setLoading(true);
@@ -249,9 +169,6 @@ export default function AdminPage() {
 
       const cap = (j.dailyCaptadasSeries || j.captadasDailySeries || j.dailySeriesCaptadas || []) as any[];
       if ((!cap || cap.length === 0) && chartMode === "captadas") setChartMode("minutes");
-
-      // ✅ Facturación real
-      await loadBilling(j.month_date);
     } catch (e: any) {
       setErr(e?.message || "Error overview");
     } finally {
@@ -368,6 +285,16 @@ export default function AdminPage() {
     return Math.round(((presence.online || 0) / presence.total) * 100);
   }, [presence]);
 
+  // ✅ FINANZAS: ingresos vs gastos
+  const revenue = overview?.finance?.revenue_eur ?? null; // FACTURACIÓN REAL (importe)
+  const expensesTotal = overview?.finance?.expenses_total_eur ?? null; // GASTO TOTAL (payouts)
+  const expensesTarot = overview?.finance?.expenses_tarotistas_eur ?? null;
+  const expensesCentral = overview?.finance?.expenses_centrales_eur ?? null;
+  const margin = overview?.finance?.margin_eur ?? null;
+
+  // ✅ Top3 (gasto tarotistas)
+  const top3ExpenseTarot = overview?.finance?.top3_expense_tarotistas ?? [];
+
   const alerts = useMemo(() => {
     const a: Array<{ tone: "ok" | "warn" | "neutral"; text: string; href?: string }> = [];
 
@@ -384,10 +311,13 @@ export default function AdminPage() {
     else if (cronInfo.text === "OK") a.push({ tone: "ok", text: "CRON: OK." });
     else a.push({ tone: "neutral", text: "CRON: sin logs." });
 
-    if (billingErr) a.push({ tone: "warn", text: `Facturación: ${billingErr}` });
+    // alertas finanzas (si no hay datos)
+    if (revenue === 0 && (overview?.dailySeries?.length || 0) === 0) {
+      a.push({ tone: "warn", text: "Facturación: 0€ y sin filas (¿no se ha sync el CSV del mes?)." });
+    }
 
     return a.slice(0, 3);
-  }, [pending, presence, presenceRatio, cronInfo.text, billingErr]);
+  }, [pending, presence, presenceRatio, cronInfo.text, revenue, overview?.dailySeries?.length]);
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
@@ -487,8 +417,20 @@ export default function AdminPage() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
           <Card>
             <CardTitle>Facturación mes</CardTitle>
-            <CardValue>{billingTotal == null ? "—" : fmtEur(billingTotal)}</CardValue>
-            <CardHint>Total acumulado del mes (worker_invoices.total_eur)</CardHint>
+            <CardValue>{revenue == null ? "—" : fmtEur(revenue)}</CardValue>
+            <CardHint>Ingresos reales del mes (SUM attendance_rows.importe)</CardHint>
+          </Card>
+
+          <Card>
+            <CardTitle>Gastos mes</CardTitle>
+            <CardValue>{expensesTotal == null ? "—" : fmtEur(expensesTotal)}</CardValue>
+            <CardHint>Pagos totales del mes (SUM worker_invoices.total_eur)</CardHint>
+          </Card>
+
+          <Card>
+            <CardTitle>Margen estimado</CardTitle>
+            <CardValue>{margin == null ? "—" : fmtEur(margin)}</CardValue>
+            <CardHint>Facturación − Gastos</CardHint>
           </Card>
 
           <Card>
@@ -513,30 +455,26 @@ export default function AdminPage() {
           </Card>
         </div>
 
-        {/* Top 3 tarotistas por € + Alertas */}
+        {/* Top 3 gasto tarotistas + Alertas */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
           <Card>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
               <div>
-                <CardTitle>Top 3 del mes (€)</CardTitle>
-                <CardHint>Solo tarotistas · worker_invoices.total_eur</CardHint>
+                <CardTitle>Top 3 gasto tarotistas (€)</CardTitle>
+                <CardHint>Gasto (no facturación) · worker_invoices.total_eur</CardHint>
               </div>
               <span style={{ padding: "8px 12px", borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", fontSize: 13 }}>
-                🏆 Ranking
+                🧾 Pagos
               </span>
             </div>
 
             <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-              {billingErr ? (
-                <div style={{ color: "#b45309" }}>
-                  No se puede cargar el ranking: <b>{billingErr}</b>
-                </div>
-              ) : billingTop3.length === 0 ? (
-                <div style={{ color: "#6b7280" }}>Sin datos de tarotistas para este mes.</div>
+              {top3ExpenseTarot.length === 0 ? (
+                <div style={{ color: "#6b7280" }}>Sin datos de gasto tarotistas para este mes.</div>
               ) : (
-                billingTop3.map((r, idx) => {
-                  const max = Math.max(1, ...billingTop3.map((x) => x.total_eur || 0));
-                  const w = Math.round(((r.total_eur || 0) / max) * 100);
+                top3ExpenseTarot.map((r, idx) => {
+                  const max = Math.max(1, ...top3ExpenseTarot.map((x) => Number(x.total_eur) || 0));
+                  const w = Math.round(((Number(r.total_eur) || 0) / max) * 100);
                   const badgeBg = idx === 0 ? "#fef3c7" : idx === 1 ? "#e5e7eb" : "#fee2e2";
 
                   return (
