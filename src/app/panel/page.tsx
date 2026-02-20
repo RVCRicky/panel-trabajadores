@@ -24,7 +24,7 @@ type DashboardResp = {
   error?: string;
 
   month_date: string | null;
-  months?: string[]; // selector de mes
+  months?: string[];
   user: { isAdmin: boolean; worker: any | null };
 
   rankings: {
@@ -42,6 +42,18 @@ type DashboardResp = {
     amount_total_eur: number;
   };
 
+  // ✅ NUEVO
+  teamsRanking?: Array<{
+    team_id: string;
+    team_name: string;
+    total_eur_month: number;
+    total_minutes: number;
+    total_captadas: number;
+    member_count: number;
+  }>;
+
+  myTeamRank?: number | null;
+
   winnerTeam: null | {
     team_id: string;
     team_name: string;
@@ -49,6 +61,7 @@ type DashboardResp = {
     central_name: string | null;
     total_minutes: number;
     total_captadas: number;
+    total_eur_month?: number;
   };
 
   bonusRules: Array<{
@@ -106,7 +119,6 @@ export default function PanelPage() {
 
   const [data, setData] = useState<DashboardResp | null>(null);
 
-  // selector de mes
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   // Presencia (persistente)
@@ -174,7 +186,6 @@ export default function PanelPage() {
 
       setData(j);
 
-      // sincroniza selector con lo que diga el backend
       if (j.month_date && j.month_date !== selectedMonth) {
         setSelectedMonth(j.month_date);
       }
@@ -256,7 +267,6 @@ export default function PanelPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // si cambia el mes, recargar
   useEffect(() => {
     if (!selectedMonth) return;
     if (!data) return;
@@ -265,7 +275,6 @@ export default function PanelPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedMonth]);
 
-  // Cronómetro
   useEffect(() => {
     if (tickRef.current) clearInterval(tickRef.current);
 
@@ -283,14 +292,18 @@ export default function PanelPage() {
   }, [startedAt, pState]);
 
   const me = data?.user?.worker || null;
+  const myRole = String(me?.role || "").toLowerCase();
+
   const ranks = data?.rankings?.[rankType] || [];
 
-  const myRank = useMemo(() => {
+  const myRankTarot = useMemo(() => {
     const myName = me?.display_name;
     if (!myName) return null;
     const idx = ranks.findIndex((x: any) => x.name === myName);
     return idx === -1 ? null : idx + 1;
   }, [me?.display_name, ranks]);
+
+  const myRank = myRole === "central" ? (data?.myTeamRank ?? null) : myRankTarot;
 
   function top3For(k: RankKey) {
     const list = data?.rankings?.[k] || [];
@@ -319,6 +332,10 @@ export default function PanelPage() {
     : data?.month_date
       ? formatMonthLabel(data.month_date)
       : "—";
+
+  const teams = data?.teamsRanking || [];
+  const team1 = teams[0] || null;
+  const team2 = teams[1] || null;
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
@@ -361,13 +378,62 @@ export default function PanelPage() {
           >
             {loading ? "Actualizando..." : "Actualizar"}
           </button>
-
-          {/* ✅ PASO 1: quitado el segundo botón de cerrar sesión (se queda el de la cabecera) */}
+          {/* ✅ Quitado el 2º logout: se queda el de cabecera */}
         </div>
       </div>
 
       {err ? (
         <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
+      ) : null}
+
+      {/* ✅ NUEVO: MARCADOR POR EQUIPOS (Central) */}
+      {myRole === "central" && teams.length > 0 ? (
+        <div
+          style={{
+            border: "1px solid #eee",
+            borderRadius: 16,
+            padding: 14,
+            background: "#fff",
+          }}
+        >
+          <div style={{ fontWeight: 1000, fontSize: 18, marginBottom: 10 }}>🏆 Ranking por equipos (mes)</div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 12, alignItems: "stretch" }}>
+            <div style={{ border: "1px solid #f0f0f0", borderRadius: 14, padding: 12 }}>
+              <div style={{ fontWeight: 1000, fontSize: 16 }}>
+                {team1 ? `#1 ${team1.team_name}` : "—"}
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 1100, marginTop: 6 }}>
+                {team1 ? eur(team1.total_eur_month) : "—"}
+              </div>
+              <div style={{ color: "#666", marginTop: 6 }}>
+                Minutos: <b>{team1 ? fmt(team1.total_minutes) : "—"}</b> · Captadas:{" "}
+                <b>{team1 ? fmt(team1.total_captadas) : "—"}</b>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", placeItems: "center", padding: 6 }}>
+              <div style={{ fontWeight: 1000, color: "#666" }}>VS</div>
+            </div>
+
+            <div style={{ border: "1px solid #f0f0f0", borderRadius: 14, padding: 12 }}>
+              <div style={{ fontWeight: 1000, fontSize: 16 }}>
+                {team2 ? `#2 ${team2.team_name}` : "—"}
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 1100, marginTop: 6 }}>
+                {team2 ? eur(team2.total_eur_month) : "—"}
+              </div>
+              <div style={{ color: "#666", marginTop: 6 }}>
+                Minutos: <b>{team2 ? fmt(team2.total_minutes) : "—"}</b> · Captadas:{" "}
+                <b>{team2 ? fmt(team2.total_captadas) : "—"}</b>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 10, color: "#666" }}>
+            Tu equipo va: <b>{data?.myTeamRank ? `${medal(data.myTeamRank)} #${data.myTeamRank}` : "—"}</b>
+          </div>
+        </div>
       ) : null}
 
       {/* Cards arriba */}
@@ -398,19 +464,18 @@ export default function PanelPage() {
         <Card>
           <CardTitle>Mi posición (ranking actual)</CardTitle>
           <CardValue>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</CardValue>
-          <CardHint>Según el ranking seleccionado abajo.</CardHint>
+          <CardHint>{myRole === "central" ? "Según ranking de equipos." : "Según el ranking seleccionado abajo."}</CardHint>
         </Card>
       </div>
 
-      {/* ✅ PASO 1: quitados los 2 cuadritos duplicados "Mis facturas" y "Panel"
-          Solo dejamos Admin si aplica */}
+      {/* Accesos rápidos: solo Admin (quitados Mis facturas / Panel duplicados) */}
       {data?.user?.isAdmin ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
           <QuickLink href="/admin" title="Ir a Admin" desc="Presencia, incidencias, trabajadores y más." />
         </div>
       ) : null}
 
-      {/* Control horario */}
+      {/* ✅ Control horario (en el siguiente paso lo haremos aún más pro, aquí ya queda bien) */}
       {me?.role === "tarotista" || me?.role === "central" ? (
         <Card>
           <CardTitle>Control horario</CardTitle>
