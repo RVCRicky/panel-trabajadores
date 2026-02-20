@@ -137,6 +137,42 @@ function normalizeDate(v: any): string | null {
   return null;
 }
 
+// ✅ NUEVO: parse dinero tipo "12,34" / "12.34" / "€12,34" / "" => number
+function toMoney(v: any) {
+  const s0 = String(v ?? "").trim();
+  if (!s0) return 0;
+  const s = s0
+    .replace(/\s+/g, "")
+    .replace(/[€$]/g, "")
+    .replace(/\./g, "") // quita separador miles si viene "1.234,56"
+    .replace(",", ".");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// ✅ NUEVO: intenta encontrar la columna de importe aunque el header sea raro
+function readImporte(row: any) {
+  // como tú normalizas headers a UPPER sin tildes, buscamos por claves normalizadas
+  const directCandidates = ["IMPORTE", "IMPORTEEUR", "IMPORTE_EUR", "TOTAL", "AMOUNT", "EUROS", "EUR", "MONTO"];
+
+  for (const k of directCandidates) {
+    if (row[k] != null && String(row[k]).trim() !== "") return toMoney(row[k]);
+  }
+
+  // si el header venía como "IMPORTE (€)" o parecido, quedará algo como "IMPORTE(€)" o "IMPORTE€"
+  const keys = Object.keys(row || {});
+  const found = keys.find((k) => k.startsWith("IMPORTE"));
+  if (found) return toMoney(row[found]);
+
+  return 0;
+}
+
+function monthDateFromISO(isoYYYYMMDD: string) {
+  const [y, m] = isoYYYYMMDD.split("-");
+  if (!y || !m) return null;
+  return `${y}-${m}-01`;
+}
+
 type Body = { csvUrl?: string };
 
 export async function OPTIONS() {
@@ -149,15 +185,14 @@ export async function POST(req: Request) {
     const anonKey = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
     const serviceKey = getEnv("SUPABASE_SERVICE_ROLE_KEY");
 
-    // ✅ NUEVO: permitir llamada CRON sin login usando x-cron-secret
+    // ✅ permitir llamada CRON sin login usando x-cron-secret
     const CRON_SECRET = process.env.CRON_SECRET || "";
     const cronHeader = (req.headers.get("x-cron-secret") || "").trim();
     const isCronCall = !!CRON_SECRET && cronHeader === CRON_SECRET;
 
-    // ✅ leer body "safe"
     const body = (await req.json().catch(() => ({} as any))) as Body;
 
-    // ✅ NUEVO: si no viene csvUrl, usar SYNC_CSV_URL
+    // ✅ si no viene csvUrl, usar SYNC_CSV_URL
     const csvUrl = String(body?.csvUrl || process.env.SYNC_CSV_URL || "").trim();
     if (!csvUrl) return NextResponse.json({ ok: false, error: "MISSING_CSV_URL" }, { status: 400 });
 
@@ -252,6 +287,9 @@ export async function POST(req: Request) {
 
       const source_date = normalizeDate(row["FECHA"]);
 
+      // ✅ NUEVO: facturación desde Sheets (IMPORTE / IMPORTE (€) / etc)
+      const importe_eur = readImporte(row);
+
       // 1) Si no hay tarotista -> ignorar
       if (!tarotistaKey) {
         skippedBad++;
@@ -312,14 +350,20 @@ export async function POST(req: Request) {
 
       const raw = { ...row, TELEFONISTA: telefonista };
 
+      const call_date = source_date; // ✅ tu tabla tiene call_date
+      const month_date = source_date ? monthDateFromISO(source_date) : null; // ✅ tu tabla tiene month_date
+
       const ins = await adminClient.from("attendance_rows").insert({
         worker_id: workerId,
         source_date,
+        call_date,
+        month_date,
         minutes,
         calls,
         codigo,
         captado,
         raw,
+        importe_eur, // ✅ NUEVO
       });
 
       if (ins.error) return NextResponse.json({ ok: false, error: ins.error.message }, { status: 400 });
@@ -348,7 +392,7 @@ export async function POST(req: Request) {
         firstRowExample: rows[0] ? rows[0] : null,
       },
       note:
-        "Regla nueva: CODIGO vacío + TIEMPO>0 => cliente. Las filas con TAROTISTA vacío se consideran basura y se saltan.",
+        "Regla nueva: CODIGO vacío + TIEMPO>0 => cliente. Se guarda importe_eur desde columna IMPORTE (si existe).",
       cron: {
         isCronCall,
         usingEnvCsvUrl: !body?.csvUrl,
