@@ -294,11 +294,6 @@ export default function PanelPage() {
     return idx === -1 ? null : idx + 1;
   }, [me?.display_name, ranks]);
 
-  async function logout() {
-    await supabase.auth.signOut();
-    router.replace("/login");
-  }
-
   function top3For(k: RankKey) {
     const list = data?.rankings?.[k] || [];
     return list.slice(0, 3);
@@ -364,20 +359,7 @@ export default function PanelPage() {
           >
             {loading ? "Actualizando..." : "Actualizar"}
           </button>
-
-          <button
-            onClick={logout}
-            style={{
-              padding: 10,
-              borderRadius: 10,
-              border: "1px solid #111",
-              background: "#111",
-              color: "#fff",
-              fontWeight: 900,
-            }}
-          >
-            Cerrar sesión
-          </button>
+          
         </div>
       </div>
 
@@ -418,11 +400,11 @@ export default function PanelPage() {
       </div>
 
       {/* Accesos rápidos */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
-        {data?.user?.isAdmin ? <QuickLink href="/admin" title="Ir a Admin" desc="Presencia, incidencias, trabajadores y más." /> : null}
-        <QuickLink href="/panel/invoices" title="Mis facturas" desc="Descarga y revisa tus facturas." />
-        <QuickLink href="/panel" title="Panel" desc="Resumen del mes, rankings y estado." />
-      </div>
+{data?.user?.isAdmin ? (
+  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+    <QuickLink href="/admin" title="Ir a Admin" desc="Presencia, incidencias, trabajadores y más." />
+  </div>
+) : null}
 
       {/* Control horario */}
       {me?.role === "tarotista" || me?.role === "central" ? (
