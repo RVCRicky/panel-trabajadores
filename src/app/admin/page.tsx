@@ -383,6 +383,7 @@ export default function AdminPage() {
         <QuickLink href="/admin/incidents" title="Incidencias" desc="Justificar / No justificar, historial y control." />
         <QuickLink href="/admin/workers" title="Trabajadores" desc="Altas, bajas, roles, activar/desactivar." />
         <QuickLink href="/admin/mappings" title="Mappings" desc="Enlaces de CSV/Drive con trabajadores." />
+        <QuickLink href="/admin/invoices" title="Facturas" desc="Ver facturas, añadir extras y sanciones."/>
       </div>
 
       {/* Gráfico con toggle */}
