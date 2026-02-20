@@ -150,18 +150,21 @@ export async function GET(req: Request) {
     doc.fillColor("#000");
 
     doc.end();
-    const pdf = await done;
+const pdf = await done;
 
-    const filename = `factura_${workerName.replace(/\s+/g, "_")}_${inv.month_date}.pdf`;
+const filename = `factura_${workerName.replace(/\s+/g, "_")}_${inv.month_date}.pdf`;
 
-    return new NextResponse(pdf, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `inline; filename="${filename}"`,
-        "Cache-Control": "no-store",
-      },
-    });
+// ✅ NextResponse (Next 15) no acepta Buffer directamente
+const bytes = new Uint8Array(pdf);
+
+return new NextResponse(bytes, {
+  status: 200,
+  headers: {
+    "Content-Type": "application/pdf",
+    "Content-Disposition": `inline; filename="${filename}"`,
+    "Cache-Control": "no-store",
+  },
+});
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
   }
