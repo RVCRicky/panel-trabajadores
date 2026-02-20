@@ -44,16 +44,6 @@ type EarningsRow = {
   amount_total_eur: number | null;
 };
 
-async function safeSelect<T>(
-  fn: () => Promise<{ data: T | null; error: any }>
-): Promise<{ data: T | null; error: any }> {
-  try {
-    return await fn();
-  } catch (e: any) {
-    return { data: null, error: e };
-  }
-}
-
 export async function GET(req: Request) {
   try {
     const token = bearer(req);
@@ -79,7 +69,7 @@ export async function GET(req: Request) {
     if (!me) return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
     if (!(me as any).is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
 
-    const myWorkerId = (me as any).id as string;
+    const myWorkerId = String((me as any).id || "");
     const myRole = normRole((me as any).role);
 
     // 3) mes seleccionado (opcional) + lista de meses disponibles
@@ -87,7 +77,6 @@ export async function GET(req: Request) {
     const monthParam = urlObj.searchParams.get("month_date"); // "YYYY-MM-01"
     let month_date: string | null = monthParam || null;
 
-    // meses disponibles (para selector en UI)
     const { data: monthsRows, error: emonths } = await db
       .from("monthly_rankings")
       .select("month_date")
@@ -98,7 +87,6 @@ export async function GET(req: Request) {
 
     const months = Array.from(new Set((monthsRows || []).map((r: any) => r.month_date).filter(Boolean))) as string[];
 
-    // si no pasan month_date, usar el más reciente
     if (!month_date) month_date = months[0] || null;
 
     if (!month_date) {
@@ -172,22 +160,27 @@ export async function GET(req: Request) {
       .map((x) => ({ worker_id: x.worker_id, name: x.name, repite_pct: x.repite_pct }));
 
     // ------------------------------------------------------------
-    // ✅ NUEVO: myEarnings (para que no salga "—" en el panel)
-    // Intentamos usar monthly_earnings (si existe). Si no, fallback con monthly_rankings (importe 0).
+    // ✅ myEarnings (sin romper si no existe la tabla)
     // ------------------------------------------------------------
+    let earningsByWorker = new Map<string, EarningsRow>();
     let myEarnings: any = null;
 
-    const { data: earnRows, error: eearn } = await safeSelect<EarningsRow[]>(() =>
-      db
+    try {
+      const { data: earnRows, error: eearn } = await db
         .from("monthly_earnings")
-        .select("worker_id, month_date, minutes_total, captadas_total, amount_base_eur, amount_bonus_eur, amount_total_eur")
-        .eq("month_date", month_date as string)
-        .limit(5000)
-    );
+        .select(
+          "worker_id, month_date, minutes_total, captadas_total, amount_base_eur, amount_bonus_eur, amount_total_eur"
+        )
+        .eq("month_date", month_date)
+        .limit(5000);
 
-    const earningsByWorker = new Map<string, EarningsRow>();
-    if (!eearn && Array.isArray(earnRows)) {
-      for (const r of earnRows) earningsByWorker.set(r.worker_id, r);
+      if (!eearn && Array.isArray(earnRows)) {
+        for (const r of earnRows as any[]) {
+          earningsByWorker.set(String(r.worker_id), r as EarningsRow);
+        }
+      }
+    } catch {
+      // si la tabla no existe o no hay permisos, no rompemos
     }
 
     const myEarn = earningsByWorker.get(myWorkerId);
@@ -200,8 +193,8 @@ export async function GET(req: Request) {
         amount_total_eur: toNum(myEarn.amount_total_eur),
       };
     } else {
-      // fallback: minutos/captadas desde rankings, € a 0 (para no salir null)
-      const myRankRow = rows.find((r) => r.worker_id === myWorkerId) || null;
+      // fallback: al menos minutos/captadas, € 0 para que no salga null
+      const myRankRow = rows.find((r) => String(r.worker_id) === myWorkerId) || null;
       myEarnings = {
         minutes_total: toNum(myRankRow?.minutes ?? 0),
         captadas: toNum(myRankRow?.captadas ?? 0),
@@ -212,99 +205,82 @@ export async function GET(req: Request) {
     }
 
     // ------------------------------------------------------------
-    // ✅ NUEVO: Ranking por equipos (Maria vs Yami)
-    // Requiere (si existen):
-    //  - teams: { id, name, central_user_id? }
-    //  - team_members: { team_id, worker_id }
-    //  - monthly_earnings para € reales (si no, suma 0)
-    // Si no existen tablas, no rompe: teamsRanking = []
+    // ✅ Ranking por equipos (sin romper si no existen tablas)
     // ------------------------------------------------------------
     let teamsRanking: any[] = [];
     let myTeamRank: number | null = null;
     let winnerTeam: any = null;
 
-    const { data: teams, error: et } = await safeSelect<any[]>(() =>
-      db.from("teams").select("id, name, central_user_id").limit(50)
-    );
+    try {
+      const { data: teams, error: et } = await db.from("teams").select("id, name").limit(50);
+      const { data: members, error: etm } = await db.from("team_members").select("team_id, worker_id").limit(5000);
 
-    const { data: members, error: etm } = await safeSelect<any[]>(() =>
-      db.from("team_members").select("team_id, worker_id").limit(5000)
-    );
-
-    if (!et && !etm && Array.isArray(teams) && Array.isArray(members) && teams.length > 0) {
-      const membersByTeam = new Map<string, string[]>();
-      for (const m of members) {
-        const tid = String(m.team_id || "");
-        const wid = String(m.worker_id || "");
-        if (!tid || !wid) continue;
-        if (!membersByTeam.has(tid)) membersByTeam.set(tid, []);
-        membersByTeam.get(tid)!.push(wid);
-      }
-
-      const teamAgg = teams.map((t) => {
-        const tid = String(t.id);
-        const wids = membersByTeam.get(tid) || [];
-
-        // suma € si tenemos monthly_earnings, si no -> 0
-        let total_eur = 0;
-        let total_minutes = 0;
-        let total_captadas = 0;
-
-        for (const wid of wids) {
-          const er = earningsByWorker.get(wid);
-          if (er) {
-            total_eur += toNum(er.amount_total_eur);
-            total_minutes += toNum(er.minutes_total);
-            total_captadas += toNum(er.captadas_total);
-          } else {
-            // fallback: intenta minutos/captadas desde monthly_rankings (para que haya algo)
-            const rr = rows.find((r) => r.worker_id === wid);
-            if (rr) {
-              total_minutes += toNum(rr.minutes);
-              total_captadas += toNum(rr.captadas);
-            }
-          }
+      if (!et && !etm && Array.isArray(teams) && Array.isArray(members) && teams.length > 0) {
+        const membersByTeam = new Map<string, string[]>();
+        for (const m of members as any[]) {
+          const tid = String(m.team_id || "");
+          const wid = String(m.worker_id || "");
+          if (!tid || !wid) continue;
+          if (!membersByTeam.has(tid)) membersByTeam.set(tid, []);
+          membersByTeam.get(tid)!.push(wid);
         }
 
-        // nombre de la central del equipo (si coincide central_user_id con algún worker)
-        const centralWorker =
-          (t.central_user_id
-            ? rows.find((r) => String((me as any).user_id) !== "" && false) // placeholder para no asumir
-            : null) || null;
+        const agg = (teams as any[]).map((t) => {
+          const tid = String(t.id);
+          const wids = membersByTeam.get(tid) || [];
 
-        return {
-          team_id: tid,
-          team_name: t.name || "Equipo",
-          total_eur_month: total_eur,
-          total_minutes,
-          total_captadas,
-          member_count: wids.length,
-        };
-      });
+          let total_eur = 0;
+          let total_minutes = 0;
+          let total_captadas = 0;
 
-      teamsRanking = teamAgg.sort((a, b) => b.total_eur_month - a.total_eur_month);
+          for (const wid of wids) {
+            const er = earningsByWorker.get(wid);
+            if (er) {
+              total_eur += toNum(er.amount_total_eur);
+              total_minutes += toNum(er.minutes_total);
+              total_captadas += toNum(er.captadas_total);
+            } else {
+              const rr = rows.find((r) => String(r.worker_id) === String(wid));
+              if (rr) {
+                total_minutes += toNum(rr.minutes);
+                total_captadas += toNum(rr.captadas);
+              }
+            }
+          }
 
-      // mi equipo (si estoy en team_members)
-      const myTeamId = (members || []).find((m) => String(m.worker_id) === myWorkerId)?.team_id || null;
+          return {
+            team_id: tid,
+            team_name: t.name || "Equipo",
+            total_eur_month: total_eur,
+            total_minutes,
+            total_captadas,
+            member_count: wids.length,
+          };
+        });
 
-      if (myTeamId) {
-        const idx = teamsRanking.findIndex((t) => String(t.team_id) === String(myTeamId));
-        myTeamRank = idx === -1 ? null : idx + 1;
+        teamsRanking = agg.sort((a, b) => b.total_eur_month - a.total_eur_month);
+
+        const myTeamId = (members as any[]).find((m) => String(m.worker_id) === myWorkerId)?.team_id || null;
+        if (myTeamId) {
+          const idx = teamsRanking.findIndex((t) => String(t.team_id) === String(myTeamId));
+          myTeamRank = idx === -1 ? null : idx + 1;
+        }
+
+        if (teamsRanking.length > 0) {
+          const w = teamsRanking[0];
+          winnerTeam = {
+            team_id: w.team_id,
+            team_name: w.team_name,
+            central_user_id: null,
+            central_name: null,
+            total_minutes: w.total_minutes,
+            total_captadas: w.total_captadas,
+            total_eur_month: w.total_eur_month,
+          };
+        }
       }
-
-      // winnerTeam
-      if (teamsRanking.length > 0) {
-        const w = teamsRanking[0];
-        winnerTeam = {
-          team_id: w.team_id,
-          team_name: w.team_name,
-          central_user_id: null,
-          central_name: null,
-          total_minutes: w.total_minutes,
-          total_captadas: w.total_captadas,
-          total_eur_month: w.total_eur_month,
-        };
-      }
+    } catch {
+      // si no existen tablas, no rompemos
     }
 
     return NextResponse.json({
