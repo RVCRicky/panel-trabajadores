@@ -328,7 +328,6 @@ export default function PanelPage() {
     return list.slice(0, 3);
   }
 
-  // ✅ Para central: NO mostrar % en tablas (solo minutos/captadas)
   function valueOf(k: RankKey, r: any) {
     if (k === "minutes") return fmt(r.minutes);
     if (k === "captadas") return fmt(r.captadas);
@@ -363,6 +362,16 @@ export default function PanelPage() {
     );
     return r ? Number(r.amount_eur) || 0 : 0;
   }, [data?.bonusRules]);
+
+  // ✅ Texto guía en control horario
+  const helpText =
+    pState === "offline"
+      ? "Pulsa “Entrar a trabajar” para iniciar tu turno."
+      : pState === "online"
+      ? "Estás online. Si paras, usa Pausa o Baño."
+      : "Estás en pausa/baño. Cuando vuelvas, pulsa “Volver (Online)”.";
+  const bigActionLabel = pState === "offline" ? "Entrar a trabajar" : "Salir del turno";
+  const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
@@ -471,7 +480,6 @@ export default function PanelPage() {
                     ) : null}
                   </div>
 
-                  {/* ✅ En central: mostramos SCORE (no €) */}
                   <div style={{ fontSize: 34, fontWeight: 1300, marginTop: 10 }}>
                     {t?.team_score ?? "—"} <span style={{ fontSize: 14, fontWeight: 1000, color: "#666" }}>score</span>
                   </div>
@@ -533,7 +541,6 @@ export default function PanelPage() {
           <CardHint>Se actualiza en tiempo real.</CardHint>
         </Card>
 
-        {/* ✅ Tarotista ve €; Central ve solo BONUS */}
         {isTarot ? (
           <Card>
             <CardTitle>Total € este mes</CardTitle>
@@ -558,76 +565,124 @@ export default function PanelPage() {
         </Card>
       </div>
 
+      {/* ✅ CONTROL HORARIO PRO (más vida) */}
+      {me?.role === "tarotista" || me?.role === "central" ? (
+        <div
+          style={{
+            border: "2px solid #111",
+            borderRadius: 18,
+            padding: 14,
+            background: "linear-gradient(180deg, #ffffff 0%, #fbfbfb 100%)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontWeight: 1200, fontSize: 20 }}>🕒 Control horario</div>
+              <div style={{ color: "#666", fontWeight: 900, marginTop: 4 }}>
+                {me?.display_name || "—"} · {labelRole(me?.role || "—")} · Mes: <b>{selectedMonth || data?.month_date || "—"}</b>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <Badge tone={stateTone as any}>{stateText}</Badge>
+              <div style={{ fontWeight: 1200, fontSize: 18 }}>{formatHMS(elapsedSec)}</div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 10, color: "#666", fontWeight: 900 }}>{helpText}</div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+            <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 12, background: "#fff" }}>
+              <div style={{ fontWeight: 1100 }}>Sesión</div>
+              <div style={{ marginTop: 6, color: "#666" }}>{sessionId ? <b>{sessionId}</b> : "—"}</div>
+              <div style={{ marginTop: 6, color: "#666" }}>
+                Inicio: <b>{startedAt ? new Date(startedAt).toLocaleString("es-ES") : "—"}</b>
+              </div>
+            </div>
+
+            <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 12, background: "#fff" }}>
+              <div style={{ fontWeight: 1100 }}>Acciones</div>
+              <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 10 }}>
+                <button
+                  onClick={bigActionFn}
+                  disabled={pState === "offline" ? false : !isLogged}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: 14,
+                    border: "1px solid #111",
+                    background: pState === "offline" ? "#111" : "#fff",
+                    color: pState === "offline" ? "#fff" : "#111",
+                    fontWeight: 1100,
+                    minWidth: 220,
+                  }}
+                >
+                  {bigActionLabel}
+                </button>
+
+                <button
+                  onClick={() => presenceSet("pause")}
+                  disabled={!isLogged}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: 14,
+                    border: "1px solid #ddd",
+                    fontWeight: 1000,
+                    opacity: !isLogged ? 0.5 : 1,
+                  }}
+                >
+                  Pausa
+                </button>
+
+                <button
+                  onClick={() => presenceSet("bathroom")}
+                  disabled={!isLogged}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: 14,
+                    border: "1px solid #ddd",
+                    fontWeight: 1000,
+                    opacity: !isLogged ? 0.5 : 1,
+                  }}
+                >
+                  Baño
+                </button>
+
+                <button
+                  onClick={() => presenceSet("online")}
+                  disabled={!isLogged}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: 14,
+                    border: "1px solid #ddd",
+                    fontWeight: 1000,
+                    opacity: !isLogged ? 0.5 : 1,
+                  }}
+                >
+                  Volver (Online)
+                </button>
+
+                <button
+                  onClick={loadPresence}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: 14,
+                    border: "1px solid #ddd",
+                    fontWeight: 1000,
+                  }}
+                >
+                  Refrescar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* Accesos rápidos: solo Admin */}
       {data?.user?.isAdmin ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
           <QuickLink href="/admin" title="Ir a Admin" desc="Presencia, incidencias, trabajadores y más." />
         </div>
-      ) : null}
-
-      {/* Control horario */}
-      {me?.role === "tarotista" || me?.role === "central" ? (
-        <Card>
-          <CardTitle>Control horario</CardTitle>
-          <CardHint>
-            Usuario: <b>{me?.display_name || "—"}</b> · Rol: <b>{labelRole(me?.role || "—")}</b> · Mes:{" "}
-            <b>{selectedMonth || data?.month_date || "—"}</b>
-          </CardHint>
-
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
-            <button
-              onClick={presenceLogin}
-              disabled={isLogged}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #111", fontWeight: 900, opacity: isLogged ? 0.5 : 1 }}
-            >
-              Loguear
-            </button>
-
-            <button
-              onClick={() => presenceSet("pause")}
-              disabled={!isLogged}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900, opacity: !isLogged ? 0.5 : 1 }}
-            >
-              Pausa
-            </button>
-
-            <button
-              onClick={() => presenceSet("bathroom")}
-              disabled={!isLogged}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900, opacity: !isLogged ? 0.5 : 1 }}
-            >
-              Baño
-            </button>
-
-            <button
-              onClick={() => presenceSet("online")}
-              disabled={!isLogged}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900, opacity: !isLogged ? 0.5 : 1 }}
-            >
-              Volver (Online)
-            </button>
-
-            <button
-              onClick={presenceLogout}
-              disabled={!isLogged}
-              style={{
-                padding: 10,
-                borderRadius: 12,
-                border: "1px solid #111",
-                background: "#111",
-                color: "#fff",
-                fontWeight: 900,
-                opacity: !isLogged ? 0.5 : 1,
-              }}
-            >
-              Desloguear
-            </button>
-
-            <button onClick={loadPresence} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}>
-              Refrescar estado
-            </button>
-          </div>
-        </Card>
       ) : null}
 
       {/* Top 3 */}
