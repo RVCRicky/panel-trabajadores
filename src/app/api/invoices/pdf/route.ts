@@ -33,7 +33,7 @@ export async function GET(req: Request) {
     const supabaseAuth = createClient(SUPABASE_URL, ANON_KEY, { auth: { persistSession: false } });
     const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
 
-    // ===== 1) AUTH =====
+    // ===== AUTH =====
     const authHeader = req.headers.get("authorization") || "";
     const token = authHeader.toLowerCase().startsWith("bearer ")
       ? authHeader.slice(7).trim()
@@ -50,7 +50,7 @@ export async function GET(req: Request) {
 
     const callerAuthId = u.user.id;
 
-    // ===== 2) invoiceId =====
+    // ===== invoiceId =====
     const url = new URL(req.url);
     const invoiceId = (url.searchParams.get("invoiceId") || "").trim();
 
@@ -58,16 +58,12 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "MISSING_INVOICE_ID" }, { status: 400 });
     }
 
-    // ===== 3) Worker caller =====
-    const { data: callerWorker, error: cwErr } = await supabaseAdmin
+    // ===== Worker caller =====
+    const { data: callerWorker } = await supabaseAdmin
       .from("workers")
-      .select("id, role, is_active, user_id, display_name")
+      .select("id, role, is_active")
       .eq("user_id", callerAuthId)
       .maybeSingle();
-
-    if (cwErr) {
-      return NextResponse.json({ ok: false, error: cwErr.message }, { status: 400 });
-    }
 
     if (!callerWorker || !callerWorker.is_active) {
       return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
@@ -75,22 +71,17 @@ export async function GET(req: Request) {
 
     const isAdmin = callerWorker.role === "admin";
 
-    // ===== 4) Cargar factura =====
-    const { data: inv, error: invErr } = await supabaseAdmin
+    // ===== Factura =====
+    const { data: inv } = await supabaseAdmin
       .from("worker_invoices")
       .select("id,worker_id,month_date,status,total_eur,worker_note,admin_note,locked_at")
       .eq("id", invoiceId)
       .maybeSingle();
 
-    if (invErr) {
-      return NextResponse.json({ ok: false, error: invErr.message }, { status: 400 });
-    }
-
     if (!inv) {
       return NextResponse.json({ ok: false, error: "NOT_FOUND" }, { status: 404 });
     }
 
-    // ===== 5) Permisos =====
     if (!isAdmin && inv.worker_id !== callerWorker.id) {
       return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
     }
@@ -103,66 +94,69 @@ export async function GET(req: Request) {
 
     const workerName = w?.display_name || inv.worker_id;
 
-    // ===== 6) Líneas =====
     const { data: lines } = await supabaseAdmin
       .from("worker_invoice_lines")
       .select("label, amount_eur")
       .eq("invoice_id", invoiceId)
       .order("created_at", { ascending: true });
 
-    // ===== 7) Crear PDF =====
-    const doc = new PDFDocument({ size: "A4", margin: 50 });
+    // ===== PDF SIN FUENTES AFM =====
+    const doc = new PDFDocument({
+      size: "A4",
+      margin: 50,
+      autoFirstPage: true,
+      bufferPages: true
+    });
+
+    // ⚠️ Esto es lo clave:
+    // Evita que PDFKit intente cargar Helvetica.afm
+    (doc as any)._font = null;
 
     const chunks: Buffer[] = [];
     doc.on("data", (c) => chunks.push(c));
+
     const done = new Promise<Buffer>((resolve) =>
       doc.on("end", () => resolve(Buffer.concat(chunks)))
     );
 
-    // ⚠️ NO usamos font personalizada.
-    // Usamos la interna por defecto SIN cambiarla.
-
-    doc.fontSize(18).text("Factura de trabajador");
+    doc.text("Factura de trabajador");
     doc.moveDown();
 
-    doc.fontSize(12).text(`Trabajador: ${workerName}`);
+    doc.text(`Trabajador: ${workerName}`);
     doc.text(`Mes: ${monthLabel(inv.month_date)}`);
     doc.text(`Estado: ${String(inv.status || "").toUpperCase()}`);
     doc.moveDown();
 
-    doc.fontSize(14).text(`Total: ${euro(inv.total_eur)}`);
+    doc.text(`Total: ${euro(inv.total_eur)}`);
     doc.moveDown();
 
-    doc.fontSize(12).text("Detalle:");
+    doc.text("Detalle:");
     doc.moveDown(0.5);
 
     for (const ln of lines || []) {
       doc.text(`${ln.label} — ${euro(ln.amount_eur)}`);
     }
 
-    doc.moveDown();
-
     if (inv.worker_note) {
+      doc.moveDown();
       doc.text(`Nota trabajador: ${inv.worker_note}`);
     }
 
     if (inv.admin_note) {
+      doc.moveDown();
       doc.text(`Nota admin: ${inv.admin_note}`);
     }
 
     doc.end();
 
     const pdf = await done;
-
-    const filename = `factura_${workerName.replace(/\s+/g, "_")}_${inv.month_date}.pdf`;
-
     const bytes = new Uint8Array(pdf);
 
     return new NextResponse(bytes, {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `inline; filename="${filename}"`,
+        "Content-Disposition": `inline; filename="factura.pdf"`,
         "Cache-Control": "no-store"
       }
     });
