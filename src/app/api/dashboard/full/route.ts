@@ -152,7 +152,7 @@ export async function GET(req: Request) {
       .sort((a, b) => b.repite_pct - a.repite_pct)
       .map((x) => ({ worker_id: x.worker_id, name: x.name, repite_pct: x.repite_pct }));
 
-    // 5) monthly_earnings (si existe)
+    // 5) monthly_earnings
     let earningsByWorker = new Map<string, EarningsRow>();
     try {
       const { data: earnRows, error: eearn } = await db
@@ -166,7 +166,7 @@ export async function GET(req: Request) {
       }
     } catch {}
 
-    // 6) bonus_rules (si existe)
+    // 6) bonus_rules
     let bonusRules: BonusRuleRow[] = [];
     try {
       const { data: br, error: ebr } = await db
@@ -196,21 +196,14 @@ export async function GET(req: Request) {
           amount_total_eur: 0,
         };
 
-    // 7) Teams ranking + miembros + score global
+    // 7) Teams ranking
     let teamsRanking: any[] = [];
     let myTeamRank: number | null = null;
     let winnerTeam: any = null;
 
     try {
-      const { data: teams, error: et } = await db
-        .from("teams")
-        .select("id, name, central_user_id")
-        .limit(50);
-
-      const { data: members, error: etm } = await db
-        .from("team_members")
-        .select("team_id, tarotista_worker_id")
-        .limit(5000);
+      const { data: teams, error: et } = await db.from("teams").select("id, name, central_user_id").limit(50);
+      const { data: members, error: etm } = await db.from("team_members").select("team_id, tarotista_worker_id").limit(5000);
 
       if (!et && !etm && Array.isArray(teams) && Array.isArray(members) && teams.length > 0) {
         const tarotistasByTeam = new Map<string, string[]>();
@@ -251,7 +244,7 @@ export async function GET(req: Request) {
             })
             .filter(Boolean);
 
-          // €: suma real si hay monthly_earnings
+          // € tarotistas: suma real si hay monthly_earnings
           for (const wid of wids) {
             const er = earningsByWorker.get(wid);
             if (er) total_eur += toNum(er.amount_total_eur);
@@ -265,7 +258,7 @@ export async function GET(req: Request) {
             team_id: tid,
             team_name: t.name || "Equipo",
             central_user_id: t.central_user_id || null,
-            total_eur_month: total_eur,
+            total_eur_month: total_eur, // (de momento solo tarotistas)
             total_minutes,
             total_captadas,
             team_cliente_pct,
@@ -287,6 +280,23 @@ export async function GET(req: Request) {
           myTeamRank = idx === -1 ? null : idx + 1;
         }
 
+        // ✅ bonus de equipo ganador (central) -> suma al € del equipo #1 para que se vea arriba
+        const winnerBonusRule = bonusRules.find(
+          (r) =>
+            String(r.ranking_type || "").toLowerCase() === "team_winner" &&
+            Number(r.position) === 1 &&
+            String(r.role || "").toLowerCase() === "central" &&
+            (r.is_active === undefined ? true : !!r.is_active)
+        );
+        const winnerBonus = winnerBonusRule ? toNum(winnerBonusRule.amount_eur) : 0;
+
+        if (teamsRanking.length > 0 && winnerBonus > 0) {
+          teamsRanking[0] = {
+            ...teamsRanking[0],
+            total_eur_month: toNum(teamsRanking[0].total_eur_month) + winnerBonus,
+          };
+        }
+
         if (teamsRanking.length > 0) {
           const w = teamsRanking[0];
           winnerTeam = {
@@ -301,29 +311,17 @@ export async function GET(req: Request) {
           };
         }
 
-        // ✅ BONUS: team_winner (solo para #1), central
-        if (myRole === "central" && myTeamRank === 1) {
-          const rule = bonusRules.find(
-            (r) =>
-              String(r.ranking_type || "").toLowerCase() === "team_winner" &&
-              Number(r.position) === 1 &&
-              String(r.role || "").toLowerCase() === "central" &&
-              (r.is_active === undefined ? true : !!r.is_active)
-          );
+        // ✅ BONUS a la central ganadora (myEarnings)
+        if (myRole === "central" && myTeamRank === 1 && winnerBonus > 0) {
+          const base = toNum(myEarnings.amount_base_eur);
+          const prevBonus = toNum(myEarnings.amount_bonus_eur);
+          const newBonus = prevBonus + winnerBonus;
 
-          const bonus = rule ? toNum(rule.amount_eur) : 0;
-
-          if (bonus > 0) {
-            const base = toNum(myEarnings.amount_base_eur);
-            const prevBonus = toNum(myEarnings.amount_bonus_eur);
-            const newBonus = prevBonus + bonus;
-
-            myEarnings = {
-              ...myEarnings,
-              amount_bonus_eur: newBonus,
-              amount_total_eur: base + newBonus,
-            };
-          }
+          myEarnings = {
+            ...myEarnings,
+            amount_bonus_eur: newBonus,
+            amount_total_eur: base + newBonus,
+          };
         }
       }
     } catch {}
