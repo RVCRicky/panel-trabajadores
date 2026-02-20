@@ -70,7 +70,7 @@ export async function GET(req: Request) {
     const months = Array.from(new Set((monthsRows || []).map((r: any) => r.month_date).filter(Boolean))) as string[];
     if (!month_date) month_date = months[0] || null;
 
-    // rankings del mes
+    // rankings del mes (para tops y totales de producción)  ✅ SOLO tarotistas
     const { data: mr, error: emr } = await db
       .from("monthly_rankings")
       .select(
@@ -120,11 +120,66 @@ export async function GET(req: Request) {
     const topCliente = [...tarotistas].sort((a, b) => b.cliente_pct - a.cliente_pct).slice(0, 10);
     const topRepite = [...tarotistas].sort((a, b) => b.repite_pct - a.repite_pct).slice(0, 10);
 
+    // ✅ GASTOS (payouts) del mes: worker_invoices.total_eur
+    const { data: inv, error: invErr } = await db
+      .from("worker_invoices")
+      .select(
+        `
+        worker_id,
+        month_date,
+        total_eur,
+        workers:workers (
+          id,
+          display_name,
+          role
+        )
+      `
+      )
+      .eq("month_date", month_date)
+      .limit(20000);
+
+    if (invErr) return NextResponse.json({ ok: false, error: invErr.message }, { status: 500 });
+
+    const invRows = (inv || []).map((r: any) => {
+      const w = r.workers || null;
+      return {
+        worker_id: r.worker_id,
+        name: w?.display_name || "—",
+        role: normRole(w?.role),
+        total_eur: toNum(r.total_eur),
+      };
+    });
+
+    const expenses_tarotistas_eur = invRows
+      .filter((x: any) => x.role === "tarotista")
+      .reduce((a: number, b: any) => a + (b.total_eur || 0), 0);
+
+    const expenses_centrales_eur = invRows
+      .filter((x: any) => x.role === "central")
+      .reduce((a: number, b: any) => a + (b.total_eur || 0), 0);
+
+    const top3_expense_tarotistas = invRows
+      .filter((x: any) => x.role === "tarotista")
+      .sort((a: any, b: any) => (b.total_eur || 0) - (a.total_eur || 0))
+      .slice(0, 3);
+
+    // ✅ FACTURACIÓN (ingresos) del mes: SUM(attendance_rows.importe)
+    // Importante: esto es lo que viene del Sheets (columna "importe")
+    const { data: revRows, error: revErr } = await db
+      .from("attendance_rows")
+      .select("importe")
+      .eq("month_date", month_date)
+      .limit(200000);
+
+    if (revErr) return NextResponse.json({ ok: false, error: revErr.message }, { status: 500 });
+
+    const revenue_eur = (revRows || []).reduce((acc: number, r: any) => acc + toNum(r?.importe), 0);
+
+    const expenses_total_eur = expenses_tarotistas_eur + expenses_centrales_eur;
+    const margin_eur = revenue_eur - expenses_total_eur;
+
     // presencia actual
-    const { data: pres, error: ep } = await db
-      .from("presence_current")
-      .select("state")
-      .limit(5000);
+    const { data: pres, error: ep } = await db.from("presence_current").select("state").limit(5000);
     if (ep) return NextResponse.json({ ok: false, error: ep.message }, { status: 500 });
 
     const presence = { online: 0, pause: 0, bathroom: 0, offline: 0, total: 0 };
@@ -177,6 +232,18 @@ export async function GET(req: Request) {
       months,
       me,
       totals,
+      finance: {
+        // ingresos
+        revenue_eur,
+        // gastos
+        expenses_total_eur,
+        expenses_tarotistas_eur,
+        expenses_centrales_eur,
+        // margen
+        margin_eur,
+        // top gasto tarotistas (por si te interesa)
+        top3_expense_tarotistas,
+      },
       top: {
         minutes: topMinutes,
         captadas: topCaptadas,
