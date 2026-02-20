@@ -74,7 +74,7 @@ export default function RootLayout({
               </div>
 
               <div style={{ lineHeight: 1.2 }}>
-                <div style={{ fontWeight: 700, fontSize: 15 }}>
+                <div style={{ fontWeight: 800, fontSize: 15 }}>
                   Tarot Celestial
                 </div>
                 <div style={{ fontSize: 12, color: "#6b7280" }}>
