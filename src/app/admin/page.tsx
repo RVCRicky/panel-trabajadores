@@ -27,6 +27,14 @@ function fmt(n: any) {
   return (Number(n) || 0).toLocaleString("es-ES");
 }
 
+function fmtEur(n: any) {
+  return (Number(n) || 0).toLocaleString("es-ES", {
+    style: "currency",
+    currency: "EUR",
+    maximumFractionDigits: 0,
+  });
+}
+
 function formatMonthLabel(isoMonthDate: string) {
   const [y, m] = String(isoMonthDate || "").split("-");
   const monthNum = Number(m);
@@ -64,10 +72,7 @@ type OverviewResp = {
     finished_at: string | null;
   }>;
 
-  // minutos por día
   dailySeries: Array<{ date: string; minutes: number }>;
-
-  // captadas por día (soportamos varios nombres para no romper)
   dailyCaptadasSeries?: Array<{ date: string; captadas: number }>;
   captadasDailySeries?: Array<{ date: string; captadas: number }>;
   dailySeriesCaptadas?: Array<{ date: string; captadas: number }>;
@@ -78,6 +83,12 @@ type ChartMode = "minutes" | "captadas";
 function clamp(n: number, a = 0, b = 100) {
   return Math.max(a, Math.min(b, n));
 }
+
+type InvoiceRow = {
+  worker_id: string;
+  month_date: string;
+  total_eur: number;
+};
 
 export default function AdminPage() {
   const router = useRouter();
@@ -92,6 +103,11 @@ export default function AdminPage() {
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   const [chartMode, setChartMode] = useState<ChartMode>("minutes");
+
+  // ===== NUEVO: Facturación real (worker_invoices) =====
+  const [billingTotal, setBillingTotal] = useState<number | null>(null);
+  const [billingTop3, setBillingTop3] = useState<Array<{ worker_id: string; name: string; total_eur: number }>>([]);
+  const [billingErr, setBillingErr] = useState<string | null>(null);
 
   // Sync CSV
   const [csvUrl, setCsvUrl] = useState("");
@@ -128,6 +144,54 @@ export default function AdminPage() {
     })();
   }, [router]);
 
+  // ===== NUEVO: cargar facturación real del mes desde worker_invoices =====
+  async function loadBilling(monthDate: string | null, ov?: OverviewResp | null) {
+    setBillingErr(null);
+    setBillingTotal(null);
+    setBillingTop3([]);
+
+    if (!monthDate) return;
+
+    try {
+      // Intento lectura directa desde supabase client (depende RLS)
+      const { data, error } = await supabase
+        .from("worker_invoices")
+        .select("worker_id, month_date, total_eur")
+        .eq("month_date", monthDate);
+
+      if (error) {
+        setBillingErr(error.message || "Sin permisos para leer worker_invoices");
+        return;
+      }
+
+      const rows = (data || []) as unknown as InvoiceRow[];
+
+      const total = rows.reduce((acc, r) => acc + (Number(r.total_eur) || 0), 0);
+      setBillingTotal(total);
+
+      // Top3 por total_eur
+      const top = [...rows]
+        .sort((a, b) => (Number(b.total_eur) || 0) - (Number(a.total_eur) || 0))
+        .slice(0, 3);
+
+      // Resolver nombre con overview.top.minutes (ya trae worker_id + name)
+      const nameMap = new Map<string, string>();
+      const ovUse = ov || overview;
+      (ovUse?.top?.minutes || []).forEach((x) => nameMap.set(x.worker_id, x.name));
+      (ovUse?.top?.captadas || []).forEach((x) => nameMap.set(x.worker_id, x.name));
+
+      const top3Resolved = top.map((t) => ({
+        worker_id: t.worker_id,
+        name: nameMap.get(t.worker_id) || t.worker_id.slice(0, 8),
+        total_eur: Number(t.total_eur) || 0,
+      }));
+
+      setBillingTop3(top3Resolved);
+    } catch (e: any) {
+      setBillingErr(e?.message || "Error cargando facturación");
+    }
+  }
+
   async function loadOverview(monthOverride?: string | null) {
     setErr(null);
     setLoading(true);
@@ -155,6 +219,9 @@ export default function AdminPage() {
       // si no viene captadas por día, fuerza modo minutes para no quedar vacío
       const cap = (j.dailyCaptadasSeries || j.captadasDailySeries || j.dailySeriesCaptadas || []) as any[];
       if ((!cap || cap.length === 0) && chartMode === "captadas") setChartMode("minutes");
+
+      // ✅ NUEVO: cargar facturación real del mes (worker_invoices)
+      await loadBilling(j.month_date, j);
     } catch (e: any) {
       setErr(e?.message || "Error overview");
     } finally {
@@ -268,15 +335,6 @@ export default function AdminPage() {
   const chartData = chartMode === "minutes" ? dailyMinutesData : dailyCaptadasData;
   const chartUnit = chartMode === "minutes" ? "min" : "cap";
 
-  // ===== Centro de control (REAL) =====
-  const top3Minutes = useMemo(() => {
-    return (overview?.top?.minutes || []).slice(0, 3);
-  }, [overview?.top?.minutes]);
-
-  const maxTop3Minutes = useMemo(() => {
-    return Math.max(1, ...(top3Minutes.map((x) => Number(x.minutes) || 0) || [1]));
-  }, [top3Minutes]);
-
   const presenceRatio = useMemo(() => {
     if (!presence || !presence.total) return 0;
     return Math.round(((presence.online || 0) / presence.total) * 100);
@@ -285,39 +343,23 @@ export default function AdminPage() {
   const alerts = useMemo(() => {
     const a: Array<{ tone: "ok" | "warn" | "neutral"; text: string; href?: string }> = [];
 
-    // Incidencias
-    if ((pending ?? 0) > 0) {
-      a.push({ tone: "warn", text: `${fmt(pending)} incidencias pendientes por revisar.`, href: "/admin/incidents" });
-    } else {
-      a.push({ tone: "ok", text: "Incidencias: todo al día." });
-    }
+    if ((pending ?? 0) > 0) a.push({ tone: "warn", text: `${fmt(pending)} incidencias pendientes por revisar.`, href: "/admin/incidents" });
+    else a.push({ tone: "ok", text: "Incidencias: todo al día." });
 
-    // Presencia
     if (presence) {
-      if ((presence.online || 0) === 0) {
-        a.push({ tone: "warn", text: "Presencia: nadie ONLINE ahora mismo.", href: "/admin/live" });
-      } else if (presenceRatio < 30) {
-        a.push({
-          tone: "warn",
-          text: `Presencia baja: ${fmt(presence.online)} ONLINE de ${fmt(presence.total)} (${presenceRatio}%).`,
-          href: "/admin/live",
-        });
-      } else {
-        a.push({
-          tone: "ok",
-          text: `Presencia OK: ${fmt(presence.online)} ONLINE (${presenceRatio}%).`,
-          href: "/admin/live",
-        });
-      }
+      if ((presence.online || 0) === 0) a.push({ tone: "warn", text: "Presencia: nadie ONLINE ahora mismo.", href: "/admin/live" });
+      else if (presenceRatio < 30) a.push({ tone: "warn", text: `Presencia baja: ${fmt(presence.online)} ONLINE (${presenceRatio}%).`, href: "/admin/live" });
+      else a.push({ tone: "ok", text: `Presencia OK: ${fmt(presence.online)} ONLINE (${presenceRatio}%).`, href: "/admin/live" });
     }
 
-    // Cron
     if (cronInfo.text === "FAIL") a.push({ tone: "warn", text: "CRON: último rebuild en FAIL (revisar logs)." });
     else if (cronInfo.text === "OK") a.push({ tone: "ok", text: "CRON: OK." });
     else a.push({ tone: "neutral", text: "CRON: sin logs." });
 
+    if (billingErr) a.push({ tone: "warn", text: `Facturación: ${billingErr}` });
+
     return a.slice(0, 3);
-  }, [pending, presence, presenceRatio, cronInfo.text]);
+  }, [pending, presence, presenceRatio, cronInfo.text, billingErr]);
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
@@ -393,7 +435,7 @@ export default function AdminPage() {
         <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
       ) : null}
 
-      {/* ===== CENTRO DE CONTROL (REAL) ===== */}
+      {/* ===== CENTRO DE CONTROL (REAL con €) ===== */}
       <div style={{ display: "grid", gap: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
           <div>
@@ -416,21 +458,21 @@ export default function AdminPage() {
         {/* KPIs reales */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
           <Card>
+            <CardTitle>Facturación mes</CardTitle>
+            <CardValue>{billingTotal == null ? "—" : fmtEur(billingTotal)}</CardValue>
+            <CardHint>Total acumulado del mes (worker_invoices.total_eur)</CardHint>
+          </Card>
+
+          <Card>
             <CardTitle>Minutos del mes</CardTitle>
             <CardValue>{overview?.totals ? `${fmt(overview.totals.minutes)} min` : "—"}</CardValue>
-            <CardHint>Total acumulado del mes</CardHint>
+            <CardHint>Producción acumulada del mes</CardHint>
           </Card>
 
           <Card>
             <CardTitle>Captadas del mes</CardTitle>
             <CardValue>{overview?.totals ? fmt(overview.totals.captadas) : "—"}</CardValue>
             <CardHint>Conversión / captación registrada</CardHint>
-          </Card>
-
-          <Card>
-            <CardTitle>Tarotistas (mes)</CardTitle>
-            <CardValue>{overview?.totals ? fmt(overview.totals.tarotistas) : "—"}</CardValue>
-            <CardHint>Con actividad en el mes</CardHint>
           </Card>
 
           <Card>
@@ -443,13 +485,13 @@ export default function AdminPage() {
           </Card>
         </div>
 
-        {/* Top 3 + Alertas */}
+        {/* Top 3 € + Alertas */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
           <Card>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
               <div>
-                <CardTitle>Top 3 del mes</CardTitle>
-                <CardHint>Liderazgo visible = motivación + control</CardHint>
+                <CardTitle>Top 3 del mes (€)</CardTitle>
+                <CardHint>Basado en worker_invoices.total_eur</CardHint>
               </div>
               <span style={{ padding: "8px 12px", borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", fontSize: 13 }}>
                 🏆 Ranking
@@ -457,12 +499,16 @@ export default function AdminPage() {
             </div>
 
             <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-              {top3Minutes.length === 0 ? (
-                <div style={{ color: "#6b7280" }}>Sin datos.</div>
+              {billingErr ? (
+                <div style={{ color: "#b45309" }}>
+                  No se puede leer worker_invoices: <b>{billingErr}</b>
+                </div>
+              ) : billingTop3.length === 0 ? (
+                <div style={{ color: "#6b7280" }}>Sin datos de facturación aún.</div>
               ) : (
-                top3Minutes.map((r, idx) => {
-                  const v = Number(r.minutes) || 0;
-                  const w = Math.round((v / maxTop3Minutes) * 100);
+                billingTop3.map((r, idx) => {
+                  const max = Math.max(1, ...billingTop3.map((x) => x.total_eur || 0));
+                  const w = Math.round(((r.total_eur || 0) / max) * 100);
                   const badgeBg = idx === 0 ? "#fef3c7" : idx === 1 ? "#e5e7eb" : "#fee2e2";
 
                   return (
@@ -497,16 +543,13 @@ export default function AdminPage() {
 
                           <div>
                             <div style={{ fontWeight: 900, fontSize: 16 }}>{r.name}</div>
-                            <div style={{ fontSize: 12, color: "#6b7280" }}>
-                              Captadas: <b>{fmt(r.captadas)}</b> · Cliente%: <b>{fmt(r.cliente_pct)}%</b> · Repite%:{" "}
-                              <b>{fmt(r.repite_pct)}%</b>
-                            </div>
+                            <div style={{ fontSize: 12, color: "#6b7280" }}>Worker: {r.worker_id.slice(0, 8)}…</div>
                           </div>
                         </div>
 
                         <div style={{ textAlign: "right" }}>
-                          <div style={{ fontWeight: 900, fontSize: 18 }}>{fmt(r.minutes)} min</div>
-                          <div style={{ fontSize: 12, color: "#6b7280" }}>Generado</div>
+                          <div style={{ fontWeight: 900, fontSize: 18 }}>{fmtEur(r.total_eur)}</div>
+                          <div style={{ fontSize: 12, color: "#6b7280" }}>Total</div>
                         </div>
                       </div>
 
