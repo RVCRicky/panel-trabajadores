@@ -10,16 +10,12 @@ function getEnv(name: string) {
 }
 
 function authOk(req: Request) {
-  // Soporta 2 formas:
-  // 1) Authorization: Bearer <CRON_SECRET>  (recomendado)
-  // 2) ?secret=<CRON_SECRET> (solo si alguna vez lo necesitas manual)
   const secret = process.env.CRON_SECRET || "";
   if (!secret) return false;
 
   const h = req.headers.get("authorization") || "";
   const m = h.match(/^Bearer\s+(.+)$/i);
   const bearer = m?.[1] || "";
-
   if (bearer && bearer === secret) return true;
 
   const url = new URL(req.url);
@@ -27,6 +23,12 @@ function authOk(req: Request) {
   if (qs && qs === secret) return true;
 
   return false;
+}
+
+function firstDayOfMonth(d: Date) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  return `${y}-${m}-01`;
 }
 
 export async function GET(req: Request) {
@@ -39,14 +41,23 @@ export async function GET(req: Request) {
     const service = getEnv("SUPABASE_SERVICE_ROLE_KEY");
     const db = createClient(url, service, { auth: { persistSession: false } });
 
-    // ✅ llamamos a tu función SQL (ajusta el nombre si el tuyo es distinto)
-    // Ejemplo: select rebuild_monthly_rankings(current_date);
-    const { error } = await db.rpc("rebuild_monthly_rankings", {});
-    if (error) {
-      return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    // Mes objetivo: por defecto mes actual (UTC) o ?month=YYYY-MM-01
+    const u = new URL(req.url);
+    const month = u.searchParams.get("month") || firstDayOfMonth(new Date());
+
+    // 1) Rankings
+    const r1 = await db.rpc("rebuild_monthly_rankings", { p_month: month });
+    if (r1.error) {
+      return NextResponse.json({ ok: false, where: "rankings", error: r1.error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true });
+    // 2) Facturas (penalizaciones)
+    const r2 = await db.rpc("rebuild_monthly_invoices", { p_month: month });
+    if (r2.error) {
+      return NextResponse.json({ ok: false, where: "invoices", error: r2.error.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ ok: true, month });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
   }
