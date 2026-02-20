@@ -19,6 +19,25 @@ function medal(pos: number) {
 
 type RankKey = "minutes" | "repite_pct" | "cliente_pct" | "captadas";
 
+type TeamMember = { worker_id: string; name: string };
+
+type TeamRow = {
+  team_id: string;
+  team_name: string;
+  total_eur_month: number;
+  total_minutes: number;
+  total_captadas: number;
+  member_count: number;
+
+  // ✅ NUEVO (para el ranking global)
+  team_cliente_pct?: number;
+  team_repite_pct?: number;
+  team_score?: number;
+
+  // ✅ NUEVO (para ver quién es de cada equipo)
+  members?: TeamMember[];
+};
+
 type DashboardResp = {
   ok: boolean;
   error?: string;
@@ -42,16 +61,7 @@ type DashboardResp = {
     amount_total_eur: number;
   };
 
-  // ✅ NUEVO
-  teamsRanking?: Array<{
-    team_id: string;
-    team_name: string;
-    total_eur_month: number;
-    total_minutes: number;
-    total_captadas: number;
-    member_count: number;
-  }>;
-
+  teamsRanking?: TeamRow[];
   myTeamRank?: number | null;
 
   winnerTeam: null | {
@@ -62,6 +72,7 @@ type DashboardResp = {
     total_minutes: number;
     total_captadas: number;
     total_eur_month?: number;
+    team_score?: number;
   };
 
   bonusRules: Array<{
@@ -69,6 +80,8 @@ type DashboardResp = {
     position: number;
     role: string;
     amount_eur: number;
+    created_at?: string;
+    is_active?: boolean;
   }>;
 };
 
@@ -262,6 +275,11 @@ export default function PanelPage() {
     }
   }
 
+  async function logout() {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  }
+
   useEffect(() => {
     load(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -319,27 +337,34 @@ export default function PanelPage() {
   }
 
   const stateTone = pState === "online" ? "ok" : pState === "pause" || pState === "bathroom" ? "warn" : "neutral";
-  const stateText =
-    pState === "online" ? "ONLINE" : pState === "pause" ? "PAUSA" : pState === "bathroom" ? "BAÑO" : "OFFLINE";
+  const stateText = pState === "online" ? "ONLINE" : pState === "pause" ? "PAUSA" : pState === "bathroom" ? "BAÑO" : "OFFLINE";
 
   const totalEur = data?.myEarnings?.amount_total_eur ?? null;
   const minutesTotal = data?.myEarnings?.minutes_total ?? null;
   const captadasTotal = data?.myEarnings?.captadas ?? null;
 
   const months = data?.months || [];
-  const monthLabel = selectedMonth
-    ? formatMonthLabel(selectedMonth)
-    : data?.month_date
-      ? formatMonthLabel(data.month_date)
-      : "—";
+  const monthLabel = selectedMonth ? formatMonthLabel(selectedMonth) : data?.month_date ? formatMonthLabel(data.month_date) : "—";
 
   const teams = data?.teamsRanking || [];
   const team1 = teams[0] || null;
   const team2 = teams[1] || null;
 
+  const bonusTeamWinner = useMemo(() => {
+    const rules = data?.bonusRules || [];
+    const r = rules.find(
+      (x) =>
+        String(x.ranking_type || "").toLowerCase() === "team_winner" &&
+        Number(x.position) === 1 &&
+        String(x.role || "").toLowerCase() === "central" &&
+        (x.is_active === undefined ? true : !!x.is_active)
+    );
+    return r ? Number(r.amount_eur) || 0 : 0;
+  }, [data?.bonusRules]);
+
   return (
     <div style={{ display: "grid", gap: 14 }}>
-      {/* Título + acciones */}
+      {/* Header */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <h1 style={{ margin: 0 }}>Panel</h1>
 
@@ -378,7 +403,20 @@ export default function PanelPage() {
           >
             {loading ? "Actualizando..." : "Actualizar"}
           </button>
-          {/* ✅ Quitado el 2º logout: se queda el de cabecera */}
+
+          <button
+            onClick={logout}
+            style={{
+              padding: 10,
+              borderRadius: 10,
+              border: "1px solid #111",
+              background: "#111",
+              color: "#fff",
+              fontWeight: 900,
+            }}
+          >
+            Cerrar sesión
+          </button>
         </div>
       </div>
 
@@ -386,51 +424,92 @@ export default function PanelPage() {
         <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
       ) : null}
 
-      {/* ✅ NUEVO: MARCADOR POR EQUIPOS (Central) */}
+      {/* ✅ MARCADOR TOP — SOLO CENTRAL */}
       {myRole === "central" && teams.length > 0 ? (
         <div
           style={{
-            border: "1px solid #eee",
-            borderRadius: 16,
+            border: "2px solid #111",
+            borderRadius: 18,
             padding: 14,
-            background: "#fff",
+            background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
           }}
         >
-          <div style={{ fontWeight: 1000, fontSize: 18, marginBottom: 10 }}>🏆 Ranking por equipos (mes)</div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 12, alignItems: "stretch" }}>
-            <div style={{ border: "1px solid #f0f0f0", borderRadius: 14, padding: 12 }}>
-              <div style={{ fontWeight: 1000, fontSize: 16 }}>
-                {team1 ? `#1 ${team1.team_name}` : "—"}
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 1100, marginTop: 6 }}>
-                {team1 ? eur(team1.total_eur_month) : "—"}
-              </div>
-              <div style={{ color: "#666", marginTop: 6 }}>
-                Minutos: <b>{team1 ? fmt(team1.total_minutes) : "—"}</b> · Captadas:{" "}
-                <b>{team1 ? fmt(team1.total_captadas) : "—"}</b>
-              </div>
-            </div>
-
-            <div style={{ display: "grid", placeItems: "center", padding: 6 }}>
-              <div style={{ fontWeight: 1000, color: "#666" }}>VS</div>
-            </div>
-
-            <div style={{ border: "1px solid #f0f0f0", borderRadius: 14, padding: 12 }}>
-              <div style={{ fontWeight: 1000, fontSize: 16 }}>
-                {team2 ? `#2 ${team2.team_name}` : "—"}
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 1100, marginTop: 6 }}>
-                {team2 ? eur(team2.total_eur_month) : "—"}
-              </div>
-              <div style={{ color: "#666", marginTop: 6 }}>
-                Minutos: <b>{team2 ? fmt(team2.total_minutes) : "—"}</b> · Captadas:{" "}
-                <b>{team2 ? fmt(team2.total_captadas) : "—"}</b>
-              </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontWeight: 1100, fontSize: 20 }}>🏆 Ranking por equipos (GLOBAL)</div>
+            <div style={{ color: "#666", fontWeight: 900 }}>
+              Criterio: <b>%Clientes + %Repite</b>
+              {bonusTeamWinner ? (
+                <>
+                  {" "}
+                  · Bono ganadora: <b>{eur(bonusTeamWinner)}</b>
+                </>
+              ) : null}
             </div>
           </div>
 
-          <div style={{ marginTop: 10, color: "#666" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 12, alignItems: "stretch", marginTop: 12 }}>
+            {[team1, team2].map((t, idx) => {
+              const pos = idx + 1;
+              const isMine = (data?.myTeamRank || 0) === pos;
+
+              return (
+                <div
+                  key={pos}
+                  style={{
+                    border: isMine ? "2px solid #111" : "1px solid #eaeaea",
+                    borderRadius: 16,
+                    padding: 12,
+                    background: isMine ? "#fff" : "#fcfcfc",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                    <div style={{ fontWeight: 1100, fontSize: 16 }}>
+                      {t ? `${medal(pos)} #${pos} ${t.team_name}` : "—"}
+                    </div>
+                    {isMine ? (
+                      <span style={{ border: "1px solid #111", borderRadius: 999, padding: "4px 10px", fontWeight: 1000 }}>Tu equipo</span>
+                    ) : null}
+                  </div>
+
+                  <div style={{ fontSize: 30, fontWeight: 1200, marginTop: 8 }}>{t ? eur(t.total_eur_month) : "—"}</div>
+
+                  <div style={{ color: "#666", marginTop: 6, fontWeight: 900 }}>
+                    Score global: <b>{t?.team_score ?? "—"}</b> · Clientes: <b>{t?.team_cliente_pct ?? "—"}%</b> · Repite:{" "}
+                    <b>{t?.team_repite_pct ?? "—"}%</b>
+                  </div>
+
+                  <div style={{ color: "#666", marginTop: 6 }}>
+                    Minutos: <b>{t ? fmt(t.total_minutes) : "—"}</b> · Captadas: <b>{t ? fmt(t.total_captadas) : "—"}</b>
+                  </div>
+
+                  <div style={{ marginTop: 10, fontWeight: 1000 }}>Tarotistas del equipo</div>
+                  <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {(t?.members || []).map((m) => (
+                      <span
+                        key={m.worker_id}
+                        style={{
+                          border: "1px solid #e6e6e6",
+                          borderRadius: 999,
+                          padding: "6px 10px",
+                          fontWeight: 900,
+                          background: "#fff",
+                        }}
+                      >
+                        {m.name}
+                      </span>
+                    ))}
+                    {(t?.members || []).length === 0 ? <span style={{ color: "#999" }}>Sin tarotistas asignadas.</span> : null}
+                  </div>
+                </div>
+              );
+            })}
+
+            <div style={{ display: "grid", placeItems: "center", padding: 6 }}>
+              <div style={{ fontWeight: 1100, color: "#666" }}>VS</div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 10, color: "#666", fontWeight: 900 }}>
             Tu equipo va: <b>{data?.myTeamRank ? `${medal(data.myTeamRank)} #${data.myTeamRank}` : "—"}</b>
           </div>
         </div>
@@ -456,26 +535,25 @@ export default function PanelPage() {
           <CardTitle>Total € este mes</CardTitle>
           <CardValue>{totalEur === null ? "—" : eur(totalEur)}</CardValue>
           <CardHint>
-            Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas:{" "}
-            <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
+            Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas: <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
           </CardHint>
         </Card>
 
         <Card>
           <CardTitle>Mi posición (ranking actual)</CardTitle>
           <CardValue>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</CardValue>
-          <CardHint>{myRole === "central" ? "Según ranking de equipos." : "Según el ranking seleccionado abajo."}</CardHint>
+          <CardHint>{myRole === "central" ? "Según ranking global de equipos." : "Según el ranking seleccionado abajo."}</CardHint>
         </Card>
       </div>
 
-      {/* Accesos rápidos: solo Admin (quitados Mis facturas / Panel duplicados) */}
+      {/* Accesos rápidos: solo Admin */}
       {data?.user?.isAdmin ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
           <QuickLink href="/admin" title="Ir a Admin" desc="Presencia, incidencias, trabajadores y más." />
         </div>
       ) : null}
 
-      {/* ✅ Control horario (en el siguiente paso lo haremos aún más pro, aquí ya queda bien) */}
+      {/* Control horario */}
       {me?.role === "tarotista" || me?.role === "central" ? (
         <Card>
           <CardTitle>Control horario</CardTitle>
@@ -488,7 +566,13 @@ export default function PanelPage() {
             <button
               onClick={presenceLogin}
               disabled={isLogged}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #111", fontWeight: 900, opacity: isLogged ? 0.5 : 1 }}
+              style={{
+                padding: 10,
+                borderRadius: 12,
+                border: "1px solid #111",
+                fontWeight: 900,
+                opacity: isLogged ? 0.5 : 1,
+              }}
             >
               Loguear
             </button>
@@ -496,7 +580,13 @@ export default function PanelPage() {
             <button
               onClick={() => presenceSet("pause")}
               disabled={!isLogged}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900, opacity: !isLogged ? 0.5 : 1 }}
+              style={{
+                padding: 10,
+                borderRadius: 12,
+                border: "1px solid #ddd",
+                fontWeight: 900,
+                opacity: !isLogged ? 0.5 : 1,
+              }}
             >
               Pausa
             </button>
@@ -504,7 +594,13 @@ export default function PanelPage() {
             <button
               onClick={() => presenceSet("bathroom")}
               disabled={!isLogged}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900, opacity: !isLogged ? 0.5 : 1 }}
+              style={{
+                padding: 10,
+                borderRadius: 12,
+                border: "1px solid #ddd",
+                fontWeight: 900,
+                opacity: !isLogged ? 0.5 : 1,
+              }}
             >
               Baño
             </button>
@@ -512,7 +608,13 @@ export default function PanelPage() {
             <button
               onClick={() => presenceSet("online")}
               disabled={!isLogged}
-              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900, opacity: !isLogged ? 0.5 : 1 }}
+              style={{
+                padding: 10,
+                borderRadius: 12,
+                border: "1px solid #ddd",
+                fontWeight: 900,
+                opacity: !isLogged ? 0.5 : 1,
+              }}
             >
               Volver (Online)
             </button>
@@ -533,7 +635,10 @@ export default function PanelPage() {
               Desloguear
             </button>
 
-            <button onClick={loadPresence} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}>
+            <button
+              onClick={loadPresence}
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}
+            >
               Refrescar estado
             </button>
           </div>
@@ -610,12 +715,12 @@ export default function PanelPage() {
                   rankType === "minutes"
                     ? fmt(r.minutes)
                     : rankType === "captadas"
-                      ? fmt(r.captadas)
-                      : rankType === "repite_pct"
-                        ? `${r.repite_pct} %`
-                        : rankType === "cliente_pct"
-                          ? `${r.cliente_pct} %`
-                          : "";
+                    ? fmt(r.captadas)
+                    : rankType === "repite_pct"
+                    ? `${r.repite_pct} %`
+                    : rankType === "cliente_pct"
+                    ? `${r.cliente_pct} %`
+                    : "";
 
                 return (
                   <tr key={r.worker_id} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 900 : 400 }}>
