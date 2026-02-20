@@ -39,6 +39,7 @@ type BonusRuleRow = {
   position: number;
   role: string;
   amount_eur: number;
+  is_active?: boolean;
 };
 
 export async function GET(req: Request) {
@@ -141,9 +142,15 @@ export async function GET(req: Request) {
     const tarotistas = rows.filter((x: any) => normRole(x.role) === "tarotista");
 
     const rankMinutes = [...tarotistas].sort((a, b) => b.minutes - a.minutes);
-    const rankCaptadas = [...tarotistas].sort((a, b) => b.captadas - a.captadas).map((x) => ({ worker_id: x.worker_id, name: x.name, captadas: x.captadas }));
-    const rankCliente = [...tarotistas].sort((a, b) => b.cliente_pct - a.cliente_pct).map((x) => ({ worker_id: x.worker_id, name: x.name, cliente_pct: x.cliente_pct }));
-    const rankRepite = [...tarotistas].sort((a, b) => b.repite_pct - a.repite_pct).map((x) => ({ worker_id: x.worker_id, name: x.name, repite_pct: x.repite_pct }));
+    const rankCaptadas = [...tarotistas]
+      .sort((a, b) => b.captadas - a.captadas)
+      .map((x) => ({ worker_id: x.worker_id, name: x.name, captadas: x.captadas }));
+    const rankCliente = [...tarotistas]
+      .sort((a, b) => b.cliente_pct - a.cliente_pct)
+      .map((x) => ({ worker_id: x.worker_id, name: x.name, cliente_pct: x.cliente_pct }));
+    const rankRepite = [...tarotistas]
+      .sort((a, b) => b.repite_pct - a.repite_pct)
+      .map((x) => ({ worker_id: x.worker_id, name: x.name, repite_pct: x.repite_pct }));
 
     // 5) monthly_earnings (si existe)
     let earningsByWorker = new Map<string, EarningsRow>();
@@ -164,7 +171,7 @@ export async function GET(req: Request) {
     try {
       const { data: br, error: ebr } = await db
         .from("bonus_rules")
-        .select("ranking_type, position, role, amount_eur")
+        .select("ranking_type, position, role, amount_eur, is_active")
         .limit(2000);
       if (!ebr && Array.isArray(br)) bonusRules = br as any;
     } catch {}
@@ -189,7 +196,7 @@ export async function GET(req: Request) {
           amount_total_eur: 0,
         };
 
-    // 7) Teams ranking (TU ESQUEMA REAL) + miembros visibles + score global
+    // 7) Teams ranking + miembros + score global
     let teamsRanking: any[] = [];
     let myTeamRank: number | null = null;
     let winnerTeam: any = null;
@@ -215,7 +222,6 @@ export async function GET(req: Request) {
           tarotistasByTeam.get(tid)!.push(wid);
         }
 
-        // pesos del score global (por defecto 50/50)
         const W_CLIENTE = 0.5;
         const W_REPITE = 0.5;
 
@@ -241,12 +247,11 @@ export async function GET(req: Request) {
                 total_minutes += toNum(rr.minutes);
                 total_captadas += toNum(rr.captadas);
               }
-              const name = rr?.name || "—";
-              return { worker_id: wid, name };
+              return { worker_id: wid, name: rr?.name || "—" };
             })
             .filter(Boolean);
 
-          // €: si hay monthly_earnings suma real; si no, se queda 0
+          // €: suma real si hay monthly_earnings
           for (const wid of wids) {
             const er = earningsByWorker.get(wid);
             if (er) total_eur += toNum(er.amount_total_eur);
@@ -254,28 +259,23 @@ export async function GET(req: Request) {
 
           const team_cliente_pct = n ? Number((sum_cliente / n).toFixed(1)) : 0;
           const team_repite_pct = n ? Number((sum_repite / n).toFixed(1)) : 0;
-
           const team_score = Number((team_cliente_pct * W_CLIENTE + team_repite_pct * W_REPITE).toFixed(2));
 
           return {
             team_id: tid,
             team_name: t.name || "Equipo",
             central_user_id: t.central_user_id || null,
-
             total_eur_month: total_eur,
             total_minutes,
             total_captadas,
-
             team_cliente_pct,
             team_repite_pct,
             team_score,
-
             members: membersNames,
             member_count: wids.length,
           };
         });
 
-        // orden por score global, desempate por minutos
         teamsRanking = agg.sort((a, b) => {
           if (b.team_score !== a.team_score) return b.team_score - a.team_score;
           return b.total_minutes - a.total_minutes;
@@ -301,20 +301,23 @@ export async function GET(req: Request) {
           };
         }
 
-        // ✅ aplicar bono a la central según ranking de equipos (si hay reglas)
-        if (myRole === "central" && myTeamRank) {
+        // ✅ BONUS: team_winner (solo para #1), central
+        if (myRole === "central" && myTeamRank === 1) {
           const rule = bonusRules.find(
             (r) =>
-              String(r.ranking_type || "").toLowerCase() === "team_global" &&
-              Number(r.position) === Number(myTeamRank) &&
-              String(r.role || "").toLowerCase() === "central"
+              String(r.ranking_type || "").toLowerCase() === "team_winner" &&
+              Number(r.position) === 1 &&
+              String(r.role || "").toLowerCase() === "central" &&
+              (r.is_active === undefined ? true : !!r.is_active)
           );
+
           const bonus = rule ? toNum(rule.amount_eur) : 0;
 
           if (bonus > 0) {
             const base = toNum(myEarnings.amount_base_eur);
             const prevBonus = toNum(myEarnings.amount_bonus_eur);
             const newBonus = prevBonus + bonus;
+
             myEarnings = {
               ...myEarnings,
               amount_bonus_eur: newBonus,
