@@ -1,259 +1,372 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
-type InvoiceRow = {
+type Invoice = {
   id: string;
+  worker_id: string;
   month_date: string;
-  status: "pending" | "accepted" | "rejected" | string;
-  response_note: string | null;
-  responded_at: string | null;
-  created_at: string | null;
-  signed_url: string | null;
+  status: string;
+  total_eur: number;
+  worker_note: string | null;
+  admin_note: string | null;
+  locked_at: string | null;
 };
+
+type Line = {
+  id: string;
+  kind: string;
+  label: string;
+  amount_eur: number;
+  is_manual: boolean;
+  created_at: string;
+};
+
+function euro(n: any) {
+  const x = Number(n) || 0;
+  return x.toLocaleString("es-ES", { style: "currency", currency: "EUR" });
+}
+
+function monthLabel(isoDate: string) {
+  try {
+    const d = new Date(isoDate);
+    return d.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
+  } catch {
+    return isoDate;
+  }
+}
+
+type StatusChoice = "accepted" | "rejected" | "review";
 
 export default function MyInvoicesPage() {
   const router = useRouter();
-  const [loading, setLoading] = useState(true);
-  const [actingId, setActingId] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [items, setItems] = useState<InvoiceRow[]>([]);
-  const [noteById, setNoteById] = useState<Record<string, string>>({});
 
-  async function getToken(): Promise<string | null> {
+  const [status, setStatus] = useState("Cargando...");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [selected, setSelected] = useState<Invoice | null>(null);
+  const [lines, setLines] = useState<Line[]>([]);
+  const [note, setNote] = useState("");
+
+  async function getToken() {
     const { data } = await supabase.auth.getSession();
     return data.session?.access_token || null;
   }
 
-  async function load() {
+  async function loadMyInvoices() {
     setErr(null);
     setLoading(true);
-
     try {
       const token = await getToken();
-      if (!token) {
-        router.replace("/login");
-        return;
-      }
+      if (!token) return router.replace("/login");
 
-      const res = await fetch("/api/invoices/my", {
+      const r = await fetch("/api/invoices/my", {
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      const json = await res.json().catch(() => null);
+      const raw = await r.text();
+      let j: any = null;
+      try {
+        j = raw ? JSON.parse(raw) : null;
+      } catch {
+        j = null;
+      }
 
-      if (!json?.ok) {
-        setErr(json?.error || `Error (${res.status})`);
+      if (!r.ok || !j?.ok) {
+        setErr(`Error HTTP ${r.status}. ${j?.error || raw || "(vacío)"}`);
         return;
       }
 
-      const list: InvoiceRow[] = json.invoices || [];
-      setItems(list);
-
-      // Inicializar notas (si vienen)
-      const nextNotes: Record<string, string> = {};
-      for (const inv of list) nextNotes[inv.id] = inv.response_note || "";
-      setNoteById(nextNotes);
-    } catch (e: any) {
-      setErr(e?.message || "Error cargando facturas");
+      const list: Invoice[] = j.invoices || [];
+      setInvoices(list);
+      if (!selected) setSelected(list.length ? list[0] : null);
+      setStatus("OK");
     } finally {
       setLoading(false);
     }
   }
 
-  async function respond(invoice_id: string, action: "accepted" | "rejected") {
+  async function loadLines(invoiceId: string) {
     setErr(null);
-    setActingId(invoice_id);
+    setLines([]);
+    const token = await getToken();
+    if (!token) return router.replace("/login");
 
+    const r = await fetch(`/api/invoices/lines?invoiceId=${encodeURIComponent(invoiceId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const raw = await r.text();
+    let j: any = null;
+    try {
+      j = raw ? JSON.parse(raw) : null;
+    } catch {
+      j = null;
+    }
+
+    if (!r.ok || !j?.ok) {
+      setErr(`Error HTTP ${r.status}. ${j?.error || raw || "(vacío)"}`);
+      return;
+    }
+
+    setLines(j.lines || []);
+  }
+
+  useEffect(() => {
+    loadMyInvoices();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!selected) return;
+    setNote(selected.worker_note || "");
+    loadLines(selected.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.id]);
+
+  async function respond(nextStatus: StatusChoice) {
+    setErr(null);
+    if (!selected) return;
+
+    setLoading(true);
     try {
       const token = await getToken();
-      if (!token) {
-        router.replace("/login");
-        return;
-      }
+      if (!token) return router.replace("/login");
 
-      const note = (noteById[invoice_id] || "").trim();
-
-      const res = await fetch("/api/invoices/respond", {
+      const r = await fetch("/api/invoices/respond", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ invoice_id, action, note }),
+        body: JSON.stringify({
+          invoiceId: selected.id,
+          status: nextStatus,
+          workerNote: note.trim() || null,
+        }),
       });
 
-      const json = await res.json().catch(() => null);
+      const raw = await r.text();
+      let j: any = null;
+      try {
+        j = raw ? JSON.parse(raw) : null;
+      } catch {
+        j = null;
+      }
 
-      if (!json?.ok) {
-        setErr(json?.error || `Error (${res.status})`);
+      if (!r.ok || !j?.ok) {
+        setErr(`Error HTTP ${r.status}. ${j?.error || raw || "(vacío)"}`);
         return;
       }
 
-      await load();
-    } catch (e: any) {
-      setErr(e?.message || "Error respondiendo factura");
+      await loadMyInvoices();
+      // refrescar el seleccionado
+      const again = (invoices || []).find((x) => x.id === selected.id) || null;
+      if (again) setSelected(again);
     } finally {
-      setActingId(null);
+      setLoading(false);
     }
   }
 
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  async function openPdf() {
+    setErr(null);
+    if (!selected) return;
+
+    const token = await getToken();
+    if (!token) return router.replace("/login");
+
+    // abrimos en nueva pestaña
+    const url = `/api/invoices/pdf?invoiceId=${encodeURIComponent(selected.id)}`;
+
+    // fetch para no perder auth (Bearer). Abrimos blob.
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      setErr(`PDF error HTTP ${r.status}. ${t || "(vacío)"}`);
+      return;
+    }
+    const blob = await r.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    window.open(blobUrl, "_blank");
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  }
+
+  const head = useMemo(() => {
+    if (!selected) return null;
+    return {
+      month: monthLabel(selected.month_date),
+      total: euro(selected.total_eur),
+      state: selected.locked_at ? "CERRADA" : "ABIERTA",
+      status: String(selected.status || "").toUpperCase(),
+    };
+  }, [selected]);
 
   return (
-    <div style={{ padding: 20, maxWidth: 1100 }}>
-      <h1 style={{ marginTop: 0 }}>Mis facturas</h1>
-
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-        <a
-          href="/panel"
-          style={{
-            padding: 10,
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            textDecoration: "none",
-          }}
-        >
-          ← Volver al panel
-        </a>
+    <div style={{ display: "grid", gap: 14, maxWidth: 980 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <h1 style={{ margin: 0 }}>Mis facturas</h1>
 
         <button
-          onClick={load}
+          onClick={loadMyInvoices}
           disabled={loading}
-          style={{
-            padding: 10,
-            borderRadius: 10,
-            border: "1px solid #111",
-            fontWeight: 800,
-          }}
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900, cursor: "pointer" }}
         >
           {loading ? "Cargando..." : "Actualizar"}
         </button>
+
+        <a
+          href="/panel"
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", textDecoration: "none" }}
+        >
+          ← Volver
+        </a>
       </div>
 
-      {err ? (
-        <div
-          style={{
-            padding: 10,
-            border: "1px solid #ffcccc",
-            background: "#fff3f3",
-            borderRadius: 10,
-            marginBottom: 12,
-          }}
-        >
-          {err}
-        </div>
-      ) : null}
+      {err ? <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div> : null}
 
-      {loading ? (
-        <div style={{ color: "#666" }}>Cargando…</div>
-      ) : items.length === 0 ? (
-        <div style={{ color: "#666" }}>No tienes facturas todavía.</div>
-      ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Mes</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Estado</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>PDF</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Nota</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Acción</th>
-              </tr>
-            </thead>
+      <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 12 }}>
+        {/* Lista */}
+        <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
+          <div style={{ fontWeight: 900, marginBottom: 8 }}>Facturas</div>
 
-            <tbody>
-              {items.map((inv) => {
-                const isPending = inv.status === "pending";
-                const isBusy = actingId === inv.id;
-
+          <div style={{ display: "grid", gap: 8, maxHeight: 520, overflow: "auto" }}>
+            {invoices.length === 0 ? (
+              <div style={{ color: "#666" }}>No hay facturas todavía.</div>
+            ) : (
+              invoices.map((i) => {
+                const active = selected?.id === i.id;
                 return (
-                  <tr key={inv.id}>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{inv.month_date}</td>
-
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
-                      <b>{inv.status}</b>
-                    </td>
-
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
-                      {inv.signed_url ? (
-                        <a href={inv.signed_url} target="_blank" rel="noreferrer">
-                          Ver / Descargar
-                        </a>
-                      ) : (
-                        <span style={{ color: "#666" }}>Sin link</span>
-                      )}
-                    </td>
-
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
-                      <input
-                        value={noteById[inv.id] ?? ""}
-                        onChange={(e) => setNoteById((p) => ({ ...p, [inv.id]: e.target.value }))}
-                        placeholder="(opcional) Escribe un comentario…"
-                        disabled={!isPending || isBusy}
-                        style={{
-                          width: 320,
-                          maxWidth: "100%",
-                          padding: 8,
-                          borderRadius: 10,
-                          border: "1px solid #ddd",
-                        }}
-                      />
-                    </td>
-
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
-                      {isPending ? (
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <button
-                            onClick={() => respond(inv.id, "accepted")}
-                            disabled={isBusy}
-                            style={{
-                              padding: "8px 10px",
-                              borderRadius: 10,
-                              border: "1px solid #111",
-                              fontWeight: 800,
-                            }}
-                          >
-                            {isBusy ? "…" : "Conforme"}
-                          </button>
-
-                          <button
-                            onClick={() => respond(inv.id, "rejected")}
-                            disabled={isBusy}
-                            style={{
-                              padding: "8px 10px",
-                              borderRadius: 10,
-                              border: "1px solid #111",
-                              background: "#111",
-                              color: "#fff",
-                              fontWeight: 800,
-                            }}
-                          >
-                            {isBusy ? "…" : "No conforme"}
-                          </button>
-                        </div>
-                      ) : (
-                        <span style={{ color: "#666" }}>
-                          Respondida {inv.responded_at ? `(${new Date(inv.responded_at).toLocaleString("es-ES")})` : ""}
-                        </span>
-                      )}
-                    </td>
-                  </tr>
+                  <button
+                    key={i.id}
+                    onClick={() => setSelected(i)}
+                    style={{
+                      textAlign: "left",
+                      padding: 10,
+                      borderRadius: 12,
+                      border: active ? "2px solid #111" : "1px solid #ddd",
+                      background: active ? "#f6f6f6" : "#fff",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <div style={{ fontWeight: 900 }}>{monthLabel(i.month_date)}</div>
+                    <div style={{ color: "#666", fontSize: 13 }}>
+                      {i.locked_at ? "CERRADA" : "ABIERTA"} · {String(i.status || "").toUpperCase()} ·{" "}
+                      <b style={{ color: "#111" }}>{euro(i.total_eur)}</b>
+                    </div>
+                  </button>
                 );
-              })}
-            </tbody>
-          </table>
-
-          <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
-            Nota: los links al PDF son temporales (se regeneran al recargar).
+              })
+            )}
           </div>
         </div>
-      )}
+
+        {/* Detalle */}
+        <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
+          {!selected ? (
+            <div style={{ color: "#666" }}>Selecciona una factura.</div>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 900 }}>{head?.month}</div>
+                <div style={{ marginLeft: "auto", color: "#666" }}>
+                  {head?.state} · {head?.status} · Total: <b style={{ color: "#111" }}>{head?.total}</b>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button
+                  onClick={openPdf}
+                  style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900, cursor: "pointer" }}
+                >
+                  Ver / Descargar PDF
+                </button>
+
+                {selected.locked_at ? (
+                  <div style={{ color: "#666", display: "flex", alignItems: "center" }}>
+                    Esta factura está cerrada. Solo puedes responder (aceptar/rechazar/revisión).
+                  </div>
+                ) : (
+                  <div style={{ color: "#666", display: "flex", alignItems: "center" }}>
+                    Esta factura aún está abierta (el admin puede ajustarla).
+                  </div>
+                )}
+              </div>
+
+              <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 10 }}>
+                <div style={{ fontWeight: 900, marginBottom: 6 }}>Líneas</div>
+
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #eee" }}>Concepto</th>
+                      <th style={{ textAlign: "right", padding: 8, borderBottom: "1px solid #eee" }}>€</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lines.length === 0 ? (
+                      <tr>
+                        <td colSpan={2} style={{ padding: 10, color: "#666" }}>
+                          Sin líneas.
+                        </td>
+                      </tr>
+                    ) : (
+                      lines.map((l) => (
+                        <tr key={l.id}>
+                          <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{l.label}</td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>
+                            {euro(l.amount_eur)}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{ marginTop: 14, borderTop: "1px solid #eee", paddingTop: 10 }}>
+                <div style={{ fontWeight: 900, marginBottom: 8 }}>Tu respuesta</div>
+
+                <textarea
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  placeholder="Escribe aquí tu comentario si quieres (opcional)"
+                  style={{ width: "100%", minHeight: 90, padding: 10, borderRadius: 10, border: "1px solid #ccc" }}
+                />
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+                  <button
+                    onClick={() => respond("accepted")}
+                    disabled={loading}
+                    style={{ padding: 10, borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", fontWeight: 900, cursor: "pointer" }}
+                  >
+                    Aceptar
+                  </button>
+
+                  <button
+                    onClick={() => respond("review")}
+                    disabled={loading}
+                    style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900, cursor: "pointer" }}
+                  >
+                    En revisión
+                  </button>
+
+                  <button
+                    onClick={() => respond("rejected")}
+                    disabled={loading}
+                    style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900, cursor: "pointer" }}
+                  >
+                    Rechazar
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
