@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import PDFDocument from "pdfkit";
+import fs from "fs";
+import path from "path";
 
 export const runtime = "nodejs";
 
@@ -33,104 +35,93 @@ export async function GET(req: Request) {
     const supabaseAuth = createClient(SUPABASE_URL, ANON_KEY, { auth: { persistSession: false } });
     const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
 
-    // ===== AUTH =====
+    // 1) token
     const authHeader = req.headers.get("authorization") || "";
     const token = authHeader.toLowerCase().startsWith("bearer ")
       ? authHeader.slice(7).trim()
       : "";
 
-    if (!token) {
-      return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
-    }
+    if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
 
     const { data: u, error: uErr } = await supabaseAuth.auth.getUser(token);
-    if (uErr || !u?.user?.id) {
-      return NextResponse.json({ ok: false, error: "NOT_AUTH" }, { status: 401 });
-    }
+    if (uErr || !u?.user?.id) return NextResponse.json({ ok: false, error: "NOT_AUTH" }, { status: 401 });
 
     const callerAuthId = u.user.id;
 
-    // ===== invoiceId =====
+    // 2) invoiceId
     const url = new URL(req.url);
     const invoiceId = (url.searchParams.get("invoiceId") || "").trim();
+    if (!invoiceId) return NextResponse.json({ ok: false, error: "MISSING_INVOICE_ID" }, { status: 400 });
 
-    if (!invoiceId) {
-      return NextResponse.json({ ok: false, error: "MISSING_INVOICE_ID" }, { status: 400 });
-    }
-
-    // ===== Worker caller =====
-    const { data: callerWorker } = await supabaseAdmin
+    // 3) caller worker
+    const { data: callerWorker, error: cwErr } = await supabaseAdmin
       .from("workers")
       .select("id, role, is_active")
       .eq("user_id", callerAuthId)
       .maybeSingle();
 
-    if (!callerWorker || !callerWorker.is_active) {
-      return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
-    }
+    if (cwErr) return NextResponse.json({ ok: false, error: cwErr.message }, { status: 400 });
+    if (!callerWorker || !callerWorker.is_active) return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
 
     const isAdmin = callerWorker.role === "admin";
 
-    // ===== Factura =====
-    const { data: inv } = await supabaseAdmin
+    // 4) invoice
+    const { data: inv, error: invErr } = await supabaseAdmin
       .from("worker_invoices")
-      .select("id,worker_id,month_date,status,total_eur,worker_note,admin_note,locked_at")
+      .select("id,worker_id,month_date,status,total_eur,worker_note,admin_note")
       .eq("id", invoiceId)
       .maybeSingle();
 
-    if (!inv) {
-      return NextResponse.json({ ok: false, error: "NOT_FOUND" }, { status: 404 });
-    }
+    if (invErr) return NextResponse.json({ ok: false, error: invErr.message }, { status: 400 });
+    if (!inv) return NextResponse.json({ ok: false, error: "NOT_FOUND" }, { status: 404 });
 
     if (!isAdmin && inv.worker_id !== callerWorker.id) {
       return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
     }
 
-    const { data: w } = await supabaseAdmin
+    const { data: w, error: wErr } = await supabaseAdmin
       .from("workers")
       .select("display_name")
       .eq("id", inv.worker_id)
       .maybeSingle();
 
+    if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 400 });
+
     const workerName = w?.display_name || inv.worker_id;
 
-    const { data: lines } = await supabaseAdmin
+    const { data: lines, error: lErr } = await supabaseAdmin
       .from("worker_invoice_lines")
       .select("label, amount_eur")
       .eq("invoice_id", invoiceId)
       .order("created_at", { ascending: true });
 
-    // ===== PDF SIN FUENTES AFM =====
-    const doc = new PDFDocument({
-      size: "A4",
-      margin: 50,
-      autoFirstPage: true,
-      bufferPages: true
-    });
+    if (lErr) return NextResponse.json({ ok: false, error: lErr.message }, { status: 400 });
 
-    // ⚠️ Esto es lo clave:
-    // Evita que PDFKit intente cargar Helvetica.afm
-    (doc as any)._font = null;
+    // 5) PDF
+    const doc = new PDFDocument({ size: "A4", margin: 50 });
+
+    // ✅ CLAVE: cargar una fuente TTF DEL REPO (evita Helvetica.afm)
+    const fontPath = path.join(process.cwd(), "public", "fonts", "arial.ttf");
+    const fontBuf = fs.readFileSync(fontPath);
+    doc.font(fontBuf);
 
     const chunks: Buffer[] = [];
     doc.on("data", (c) => chunks.push(c));
+    const done = new Promise<Buffer>((resolve) => doc.on("end", () => resolve(Buffer.concat(chunks))));
 
-    const done = new Promise<Buffer>((resolve) =>
-      doc.on("end", () => resolve(Buffer.concat(chunks)))
-    );
-
-    doc.text("Factura de trabajador");
+    // contenido
+    doc.fontSize(18).text("Factura de trabajador");
     doc.moveDown();
 
-    doc.text(`Trabajador: ${workerName}`);
+    doc.fontSize(12).text(`Trabajador: ${workerName}`);
     doc.text(`Mes: ${monthLabel(inv.month_date)}`);
     doc.text(`Estado: ${String(inv.status || "").toUpperCase()}`);
     doc.moveDown();
 
-    doc.text(`Total: ${euro(inv.total_eur)}`);
+    doc.fontSize(14).text(`Total: ${euro(inv.total_eur)}`);
     doc.moveDown();
 
-    doc.text("Detalle:");
+    doc.fontSize(12).text("Detalle:");
     doc.moveDown(0.5);
 
     for (const ln of lines || []) {
@@ -152,19 +143,17 @@ export async function GET(req: Request) {
     const pdf = await done;
     const bytes = new Uint8Array(pdf);
 
+    const filename = `factura_${workerName.replace(/\s+/g, "_")}_${inv.month_date}.pdf`;
+
     return new NextResponse(bytes, {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `inline; filename="factura.pdf"`,
+        "Content-Disposition": `inline; filename="${filename}"`,
         "Cache-Control": "no-store"
       }
     });
-
   } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || "SERVER_ERROR" },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
   }
 }
