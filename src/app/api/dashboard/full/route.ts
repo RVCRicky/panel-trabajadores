@@ -68,7 +68,7 @@ export async function GET(req: Request) {
     if (!(me as any).is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
 
     const myWorkerId = String((me as any).id || "");
-    const myRole = normRole((me as any).role);
+    const myRole = normRole((me as any).role); // "central" | "tarotista" | "admin"
 
     // 3) month
     const urlObj = new URL(req.url);
@@ -111,6 +111,8 @@ export async function GET(req: Request) {
         captadas_total,
         cliente_pct,
         repite_pct,
+        cliente_min,
+        repite_min,
         workers:workers (
           id,
           display_name,
@@ -152,7 +154,7 @@ export async function GET(req: Request) {
       .sort((a, b) => b.repite_pct - a.repite_pct)
       .map((x) => ({ worker_id: x.worker_id, name: x.name, repite_pct: x.repite_pct }));
 
-    // 5) monthly_earnings
+    // 5) monthly_earnings (si existe)
     let earningsByWorker = new Map<string, EarningsRow>();
     try {
       const { data: earnRows, error: eearn } = await db
@@ -196,135 +198,147 @@ export async function GET(req: Request) {
           amount_total_eur: 0,
         };
 
-    // 7) Teams ranking
+    // 7) Teams ranking (solo tiene sentido para CENTRAL)
     let teamsRanking: any[] = [];
     let myTeamRank: number | null = null;
     let winnerTeam: any = null;
 
-    try {
-      const { data: teams, error: et } = await db.from("teams").select("id, name, central_user_id").limit(50);
-      const { data: members, error: etm } = await db.from("team_members").select("team_id, tarotista_worker_id").limit(5000);
+    if (myRole === "central" || myRole === "admin") {
+      try {
+        const { data: teams, error: et } = await db
+          .from("teams")
+          .select("id, name, central_user_id")
+          .limit(50);
 
-      if (!et && !etm && Array.isArray(teams) && Array.isArray(members) && teams.length > 0) {
-        const tarotistasByTeam = new Map<string, string[]>();
-        for (const m of members as any[]) {
-          const tid = String(m.team_id || "");
-          const wid = String(m.tarotista_worker_id || "");
-          if (!tid || !wid) continue;
-          if (!tarotistasByTeam.has(tid)) tarotistasByTeam.set(tid, []);
-          tarotistasByTeam.get(tid)!.push(wid);
-        }
+        const { data: members, error: etm } = await db
+          .from("team_members")
+          .select("team_id, tarotista_worker_id")
+          .limit(5000);
 
-        const W_CLIENTE = 0.5;
-        const W_REPITE = 0.5;
-
-        const agg = (teams as any[]).map((t) => {
-          const tid = String(t.id);
-          const wids = tarotistasByTeam.get(tid) || [];
-
-          let total_eur = 0;
-          let total_minutes = 0;
-          let total_captadas = 0;
-
-          let sum_cliente = 0;
-          let sum_repite = 0;
-          let n = 0;
-
-          const membersNames = wids
-            .map((wid) => {
-              const rr = rows.find((r) => String(r.worker_id) === String(wid));
-              if (rr) {
-                sum_cliente += toNum(rr.cliente_pct);
-                sum_repite += toNum(rr.repite_pct);
-                n += 1;
-                total_minutes += toNum(rr.minutes);
-                total_captadas += toNum(rr.captadas);
-              }
-              return { worker_id: wid, name: rr?.name || "—" };
-            })
-            .filter(Boolean);
-
-          // € tarotistas: suma real si hay monthly_earnings
-          for (const wid of wids) {
-            const er = earningsByWorker.get(wid);
-            if (er) total_eur += toNum(er.amount_total_eur);
+        if (!et && !etm && Array.isArray(teams) && Array.isArray(members) && teams.length > 0) {
+          const tarotistasByTeam = new Map<string, string[]>();
+          for (const m of members as any[]) {
+            const tid = String(m.team_id || "");
+            const wid = String(m.tarotista_worker_id || "");
+            if (!tid || !wid) continue;
+            if (!tarotistasByTeam.has(tid)) tarotistasByTeam.set(tid, []);
+            tarotistasByTeam.get(tid)!.push(wid);
           }
 
-          const team_cliente_pct = n ? Number((sum_cliente / n).toFixed(1)) : 0;
-          const team_repite_pct = n ? Number((sum_repite / n).toFixed(1)) : 0;
-          const team_score = Number((team_cliente_pct * W_CLIENTE + team_repite_pct * W_REPITE).toFixed(2));
+          const W_CLIENTE = 0.5;
+          const W_REPITE = 0.5;
 
-          return {
-            team_id: tid,
-            team_name: t.name || "Equipo",
-            central_user_id: t.central_user_id || null,
-            total_eur_month: total_eur, // (de momento solo tarotistas)
-            total_minutes,
-            total_captadas,
-            team_cliente_pct,
-            team_repite_pct,
-            team_score,
-            members: membersNames,
-            member_count: wids.length,
-          };
-        });
+          const agg = (teams as any[]).map((t) => {
+            const tid = String(t.id);
+            const wids = tarotistasByTeam.get(tid) || [];
 
-        teamsRanking = agg.sort((a, b) => {
-          if (b.team_score !== a.team_score) return b.team_score - a.team_score;
-          return b.total_minutes - a.total_minutes;
-        });
+            let total_minutes = 0;
+            let total_captadas = 0;
 
-        const myTeamId = (teams as any[]).find((t) => String(t.central_user_id) === String(uid))?.id || null;
-        if (myTeamId) {
-          const idx = teamsRanking.findIndex((t) => String(t.team_id) === String(myTeamId));
-          myTeamRank = idx === -1 ? null : idx + 1;
+            let sum_cliente = 0;
+            let sum_repite = 0;
+            let n = 0;
+
+            const membersNames = wids
+              .map((wid) => {
+                const rr = rows.find((r) => String(r.worker_id) === String(wid));
+                if (rr) {
+                  sum_cliente += toNum(rr.cliente_pct);
+                  sum_repite += toNum(rr.repite_pct);
+                  n += 1;
+                  total_minutes += toNum(rr.minutes);
+                  total_captadas += toNum(rr.captadas);
+                }
+                return { worker_id: wid, name: rr?.name || "—" };
+              })
+              .filter(Boolean);
+
+            const team_cliente_pct = n ? Number((sum_cliente / n).toFixed(1)) : 0;
+            const team_repite_pct = n ? Number((sum_repite / n).toFixed(1)) : 0;
+            const team_score = Number((team_cliente_pct * W_CLIENTE + team_repite_pct * W_REPITE).toFixed(2));
+
+            return {
+              team_id: tid,
+              team_name: t.name || "Equipo",
+              central_user_id: t.central_user_id || null,
+
+              // ✅ CENTRAL NO VE € tarotistas → lo devolvemos a 0 siempre
+              total_eur_month: 0,
+
+              total_minutes,
+              total_captadas,
+              team_cliente_pct,
+              team_repite_pct,
+              team_score,
+
+              members: membersNames,
+              member_count: wids.length,
+            };
+          });
+
+          // ranking por score global, desempate minutos
+          teamsRanking = agg.sort((a, b) => {
+            if (b.team_score !== a.team_score) return b.team_score - a.team_score;
+            return b.total_minutes - a.total_minutes;
+          });
+
+          const myTeamId = (teams as any[]).find((t) => String(t.central_user_id) === String(uid))?.id || null;
+          if (myTeamId) {
+            const idx = teamsRanking.findIndex((t) => String(t.team_id) === String(myTeamId));
+            myTeamRank = idx === -1 ? null : idx + 1;
+          }
+
+          if (teamsRanking.length > 0) {
+            const w = teamsRanking[0];
+            winnerTeam = {
+              team_id: w.team_id,
+              team_name: w.team_name,
+              central_user_id: w.central_user_id,
+              central_name: null,
+              total_minutes: w.total_minutes,
+              total_captadas: w.total_captadas,
+              total_eur_month: 0,
+              team_score: w.team_score,
+            };
+          }
+
+          // ✅ BONUS a la central si su equipo va #1 (team_winner)
+          const winnerBonusRule = bonusRules.find(
+            (r) =>
+              String(r.ranking_type || "").toLowerCase() === "team_winner" &&
+              Number(r.position) === 1 &&
+              String(r.role || "").toLowerCase() === "central" &&
+              (r.is_active === undefined ? true : !!r.is_active)
+          );
+          const winnerBonus = winnerBonusRule ? toNum(winnerBonusRule.amount_eur) : 0;
+
+          if (myRole === "central" && myTeamRank === 1 && winnerBonus > 0) {
+            const prevBonus = toNum(myEarnings.amount_bonus_eur);
+            const newBonus = prevBonus + winnerBonus;
+
+            // ✅ central: solo bonus (no base)
+            myEarnings = {
+              ...myEarnings,
+              amount_base_eur: 0,
+              amount_bonus_eur: newBonus,
+              amount_total_eur: newBonus,
+            };
+          } else if (myRole === "central") {
+            // ✅ central sin ganar: solo bonus actual (normalmente 0)
+            myEarnings = {
+              ...myEarnings,
+              amount_base_eur: 0,
+              amount_total_eur: toNum(myEarnings.amount_bonus_eur),
+            };
+          }
         }
-
-        // ✅ bonus de equipo ganador (central) -> suma al € del equipo #1 para que se vea arriba
-        const winnerBonusRule = bonusRules.find(
-          (r) =>
-            String(r.ranking_type || "").toLowerCase() === "team_winner" &&
-            Number(r.position) === 1 &&
-            String(r.role || "").toLowerCase() === "central" &&
-            (r.is_active === undefined ? true : !!r.is_active)
-        );
-        const winnerBonus = winnerBonusRule ? toNum(winnerBonusRule.amount_eur) : 0;
-
-        if (teamsRanking.length > 0 && winnerBonus > 0) {
-          teamsRanking[0] = {
-            ...teamsRanking[0],
-            total_eur_month: toNum(teamsRanking[0].total_eur_month) + winnerBonus,
-          };
-        }
-
-        if (teamsRanking.length > 0) {
-          const w = teamsRanking[0];
-          winnerTeam = {
-            team_id: w.team_id,
-            team_name: w.team_name,
-            central_user_id: w.central_user_id,
-            central_name: null,
-            total_minutes: w.total_minutes,
-            total_captadas: w.total_captadas,
-            total_eur_month: w.total_eur_month,
-            team_score: w.team_score,
-          };
-        }
-
-        // ✅ BONUS a la central ganadora (myEarnings)
-        if (myRole === "central" && myTeamRank === 1 && winnerBonus > 0) {
-          const base = toNum(myEarnings.amount_base_eur);
-          const prevBonus = toNum(myEarnings.amount_bonus_eur);
-          const newBonus = prevBonus + winnerBonus;
-
-          myEarnings = {
-            ...myEarnings,
-            amount_bonus_eur: newBonus,
-            amount_total_eur: base + newBonus,
-          };
-        }
-      }
-    } catch {}
+      } catch {}
+    } else {
+      // tarotista: no mandamos equipos
+      teamsRanking = [];
+      myTeamRank = null;
+      winnerTeam = null;
+    }
 
     return NextResponse.json({
       ok: true,
