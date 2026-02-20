@@ -188,13 +188,70 @@ export async function GET(req: Request) {
     if (month_date) {
       const { data: expRows, error: expErr } = await db
         .from("worker_invoices")
-        .select("total_eur")
+        .select("worker_id, total_eur")
         .eq("month_date", month_date)
         .limit(20000);
 
       if (expErr) return NextResponse.json({ ok: false, error: expErr.message }, { status: 500 });
+
       expenses_total_eur = (expRows || []).reduce((acc: number, r: any) => acc + toNum((r as any)?.total_eur), 0);
     }
+
+    // ✅ breakdown gastos por rol + top3 gasto tarotistas
+    let expenses_tarotistas_eur = 0;
+    let expenses_centrales_eur = 0;
+    let top3_expense_tarotistas: Array<{ worker_id: string; name: string; role: string; total_eur: number }> = [];
+
+    if (month_date) {
+      const { data: expRows2, error: expErr2 } = await db
+        .from("worker_invoices")
+        .select("worker_id, total_eur")
+        .eq("month_date", month_date)
+        .limit(20000);
+
+      if (expErr2) return NextResponse.json({ ok: false, error: expErr2.message }, { status: 500 });
+
+      const workerIds = Array.from(new Set((expRows2 || []).map((r: any) => r.worker_id).filter(Boolean)));
+      const { data: wRows, error: wErr } = workerIds.length
+        ? await db.from("workers").select("id, display_name, role").in("id", workerIds)
+        : await db.from("workers").select("id, display_name, role").limit(0);
+
+      if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
+
+      const wMap = new Map<string, { id: string; display_name: string; role: string }>();
+      for (const w of (wRows as any[]) || []) wMap.set(w.id, w);
+
+      const byWorker = new Map<string, number>();
+      for (const r of (expRows2 as any[]) || []) {
+        const wid = r.worker_id;
+        if (!wid) continue;
+        const v = toNum(r.total_eur);
+        byWorker.set(wid, (byWorker.get(wid) || 0) + v);
+
+        const ww = wMap.get(wid);
+        const role = normRole(ww?.role);
+        if (role === "tarotista") expenses_tarotistas_eur += v;
+        else if (role === "central") expenses_centrales_eur += v;
+      }
+
+      const tarotList = Array.from(byWorker.entries())
+        .map(([worker_id, total_eur]) => {
+          const ww = wMap.get(worker_id);
+          return {
+            worker_id,
+            total_eur,
+            name: ww?.display_name || worker_id.slice(0, 8),
+            role: ww?.role || "",
+          };
+        })
+        .filter((x) => normRole(x.role) === "tarotista")
+        .sort((a, b) => (b.total_eur || 0) - (a.total_eur || 0))
+        .slice(0, 3);
+
+      top3_expense_tarotistas = tarotList;
+    }
+
+    const margin_eur = revenue_eur - expenses_total_eur;
 
     return NextResponse.json({
       ok: true,
@@ -217,6 +274,10 @@ export async function GET(req: Request) {
       finance: {
         revenue_eur,
         expenses_total_eur,
+        expenses_tarotistas_eur,
+        expenses_centrales_eur,
+        margin_eur,
+        top3_expense_tarotistas,
       },
     });
   } catch (e: any) {
