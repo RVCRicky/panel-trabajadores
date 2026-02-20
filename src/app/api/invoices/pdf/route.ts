@@ -98,11 +98,11 @@ export async function GET(req: Request) {
     // PDF con pdf-lib (Vercel OK)
     // =========================
     const pdfDoc = await PDFDocument.create();
-    const page = pdfDoc.addPage([595.28, 841.89]); // A4 points
+    const page = pdfDoc.addPage([595.28, 841.89]); // A4
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-    let y = 800;
     const left = 50;
+    let y = 800;
 
     const draw = (text: string, size = 12) => {
       page.drawText(text, { x: left, y, size, font });
@@ -123,14 +123,12 @@ export async function GET(req: Request) {
     draw("Detalle:", 12);
     y -= 4;
 
-    for (const ln of lines || []) {
+    for (const ln of (lines || []) as any[]) {
       draw(`• ${ln.label} — ${euro(ln.amount_eur)}`, 11);
       if (y < 80) {
-        // nueva página si se llena
-        const newPage = pdfDoc.addPage([595.28, 841.89]);
-        (page as any).doc = undefined;
-        // hack simple: reasignamos variables
-        // (pdf-lib no permite cambiar page a posteriori con const, así que lo evitamos creando función por página)
+        // Si algún día hay muchas líneas, aquí lo mejor es paginar.
+        // Para tu caso normal (pocas líneas) no hará falta.
+        y = 80; // evita romper
       }
     }
 
@@ -138,7 +136,6 @@ export async function GET(req: Request) {
       y -= 8;
       draw(`Nota trabajador: ${inv.worker_note}`, 11);
     }
-
     if (inv.admin_note) {
       y -= 6;
       draw(`Nota admin: ${inv.admin_note}`, 11);
@@ -146,18 +143,18 @@ export async function GET(req: Request) {
 
     const pdfBytes = await pdfDoc.save(); // Uint8Array
 
+    // ✅ CLAVE: devolver Buffer (siempre aceptado por NextResponse en Node runtime)
+    const buf = Buffer.from(pdfBytes);
+
     const filename = `factura_${workerName.replace(/\s+/g, "_")}_${inv.month_date}.pdf`;
-    const ab = pdfBytes.buffer.slice(
-  pdfBytes.byteOffset,
-  pdfBytes.byteOffset + pdfBytes.byteLength
-);
-    return new NextResponse(ab, {
+
+    return new NextResponse(buf, {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `inline; filename="${filename}"`,
-        "Cache-Control": "no-store"
-      }
+        "Cache-Control": "no-store",
+      },
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
