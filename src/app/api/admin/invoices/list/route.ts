@@ -11,50 +11,48 @@ function getEnv(name: string) {
 
 export async function GET(req: Request) {
   try {
-    const supabaseUrl = getEnv("NEXT_PUBLIC_SUPABASE_URL");
-    const anonKey = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
-    const serviceKey = getEnv("SUPABASE_SERVICE_ROLE_KEY");
+    const SUPABASE_URL = getEnv("SUPABASE_URL");
+    const ANON_KEY = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+    const SERVICE_ROLE = getEnv("SUPABASE_SERVICE_ROLE_KEY");
 
-    const auth = req.headers.get("authorization") || "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    const supabaseAuth = createClient(SUPABASE_URL, ANON_KEY, { auth: { persistSession: false } });
+    const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
+
+    const authHeader = req.headers.get("authorization") || "";
+    const token = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : "";
     if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
 
-    const userClient = createClient(supabaseUrl, anonKey, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-    });
+    const { data: u, error: uErr } = await supabaseAuth.auth.getUser(token);
+    if (uErr || !u?.user?.id) return NextResponse.json({ ok: false, error: "NOT_AUTH" }, { status: 401 });
 
-    const { data: u } = await userClient.auth.getUser();
-    const uid = u?.user?.id || null;
-    if (!uid) return NextResponse.json({ ok: false, error: "NOT_AUTH" }, { status: 401 });
+    const callerAuthId = u.user.id;
 
-    const db = createClient(supabaseUrl, serviceKey);
+    const { data: caller, error: cErr } = await supabaseAdmin
+      .from("workers")
+      .select("id,role,is_active,user_id")
+      .eq("user_id", callerAuthId)
+      .maybeSingle();
 
-    // comprobar admin
-    const { data: adminRow } = await db.from("app_admins").select("user_id").eq("user_id", uid).maybeSingle();
-    if (!adminRow) return NextResponse.json({ ok: false, error: "NOT_ADMIN" }, { status: 403 });
+    if (cErr) return NextResponse.json({ ok: false, error: cErr.message }, { status: 400 });
+    if (!caller) return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
+    if (!caller.is_active) return NextResponse.json({ ok: false, error: "DISABLED" }, { status: 403 });
+    if (caller.role !== "admin") return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
 
-    const url = new URL(req.url);
-    const limit = Math.min(parseInt(url.searchParams.get("limit") || "200", 10), 500);
-
-    const { data: invoices, error } = await db
-      .from("invoices")
+    const { data: invoices, error: iErr } = await supabaseAdmin
+      .from("worker_invoices")
       .select(
-        "id, worker_id, month_date, file_path, status, response_note, responded_at, created_at, worker:workers(display_name, role)"
+        "id,worker_id,month_date,status,base_salary_eur,bonuses_eur,penalties_eur,total_eur,worker_note,admin_note,locked_at, workers(display_name)"
       )
-      .order("created_at", { ascending: false })
-      .limit(limit);
+      .order("month_date", { ascending: false });
 
-    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    if (iErr) return NextResponse.json({ ok: false, error: iErr.message }, { status: 400 });
 
-    // signed urls
-    const out: any[] = [];
-    for (const inv of invoices || []) {
-      const { data: s, error: sErr } = await db.storage.from("invoices").createSignedUrl(inv.file_path, 60 * 10);
-      out.push({
-        ...inv,
-        signed_url: sErr ? null : s?.signedUrl || null,
-      });
-    }
+    // normalizar relación
+    const out = (invoices || []).map((x: any) => ({
+      ...x,
+      worker: x.workers ? { display_name: x.workers.display_name } : null,
+      workers: undefined,
+    }));
 
     return NextResponse.json({ ok: true, invoices: out });
   } catch (e: any) {
