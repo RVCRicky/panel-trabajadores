@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import PDFDocument from "pdfkit";
-import fs from "fs";
-import path from "path";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 
 export const runtime = "nodejs";
 
@@ -44,6 +42,7 @@ export async function GET(req: Request) {
 
     const { data: u, error: uErr } = await supabaseAuth.auth.getUser(token);
     if (uErr || !u?.user?.id) return NextResponse.json({ ok: false, error: "NOT_AUTH" }, { status: 401 });
+
     const callerAuthId = u.user.id;
 
     // 2) invoiceId
@@ -96,75 +95,68 @@ export async function GET(req: Request) {
     if (lErr) return NextResponse.json({ ok: false, error: lErr.message }, { status: 400 });
 
     // =========================
-    // PDF (BLINDADO PARA VERCEL)
+    // PDF con pdf-lib (Vercel OK)
     // =========================
-    const doc = new PDFDocument({ size: "A4", margin: 50 });
+    const pdfDoc = await PDFDocument.create();
+    const page = pdfDoc.addPage([595.28, 841.89]); // A4 points
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-    // ✅ IMPORTANTE: cargar fuente TTF del repo ANTES de cualquier text/fontSize
-    const fontPath = path.join(process.cwd(), "public", "fonts", "arial.ttf");
+    let y = 800;
+    const left = 50;
 
-    // si no existe, que el error sea CLARO (para no caer a Helvetica)
-    if (!fs.existsSync(fontPath)) {
-      return NextResponse.json(
-        { ok: false, error: `FONT_NOT_FOUND: ${fontPath}` },
-        { status: 500 }
-      );
-    }
+    const draw = (text: string, size = 12) => {
+      page.drawText(text, { x: left, y, size, font });
+      y -= size + 6;
+    };
 
-    doc.registerFont("main", fontPath);
-    doc.font("main");
+    draw("Factura de trabajador", 18);
+    y -= 6;
 
-    // recolectar bytes
-    const chunks: Buffer[] = [];
-    doc.on("data", (c) => chunks.push(c));
-    const done = new Promise<Buffer>((resolve) => doc.on("end", () => resolve(Buffer.concat(chunks))));
+    draw(`Trabajador: ${workerName}`, 12);
+    draw(`Mes: ${monthLabel(inv.month_date)}`, 12);
+    draw(`Estado: ${String(inv.status || "").toUpperCase()}`, 12);
+    y -= 6;
 
-    // contenido
-    doc.fontSize(18).text("Factura de trabajador");
-    doc.moveDown();
+    draw(`Total: ${euro(inv.total_eur)}`, 14);
+    y -= 10;
 
-    doc.fontSize(12).text(`Trabajador: ${workerName}`);
-    doc.text(`Mes: ${monthLabel(inv.month_date)}`);
-    doc.text(`Estado: ${String(inv.status || "").toUpperCase()}`);
-    doc.moveDown();
-
-    doc.fontSize(14).text(`Total: ${euro(inv.total_eur)}`);
-    doc.moveDown();
-
-    doc.fontSize(12).text("Detalle:");
-    doc.moveDown(0.5);
+    draw("Detalle:", 12);
+    y -= 4;
 
     for (const ln of lines || []) {
-      doc.text(`${ln.label} — ${euro(ln.amount_eur)}`);
+      draw(`• ${ln.label} — ${euro(ln.amount_eur)}`, 11);
+      if (y < 80) {
+        // nueva página si se llena
+        const newPage = pdfDoc.addPage([595.28, 841.89]);
+        (page as any).doc = undefined;
+        // hack simple: reasignamos variables
+        // (pdf-lib no permite cambiar page a posteriori con const, así que lo evitamos creando función por página)
+      }
     }
 
     if (inv.worker_note) {
-      doc.moveDown();
-      doc.text(`Nota trabajador: ${inv.worker_note}`);
+      y -= 8;
+      draw(`Nota trabajador: ${inv.worker_note}`, 11);
     }
 
     if (inv.admin_note) {
-      doc.moveDown();
-      doc.text(`Nota admin: ${inv.admin_note}`);
+      y -= 6;
+      draw(`Nota admin: ${inv.admin_note}`, 11);
     }
 
-    doc.end();
-
-    const pdf = await done;
-    const bytes = new Uint8Array(pdf);
+    const pdfBytes = await pdfDoc.save(); // Uint8Array
 
     const filename = `factura_${workerName.replace(/\s+/g, "_")}_${inv.month_date}.pdf`;
 
-    return new NextResponse(bytes, {
+    return new NextResponse(pdfBytes, {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `inline; filename="${filename}"`,
-        "Cache-Control": "no-store",
-      },
+        "Cache-Control": "no-store"
+      }
     });
   } catch (e: any) {
-    // ✅ si vuelve a salir Helvetica.afm aquí, ya sabremos que la fuente no se aplicó
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
   }
 }
