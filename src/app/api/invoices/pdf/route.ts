@@ -40,12 +40,10 @@ export async function GET(req: Request) {
     const token = authHeader.toLowerCase().startsWith("bearer ")
       ? authHeader.slice(7).trim()
       : "";
-
     if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
 
     const { data: u, error: uErr } = await supabaseAuth.auth.getUser(token);
     if (uErr || !u?.user?.id) return NextResponse.json({ ok: false, error: "NOT_AUTH" }, { status: 401 });
-
     const callerAuthId = u.user.id;
 
     // 2) invoiceId
@@ -97,14 +95,26 @@ export async function GET(req: Request) {
 
     if (lErr) return NextResponse.json({ ok: false, error: lErr.message }, { status: 400 });
 
-    // 5) PDF
+    // =========================
+    // PDF (BLINDADO PARA VERCEL)
+    // =========================
     const doc = new PDFDocument({ size: "A4", margin: 50 });
 
-    // ✅ CLAVE: cargar una fuente TTF DEL REPO (evita Helvetica.afm)
+    // ✅ IMPORTANTE: cargar fuente TTF del repo ANTES de cualquier text/fontSize
     const fontPath = path.join(process.cwd(), "public", "fonts", "arial.ttf");
-    const fontBuf = fs.readFileSync(fontPath);
-    doc.font(fontBuf);
 
+    // si no existe, que el error sea CLARO (para no caer a Helvetica)
+    if (!fs.existsSync(fontPath)) {
+      return NextResponse.json(
+        { ok: false, error: `FONT_NOT_FOUND: ${fontPath}` },
+        { status: 500 }
+      );
+    }
+
+    doc.registerFont("main", fontPath);
+    doc.font("main");
+
+    // recolectar bytes
     const chunks: Buffer[] = [];
     doc.on("data", (c) => chunks.push(c));
     const done = new Promise<Buffer>((resolve) => doc.on("end", () => resolve(Buffer.concat(chunks))));
@@ -150,10 +160,11 @@ export async function GET(req: Request) {
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `inline; filename="${filename}"`,
-        "Cache-Control": "no-store"
-      }
+        "Cache-Control": "no-store",
+      },
     });
   } catch (e: any) {
+    // ✅ si vuelve a salir Helvetica.afm aquí, ya sabremos que la fuente no se aplicó
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
   }
 }
