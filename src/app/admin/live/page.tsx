@@ -54,6 +54,11 @@ function badge(state: PresenceState) {
   return <span style={{ ...base, background: "#f4f4f4" }}>OFFLINE</span>;
 }
 
+function todayISODate() {
+  // YYYY-MM-DD (UTC). Para incidencias diarias sirve bien.
+  return new Date().toISOString().slice(0, 10);
+}
+
 export default function AdminLivePage() {
   const router = useRouter();
   const [err, setErr] = useState<string | null>(null);
@@ -66,6 +71,10 @@ export default function AdminLivePage() {
 
   const [filterRole, setFilterRole] = useState<"all" | WorkerRole>("all");
   const [show, setShow] = useState<"online_only" | "all">("all");
+
+  // acciones incidencias
+  const [actBusy, setActBusy] = useState<Record<string, boolean>>({});
+  const [actMsg, setActMsg] = useState<string | null>(null);
 
   async function ensureAdmin() {
     const { data } = await supabase.auth.getSession();
@@ -108,15 +117,17 @@ export default function AdminLivePage() {
       }
 
       // filas presencia
-      setRows((j.rows || []).map((r: any) => ({
-        worker_id: r.worker_id,
-        display_name: r.name ?? r.display_name ?? "—",
-        role: r.role,
-        state: r.state,
-        started_at: r.started_at ?? null,
-        last_change_at: r.last_change_at ?? null,
-        active_session_id: r.active_session_id ?? null,
-      })));
+      setRows(
+        (j.rows || []).map((r: any) => ({
+          worker_id: r.worker_id,
+          display_name: r.name ?? r.display_name ?? "—",
+          role: r.role,
+          state: r.state,
+          started_at: r.started_at ?? null,
+          last_change_at: r.last_change_at ?? null,
+          active_session_id: r.active_session_id ?? null,
+        }))
+      );
 
       // faltantes (deberían estar)
       setMissingCount(Number(j.missingCount) || 0);
@@ -140,6 +151,44 @@ export default function AdminLivePage() {
     if (filterRole !== "all") out = out.filter((r) => r.role === filterRole);
     return out;
   }, [rows, filterRole]);
+
+  async function resolveIncident(worker_id: string, status: "justified" | "unjustified") {
+    setActMsg(null);
+    const key = `${worker_id}-${status}`;
+    setActBusy((p) => ({ ...p, [key]: true }));
+    try {
+      const token = await ensureAdmin();
+      if (!token) return;
+
+      const r = await fetch("/api/admin/incidents/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          worker_id,
+          incident_date: todayISODate(),
+          status,
+          // opcional: nota rápida
+          notes: status === "justified" ? "Marcada como justificada desde /admin/live" : "Marcada como NO justificada desde /admin/live",
+        }),
+      });
+
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) {
+        setActMsg(j?.error || `Error HTTP ${r.status}`);
+        return;
+      }
+
+      setActMsg(
+        status === "justified"
+          ? "✅ Incidencia marcada como JUSTIFICADA."
+          : `❌ Incidencia marcada como NO justificada. Penalización: ${j.penalty_eur ?? 0}€`
+      );
+
+      await load();
+    } finally {
+      setActBusy((p) => ({ ...p, [key]: false }));
+    }
+  }
 
   return (
     <div style={{ padding: 20, maxWidth: 1200 }}>
@@ -174,7 +223,13 @@ export default function AdminLivePage() {
         </div>
       ) : null}
 
-      {/* ✅ NUEVO: Pendientes */}
+      {actMsg ? (
+        <div style={{ padding: 10, border: "1px solid #e5e7eb", background: "#fff", borderRadius: 10, marginBottom: 12 }}>
+          {actMsg}
+        </div>
+      ) : null}
+
+      {/* Pendientes */}
       <div style={{ border: "2px solid #111", borderRadius: 14, padding: 14, marginBottom: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
           <div>
@@ -183,9 +238,7 @@ export default function AdminLivePage() {
               Personas que <b>deberían estar en turno</b> y están <b>OFFLINE</b> (según shift_rules).
             </div>
           </div>
-          <div style={{ fontSize: 22, fontWeight: 1000 }}>
-            {missingCount}
-          </div>
+          <div style={{ fontSize: 22, fontWeight: 1000 }}>{missingCount}</div>
         </div>
 
         {missingCount === 0 ? (
@@ -197,7 +250,7 @@ export default function AdminLivePage() {
           </div>
         ) : (
           <div style={{ overflowX: "auto", marginTop: 10 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
               <thead>
                 <tr>
                   <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Persona</th>
@@ -206,23 +259,86 @@ export default function AdminLivePage() {
                   <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Hora local</th>
                   <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Turno</th>
                   <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Gracia</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Acciones</th>
                 </tr>
               </thead>
               <tbody>
-                {missing.map((m, idx) => (
-                  <tr key={`${m.worker_id}-${idx}`}>
-                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3", fontWeight: 900 }}>
-                      {m.name || m.worker_id.slice(0, 8) + "…"}
-                    </td>
-                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{m.role || "—"}</td>
-                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3", color: "#666" }}>{m.tz || "—"}</td>
-                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{m.local_time || "—"}</td>
-                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>
-                      {m.start_time && m.end_time ? `${m.start_time}–${m.end_time}` : "—"}
-                    </td>
-                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{m.grace_minutes ?? "—"} min</td>
-                  </tr>
-                ))}
+                {missing.map((m, idx) => {
+                  const name = m.name || m.worker_id.slice(0, 8) + "…";
+                  const role = (m.role as any) || "—";
+                  const onlyTarotHint = role === "tarotista";
+
+                  return (
+                    <tr key={`${m.worker_id}-${idx}`}>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3", fontWeight: 900 }}>
+                        {name} {onlyTarotHint ? "" : <span style={{ color: "#666", fontWeight: 700 }}>·</span>}
+                      </td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{role}</td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3", color: "#666" }}>{m.tz || "—"}</td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{m.local_time || "—"}</td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>
+                        {m.start_time && m.end_time ? `${m.start_time}–${m.end_time}` : "—"}
+                      </td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{m.grace_minutes ?? "—"} min</td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          <button
+                            onClick={() => resolveIncident(m.worker_id, "justified")}
+                            disabled={!!actBusy[`${m.worker_id}-justified`]}
+                            style={{
+                              padding: "10px 12px",
+                              borderRadius: 12,
+                              border: "1px solid #16a34a",
+                              background: "#16a34a",
+                              color: "#fff",
+                              fontWeight: 900,
+                              cursor: !!actBusy[`${m.worker_id}-justified`] ? "not-allowed" : "pointer",
+                            }}
+                          >
+                            {actBusy[`${m.worker_id}-justified`] ? "…" : "✅ Justificar"}
+                          </button>
+
+                          <button
+                            onClick={() => resolveIncident(m.worker_id, "unjustified")}
+                            disabled={!!actBusy[`${m.worker_id}-unjustified`]}
+                            style={{
+                              padding: "10px 12px",
+                              borderRadius: 12,
+                              border: "1px solid #dc2626",
+                              background: "#dc2626",
+                              color: "#fff",
+                              fontWeight: 900,
+                              cursor: !!actBusy[`${m.worker_id}-unjustified`] ? "not-allowed" : "pointer",
+                            }}
+                          >
+                            {actBusy[`${m.worker_id}-unjustified`] ? "…" : "❌ No justificada"}
+                          </button>
+
+                          <a
+                            href="/admin/incidents"
+                            style={{
+                              padding: "10px 12px",
+                              borderRadius: 12,
+                              border: "1px solid #111",
+                              background: "#fff",
+                              color: "#111",
+                              fontWeight: 900,
+                              textDecoration: "none",
+                              display: "inline-flex",
+                              alignItems: "center",
+                            }}
+                          >
+                            Ver incidencias →
+                          </a>
+                        </div>
+
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+                          Se aplicará sobre <b>shift_incidents</b> (hoy: {todayISODate()}).
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -245,7 +361,9 @@ export default function AdminLivePage() {
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={6} style={{ padding: 12, color: "#666" }}>Sin datos.</td>
+                <td colSpan={6} style={{ padding: 12, color: "#666" }}>
+                  Sin datos.
+                </td>
               </tr>
             ) : (
               filtered.map((r) => (
@@ -267,4 +385,3 @@ export default function AdminLivePage() {
     </div>
   );
 }
-
