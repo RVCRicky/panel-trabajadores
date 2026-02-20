@@ -24,15 +24,6 @@ function toNum(n: any) {
   return Number.isFinite(x) ? x : 0;
 }
 
-type RankRowMinutes = {
-  worker_id: string;
-  name: string;
-  minutes: number;
-  captadas: number;
-  cliente_pct: number;
-  repite_pct: number;
-};
-
 type EarningsRow = {
   worker_id: string;
   month_date: string;
@@ -41,6 +32,13 @@ type EarningsRow = {
   amount_base_eur: number | null;
   amount_bonus_eur: number | null;
   amount_total_eur: number | null;
+};
+
+type BonusRuleRow = {
+  ranking_type: string;
+  position: number;
+  role: string;
+  amount_eur: number;
 };
 
 export async function GET(req: Request) {
@@ -52,12 +50,12 @@ export async function GET(req: Request) {
     const service = getEnv("SUPABASE_SERVICE_ROLE_KEY");
     const db = createClient(url, service, { auth: { persistSession: false } });
 
-    // 1) validar user
+    // 1) user
     const { data: u, error: eu } = await db.auth.getUser(token);
     if (eu || !u?.user) return NextResponse.json({ ok: false, error: "BAD_TOKEN" }, { status: 401 });
-    const uid = u.user.id; // auth user_id
+    const uid = u.user.id;
 
-    // 2) worker del usuario
+    // 2) worker
     const { data: me, error: eme } = await db
       .from("workers")
       .select("id, user_id, role, display_name, is_active")
@@ -71,7 +69,7 @@ export async function GET(req: Request) {
     const myWorkerId = String((me as any).id || "");
     const myRole = normRole((me as any).role);
 
-    // 3) mes
+    // 3) month
     const urlObj = new URL(req.url);
     const monthParam = urlObj.searchParams.get("month_date");
     let month_date: string | null = monthParam || null;
@@ -102,7 +100,7 @@ export async function GET(req: Request) {
       });
     }
 
-    // 4) monthly_rankings (+ workers)
+    // 4) monthly_rankings + workers
     const { data: mr, error: emr } = await db
       .from("monthly_rankings")
       .select(
@@ -142,12 +140,12 @@ export async function GET(req: Request) {
 
     const tarotistas = rows.filter((x: any) => normRole(x.role) === "tarotista");
 
-    const rankMinutes: RankRowMinutes[] = [...tarotistas].sort((a, b) => b.minutes - a.minutes);
+    const rankMinutes = [...tarotistas].sort((a, b) => b.minutes - a.minutes);
     const rankCaptadas = [...tarotistas].sort((a, b) => b.captadas - a.captadas).map((x) => ({ worker_id: x.worker_id, name: x.name, captadas: x.captadas }));
     const rankCliente = [...tarotistas].sort((a, b) => b.cliente_pct - a.cliente_pct).map((x) => ({ worker_id: x.worker_id, name: x.name, cliente_pct: x.cliente_pct }));
     const rankRepite = [...tarotistas].sort((a, b) => b.repite_pct - a.repite_pct).map((x) => ({ worker_id: x.worker_id, name: x.name, repite_pct: x.repite_pct }));
 
-    // 5) monthly_earnings (opcional)
+    // 5) monthly_earnings (si existe)
     let earningsByWorker = new Map<string, EarningsRow>();
     try {
       const { data: earnRows, error: eearn } = await db
@@ -161,11 +159,21 @@ export async function GET(req: Request) {
       }
     } catch {}
 
-    // myEarnings
+    // 6) bonus_rules (si existe)
+    let bonusRules: BonusRuleRow[] = [];
+    try {
+      const { data: br, error: ebr } = await db
+        .from("bonus_rules")
+        .select("ranking_type, position, role, amount_eur")
+        .limit(2000);
+      if (!ebr && Array.isArray(br)) bonusRules = br as any;
+    } catch {}
+
+    // myEarnings base
     const myEarn = earningsByWorker.get(myWorkerId);
     const myRankRow = rows.find((r) => String(r.worker_id) === myWorkerId) || null;
 
-    const myEarnings = myEarn
+    let myEarnings = myEarn
       ? {
           minutes_total: toNum(myEarn.minutes_total),
           captadas: toNum(myEarn.captadas_total),
@@ -181,7 +189,7 @@ export async function GET(req: Request) {
           amount_total_eur: 0,
         };
 
-    // 6) Teams ranking (TU ESQUEMA REAL)
+    // 7) Teams ranking (TU ESQUEMA REAL) + miembros visibles + score global
     let teamsRanking: any[] = [];
     let myTeamRank: number | null = null;
     let winnerTeam: any = null;
@@ -207,6 +215,10 @@ export async function GET(req: Request) {
           tarotistasByTeam.get(tid)!.push(wid);
         }
 
+        // pesos del score global (por defecto 50/50)
+        const W_CLIENTE = 0.5;
+        const W_REPITE = 0.5;
+
         const agg = (teams as any[]).map((t) => {
           const tid = String(t.id);
           const wids = tarotistasByTeam.get(tid) || [];
@@ -215,35 +227,57 @@ export async function GET(req: Request) {
           let total_minutes = 0;
           let total_captadas = 0;
 
-          for (const wid of wids) {
-            const er = earningsByWorker.get(wid);
-            if (er) {
-              total_eur += toNum(er.amount_total_eur);
-              total_minutes += toNum(er.minutes_total);
-              total_captadas += toNum(er.captadas_total);
-            } else {
+          let sum_cliente = 0;
+          let sum_repite = 0;
+          let n = 0;
+
+          const membersNames = wids
+            .map((wid) => {
               const rr = rows.find((r) => String(r.worker_id) === String(wid));
               if (rr) {
+                sum_cliente += toNum(rr.cliente_pct);
+                sum_repite += toNum(rr.repite_pct);
+                n += 1;
                 total_minutes += toNum(rr.minutes);
                 total_captadas += toNum(rr.captadas);
               }
-            }
+              const name = rr?.name || "—";
+              return { worker_id: wid, name };
+            })
+            .filter(Boolean);
+
+          // €: si hay monthly_earnings suma real; si no, se queda 0
+          for (const wid of wids) {
+            const er = earningsByWorker.get(wid);
+            if (er) total_eur += toNum(er.amount_total_eur);
           }
+
+          const team_cliente_pct = n ? Number((sum_cliente / n).toFixed(1)) : 0;
+          const team_repite_pct = n ? Number((sum_repite / n).toFixed(1)) : 0;
+
+          const team_score = Number((team_cliente_pct * W_CLIENTE + team_repite_pct * W_REPITE).toFixed(2));
 
           return {
             team_id: tid,
             team_name: t.name || "Equipo",
             central_user_id: t.central_user_id || null,
+
             total_eur_month: total_eur,
             total_minutes,
             total_captadas,
+
+            team_cliente_pct,
+            team_repite_pct,
+            team_score,
+
+            members: membersNames,
             member_count: wids.length,
           };
         });
 
-        // si todo es 0€, ordena por minutos para que SIEMPRE haya 1 y 2
+        // orden por score global, desempate por minutos
         teamsRanking = agg.sort((a, b) => {
-          if (b.total_eur_month !== a.total_eur_month) return b.total_eur_month - a.total_eur_month;
+          if (b.team_score !== a.team_score) return b.team_score - a.team_score;
           return b.total_minutes - a.total_minutes;
         });
 
@@ -263,7 +297,30 @@ export async function GET(req: Request) {
             total_minutes: w.total_minutes,
             total_captadas: w.total_captadas,
             total_eur_month: w.total_eur_month,
+            team_score: w.team_score,
           };
+        }
+
+        // ✅ aplicar bono a la central según ranking de equipos (si hay reglas)
+        if (myRole === "central" && myTeamRank) {
+          const rule = bonusRules.find(
+            (r) =>
+              String(r.ranking_type || "").toLowerCase() === "team_global" &&
+              Number(r.position) === Number(myTeamRank) &&
+              String(r.role || "").toLowerCase() === "central"
+          );
+          const bonus = rule ? toNum(rule.amount_eur) : 0;
+
+          if (bonus > 0) {
+            const base = toNum(myEarnings.amount_base_eur);
+            const prevBonus = toNum(myEarnings.amount_bonus_eur);
+            const newBonus = prevBonus + bonus;
+            myEarnings = {
+              ...myEarnings,
+              amount_bonus_eur: newBonus,
+              amount_total_eur: base + newBonus,
+            };
+          }
         }
       }
     } catch {}
@@ -283,7 +340,7 @@ export async function GET(req: Request) {
       winnerTeam,
       teamsRanking,
       myTeamRank,
-      bonusRules: [],
+      bonusRules,
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
