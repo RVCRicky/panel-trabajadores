@@ -1,4 +1,3 @@
-// src/app/api/dashboard/full/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -56,7 +55,7 @@ export async function GET(req: Request) {
     // 1) validar user
     const { data: u, error: eu } = await db.auth.getUser(token);
     if (eu || !u?.user) return NextResponse.json({ ok: false, error: "BAD_TOKEN" }, { status: 401 });
-    const uid = u.user.id;
+    const uid = u.user.id; // auth user_id
 
     // 2) worker del usuario
     const { data: me, error: eme } = await db
@@ -72,9 +71,9 @@ export async function GET(req: Request) {
     const myWorkerId = String((me as any).id || "");
     const myRole = normRole((me as any).role);
 
-    // 3) mes seleccionado (opcional) + lista de meses disponibles
+    // 3) mes
     const urlObj = new URL(req.url);
-    const monthParam = urlObj.searchParams.get("month_date"); // "YYYY-MM-01"
+    const monthParam = urlObj.searchParams.get("month_date");
     let month_date: string | null = monthParam || null;
 
     const { data: monthsRows, error: emonths } = await db
@@ -86,7 +85,6 @@ export async function GET(req: Request) {
     if (emonths) return NextResponse.json({ ok: false, error: emonths.message }, { status: 500 });
 
     const months = Array.from(new Set((monthsRows || []).map((r: any) => r.month_date).filter(Boolean))) as string[];
-
     if (!month_date) month_date = months[0] || null;
 
     if (!month_date) {
@@ -104,7 +102,7 @@ export async function GET(req: Request) {
       });
     }
 
-    // 4) rankings del mes desde monthly_rankings + join a workers
+    // 4) monthly_rankings (+ workers)
     const { data: mr, error: emr } = await db
       .from("monthly_rankings")
       .select(
@@ -117,7 +115,8 @@ export async function GET(req: Request) {
         workers:workers (
           id,
           display_name,
-          role
+          role,
+          user_id
         )
       `
       )
@@ -126,12 +125,11 @@ export async function GET(req: Request) {
 
     if (emr) return NextResponse.json({ ok: false, error: emr.message }, { status: 500 });
 
-    // 5) normalizar filas
     const rows = (mr || [])
       .map((x: any) => {
         const w = x.workers || null;
         return {
-          worker_id: x.worker_id,
+          worker_id: String(x.worker_id),
           name: w?.display_name || "—",
           role: w?.role || "",
           minutes: toNum(x.minutes_total),
@@ -142,92 +140,76 @@ export async function GET(req: Request) {
       })
       .filter((x: any) => x.worker_id);
 
-    // solo tarotistas para ranking principal
     const tarotistas = rows.filter((x: any) => normRole(x.role) === "tarotista");
 
     const rankMinutes: RankRowMinutes[] = [...tarotistas].sort((a, b) => b.minutes - a.minutes);
+    const rankCaptadas = [...tarotistas].sort((a, b) => b.captadas - a.captadas).map((x) => ({ worker_id: x.worker_id, name: x.name, captadas: x.captadas }));
+    const rankCliente = [...tarotistas].sort((a, b) => b.cliente_pct - a.cliente_pct).map((x) => ({ worker_id: x.worker_id, name: x.name, cliente_pct: x.cliente_pct }));
+    const rankRepite = [...tarotistas].sort((a, b) => b.repite_pct - a.repite_pct).map((x) => ({ worker_id: x.worker_id, name: x.name, repite_pct: x.repite_pct }));
 
-    const rankCaptadas = [...tarotistas]
-      .sort((a, b) => b.captadas - a.captadas)
-      .map((x) => ({ worker_id: x.worker_id, name: x.name, captadas: x.captadas }));
-
-    const rankCliente = [...tarotistas]
-      .sort((a, b) => b.cliente_pct - a.cliente_pct)
-      .map((x) => ({ worker_id: x.worker_id, name: x.name, cliente_pct: x.cliente_pct }));
-
-    const rankRepite = [...tarotistas]
-      .sort((a, b) => b.repite_pct - a.repite_pct)
-      .map((x) => ({ worker_id: x.worker_id, name: x.name, repite_pct: x.repite_pct }));
-
-    // ------------------------------------------------------------
-    // ✅ myEarnings (sin romper si no existe la tabla)
-    // ------------------------------------------------------------
+    // 5) monthly_earnings (opcional)
     let earningsByWorker = new Map<string, EarningsRow>();
-    let myEarnings: any = null;
-
     try {
       const { data: earnRows, error: eearn } = await db
         .from("monthly_earnings")
-        .select(
-          "worker_id, month_date, minutes_total, captadas_total, amount_base_eur, amount_bonus_eur, amount_total_eur"
-        )
+        .select("worker_id, month_date, minutes_total, captadas_total, amount_base_eur, amount_bonus_eur, amount_total_eur")
         .eq("month_date", month_date)
         .limit(5000);
 
       if (!eearn && Array.isArray(earnRows)) {
-        for (const r of earnRows as any[]) {
-          earningsByWorker.set(String(r.worker_id), r as EarningsRow);
-        }
+        for (const r of earnRows as any[]) earningsByWorker.set(String(r.worker_id), r as EarningsRow);
       }
-    } catch {
-      // si la tabla no existe o no hay permisos, no rompemos
-    }
+    } catch {}
 
+    // myEarnings
     const myEarn = earningsByWorker.get(myWorkerId);
-    if (myEarn) {
-      myEarnings = {
-        minutes_total: toNum(myEarn.minutes_total),
-        captadas: toNum(myEarn.captadas_total),
-        amount_base_eur: toNum(myEarn.amount_base_eur),
-        amount_bonus_eur: toNum(myEarn.amount_bonus_eur),
-        amount_total_eur: toNum(myEarn.amount_total_eur),
-      };
-    } else {
-      // fallback: al menos minutos/captadas, € 0 para que no salga null
-      const myRankRow = rows.find((r) => String(r.worker_id) === myWorkerId) || null;
-      myEarnings = {
-        minutes_total: toNum(myRankRow?.minutes ?? 0),
-        captadas: toNum(myRankRow?.captadas ?? 0),
-        amount_base_eur: 0,
-        amount_bonus_eur: 0,
-        amount_total_eur: 0,
-      };
-    }
+    const myRankRow = rows.find((r) => String(r.worker_id) === myWorkerId) || null;
 
-    // ------------------------------------------------------------
-    // ✅ Ranking por equipos (sin romper si no existen tablas)
-    // ------------------------------------------------------------
+    const myEarnings = myEarn
+      ? {
+          minutes_total: toNum(myEarn.minutes_total),
+          captadas: toNum(myEarn.captadas_total),
+          amount_base_eur: toNum(myEarn.amount_base_eur),
+          amount_bonus_eur: toNum(myEarn.amount_bonus_eur),
+          amount_total_eur: toNum(myEarn.amount_total_eur),
+        }
+      : {
+          minutes_total: toNum(myRankRow?.minutes ?? 0),
+          captadas: toNum(myRankRow?.captadas ?? 0),
+          amount_base_eur: 0,
+          amount_bonus_eur: 0,
+          amount_total_eur: 0,
+        };
+
+    // 6) Teams ranking (TU ESQUEMA REAL)
     let teamsRanking: any[] = [];
     let myTeamRank: number | null = null;
     let winnerTeam: any = null;
 
     try {
-      const { data: teams, error: et } = await db.from("teams").select("id, name").limit(50);
-      const { data: members, error: etm } = await db.from("team_members").select("team_id, worker_id").limit(5000);
+      const { data: teams, error: et } = await db
+        .from("teams")
+        .select("id, name, central_user_id")
+        .limit(50);
+
+      const { data: members, error: etm } = await db
+        .from("team_members")
+        .select("team_id, tarotista_worker_id")
+        .limit(5000);
 
       if (!et && !etm && Array.isArray(teams) && Array.isArray(members) && teams.length > 0) {
-        const membersByTeam = new Map<string, string[]>();
+        const tarotistasByTeam = new Map<string, string[]>();
         for (const m of members as any[]) {
           const tid = String(m.team_id || "");
-          const wid = String(m.worker_id || "");
+          const wid = String(m.tarotista_worker_id || "");
           if (!tid || !wid) continue;
-          if (!membersByTeam.has(tid)) membersByTeam.set(tid, []);
-          membersByTeam.get(tid)!.push(wid);
+          if (!tarotistasByTeam.has(tid)) tarotistasByTeam.set(tid, []);
+          tarotistasByTeam.get(tid)!.push(wid);
         }
 
         const agg = (teams as any[]).map((t) => {
           const tid = String(t.id);
-          const wids = membersByTeam.get(tid) || [];
+          const wids = tarotistasByTeam.get(tid) || [];
 
           let total_eur = 0;
           let total_minutes = 0;
@@ -251,6 +233,7 @@ export async function GET(req: Request) {
           return {
             team_id: tid,
             team_name: t.name || "Equipo",
+            central_user_id: t.central_user_id || null,
             total_eur_month: total_eur,
             total_minutes,
             total_captadas,
@@ -258,9 +241,13 @@ export async function GET(req: Request) {
           };
         });
 
-        teamsRanking = agg.sort((a, b) => b.total_eur_month - a.total_eur_month);
+        // si todo es 0€, ordena por minutos para que SIEMPRE haya 1 y 2
+        teamsRanking = agg.sort((a, b) => {
+          if (b.total_eur_month !== a.total_eur_month) return b.total_eur_month - a.total_eur_month;
+          return b.total_minutes - a.total_minutes;
+        });
 
-        const myTeamId = (members as any[]).find((m) => String(m.worker_id) === myWorkerId)?.team_id || null;
+        const myTeamId = (teams as any[]).find((t) => String(t.central_user_id) === String(uid))?.id || null;
         if (myTeamId) {
           const idx = teamsRanking.findIndex((t) => String(t.team_id) === String(myTeamId));
           myTeamRank = idx === -1 ? null : idx + 1;
@@ -271,7 +258,7 @@ export async function GET(req: Request) {
           winnerTeam = {
             team_id: w.team_id,
             team_name: w.team_name,
-            central_user_id: null,
+            central_user_id: w.central_user_id,
             central_name: null,
             total_minutes: w.total_minutes,
             total_captadas: w.total_captadas,
@@ -279,9 +266,7 @@ export async function GET(req: Request) {
           };
         }
       }
-    } catch {
-      // si no existen tablas, no rompemos
-    }
+    } catch {}
 
     return NextResponse.json({
       ok: true,
