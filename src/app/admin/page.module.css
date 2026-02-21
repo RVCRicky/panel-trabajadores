@@ -13,12 +13,12 @@
   width: 100%;
   background-color: var(--background);
 
-  /* En móvil, nada de centrar vertical/horizontal como landing */
+  /* móvil: no centrar como landing */
   display: block;
   padding: 14px;
 }
 
-/* Caja principal (la “tarjeta” blanca) */
+/* Caja blanca */
 .main {
   width: 100%;
   max-width: 1100px;
@@ -28,7 +28,6 @@
   border: 1px solid #e5e7eb;
   border-radius: 14px;
 
-  /* En vez de padding gigante */
   padding: 16px;
 }
 
@@ -39,30 +38,30 @@
   overflow-x: hidden;
 }
 
-/* ✅ arreglos globales básicos para evitar cortes */
-:global(html, body) {
+/* ✅ “Global” permitido dentro de CSS Modules (anclado a .page) */
+.page :global(html),
+.page :global(body) {
   width: 100%;
   max-width: 100%;
   overflow-x: hidden;
 }
 
-:global(*) {
+.page :global(*) {
   box-sizing: border-box;
 }
 
-/* Inputs / selects / botones: que no se salgan en móvil */
+/* Inputs / selects / botones: no salirse */
 .safe :global(input),
 .safe :global(select),
 .safe :global(button) {
   max-width: 100%;
 }
 
-/* Select en móvil: que no “reviente” */
 .safe :global(select) {
   min-width: 0 !important;
 }
 
-/* Tablas: siempre scroll horizontal, nunca cortar */
+/* Tablas: scroll horizontal siempre */
 .tableWrap {
   width: 100%;
   overflow-x: auto;
@@ -71,7 +70,6 @@
   border-radius: 12px;
 }
 
-/* En vez de min-width fijo gigante en móvil */
 .tableMin520 {
   min-width: 520px;
 }
@@ -80,7 +78,6 @@
   min-width: 900px;
 }
 
-/* ✅ Ajustes responsive */
 @media (max-width: 900px) {
   .page {
     padding: 10px;
@@ -101,12 +98,11 @@
     border-radius: 12px;
   }
 
-  /* Botones y select más cómodos */
+  /* Botones en móvil: full width */
   .safe :global(button) {
     width: 100%;
   }
 
-  /* si hay grupos en fila, que no se aplasten */
   .safe :global(h1) {
     font-size: 20px;
     line-height: 1.2;
