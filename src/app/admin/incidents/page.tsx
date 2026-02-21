@@ -10,16 +10,27 @@ type Incident = {
   month_date: string | null;
   kind: string | null;
   incident_type: string | null;
-  status: "pending" | "resolved" | "cancelled" | string | null;
+  status: "pending" | "justified" | "unjustified" | string | null;
   minutes_late: number | null;
   penalty_eur: number | null;
   notes: string | null;
-
   worker_id: string | null;
   worker_name: string | null;
 };
 
-type WorkerOpt = { id: string; display_name: string };
+type ListResp = {
+  ok: boolean;
+  error?: string;
+  month_date: string | null;
+  months: string[];
+  workers: Array<{ id: string; display_name: string }>;
+  items: Incident[];
+};
+
+function euro(n: any) {
+  const x = Number(n) || 0;
+  return x.toLocaleString("es-ES", { style: "currency", currency: "EUR" });
+}
 
 function pill(text: string, bg: string) {
   return (
@@ -42,8 +53,8 @@ function pill(text: string, bg: string) {
 function badgeStatus(st: string | null) {
   const s = String(st || "").toLowerCase();
   if (s === "pending") return pill("PENDIENTE", "#fff6dd");
-  if (s === "resolved") return pill("RESUELTA", "#eaffea");
-  if (s === "cancelled") return pill("ANULADA", "#f4f4f4");
+  if (s === "justified") return pill("JUSTIFICADA", "#eaffea");
+  if (s === "unjustified") return pill("NO JUST.", "#fff3f3");
   return pill((st || "—").toUpperCase(), "#f4f4f4");
 }
 
@@ -51,12 +62,17 @@ function badgeKind(k: string | null) {
   const s = String(k || "").toLowerCase();
   if (s === "late") return pill("RETRASO", "#e8f4ff");
   if (s === "absence") return pill("AUSENCIA", "#fff3f3");
-  if (s === "manual") return pill("MANUAL", "#f0f0ff");
+  if (s === "call") return pill("LLAMADA", "#f4f4f4");
   return pill((k || "—").toUpperCase(), "#f4f4f4");
 }
 
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+function formatMonthLabel(isoMonthDate: string) {
+  const [y, m] = String(isoMonthDate || "").split("-");
+  const monthNum = Number(m);
+  const yearNum = Number(y);
+  if (!monthNum || !yearNum) return isoMonthDate;
+  const date = new Date(yearNum, monthNum - 1, 1);
+  return date.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
 }
 
 export default function AdminIncidentsPage() {
@@ -66,22 +82,20 @@ export default function AdminIncidentsPage() {
   const [err, setErr] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
 
-  const [items, setItems] = useState<Incident[]>([]);
-  const [actingId, setActingId] = useState<string | null>(null);
+  const [data, setData] = useState<ListResp | null>(null);
 
-  // form manual
-  const [workers, setWorkers] = useState<WorkerOpt[]>([]);
-  const [fWorkerId, setFWorkerId] = useState<string>("");
-  const [fDate, setFDate] = useState<string>(todayISO());
-  const [fType, setFType] = useState<string>("leve");
-  const [fNotes, setFNotes] = useState<string>("");
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+  const [filterWorker, setFilterWorker] = useState<string>("");
+  const [filterStatus, setFilterStatus] = useState<string>("");
+
+  const [actingId, setActingId] = useState<string | null>(null);
 
   async function getToken() {
     const { data } = await supabase.auth.getSession();
     return data.session?.access_token || null;
   }
 
-  async function load() {
+  async function load(month?: string | null) {
     setErr(null);
     setOkMsg(null);
     setLoading(true);
@@ -89,43 +103,30 @@ export default function AdminIncidentsPage() {
       const token = await getToken();
       if (!token) return router.replace("/login");
 
-      const res = await fetch("/api/admin/incidents/pending", {
+      const m = month ?? selectedMonth ?? null;
+
+      const qs = new URLSearchParams();
+      if (m) qs.set("month_date", m);
+      if (filterWorker) qs.set("worker_id", filterWorker);
+      if (filterStatus) qs.set("status", filterStatus);
+
+      const res = await fetch(`/api/admin/incidents/list?${qs.toString()}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      const j = await res.json().catch(() => null);
+      const j = (await res.json().catch(() => null)) as ListResp | null;
       if (!j?.ok) {
         setErr(j?.error || "Error cargando incidencias");
         return;
       }
 
-      setItems((j.items || j.rows || []) as Incident[]);
+      setData(j);
+      if (j.month_date && j.month_date !== selectedMonth) setSelectedMonth(j.month_date);
     } catch (e: any) {
       setErr(e?.message || "Error cargando incidencias");
     } finally {
       setLoading(false);
     }
-  }
-
-  async function loadWorkers() {
-    // Lo saco directo con service role? No: desde cliente usamos Supabase normal,
-    // así que mejor hacerlo con un endpoint si hace falta.
-    // Pero como ya tienes workers/roles, lo más simple es un endpoint.
-    // Aun así, intentamos desde supabase (RLS debe permitir a admin leer workers).
-    try {
-      const { data, error } = await supabase
-        .from("workers")
-        .select("id, display_name, role, is_active")
-        .eq("is_active", true)
-        .order("display_name", { ascending: true });
-
-      if (error) return;
-      const list = (data || [])
-        .filter((w: any) => String(w.role || "").toLowerCase() === "tarotista")
-        .map((w: any) => ({ id: w.id, display_name: w.display_name || w.id.slice(0, 8) }));
-      setWorkers(list);
-      if (!fWorkerId && list.length) setFWorkerId(list[0].id);
-    } catch {}
   }
 
   async function action(id: string, action: "justified" | "unjustified" | "dismiss") {
@@ -138,10 +139,7 @@ export default function AdminIncidentsPage() {
 
       const res = await fetch("/api/admin/incidents/action", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ id, action }),
       });
 
@@ -152,7 +150,7 @@ export default function AdminIncidentsPage() {
       }
 
       setOkMsg("✅ Guardado");
-      await load();
+      await load(selectedMonth);
     } catch (e: any) {
       setErr(e?.message || "Error aplicando acción");
     } finally {
@@ -160,78 +158,65 @@ export default function AdminIncidentsPage() {
     }
   }
 
-  async function createManual() {
-    setErr(null);
-    setOkMsg(null);
-
-    if (!fWorkerId) return setErr("Elige una tarotista.");
-    if (!fDate) return setErr("Elige fecha.");
-
-    setLoading(true);
-    try {
-      const token = await getToken();
-      if (!token) return router.replace("/login");
-
-      const res = await fetch("/api/admin/incidents/create", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          worker_id: fWorkerId,
-          incident_date: fDate,
-          incident_type: fType, // leve/moderada/grave
-          notes: fNotes,
-        }),
-      });
-
-      const j = await res.json().catch(() => null);
-      if (!res.ok || !j?.ok) {
-        setErr(j?.error || `Error HTTP ${res.status}`);
-        return;
-      }
-
-      setOkMsg("✅ Incidencia manual creada (PENDIENTE).");
-      setFNotes("");
-      await load();
-    } catch (e: any) {
-      setErr(e?.message || "Error creando incidencia");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   useEffect(() => {
-    load();
-    loadWorkers();
+    load(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const workerNameById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const w of workers) m.set(w.id, w.display_name);
-    return m;
-  }, [workers]);
+  useEffect(() => {
+    if (!selectedMonth) return;
+    load(selectedMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMonth, filterWorker, filterStatus]);
+
+  const months = data?.months || [];
+  const workers = data?.workers || [];
+  const items = data?.items || [];
+
+  const summary = useMemo(() => {
+    const total = items.length;
+    const pending = items.filter((x) => x.status === "pending").length;
+    const justified = items.filter((x) => x.status === "justified").length;
+    const unjustified = items.filter((x) => x.status === "unjustified").length;
+    const penalty = items.reduce((acc, x) => acc + (Number(x.penalty_eur) || 0), 0);
+    return { total, pending, justified, unjustified, penalty };
+  }, [items]);
 
   return (
-    <div style={{ maxWidth: 1100 }}>
-      <h1 style={{ marginTop: 0 }}>Incidencias</h1>
+    <div style={{ maxWidth: 1200 }}>
+      <h1 style={{ marginTop: 0 }}>Incidencias (mes completo)</h1>
+
       <div style={{ color: "#666", marginTop: 6 }}>
-        Crear incidencias manuales y gestionar incidencias <b>pendientes</b>.
+        Ver y gestionar incidencias de todo el mes. Puedes filtrar por tarotista y por estado.
       </div>
 
-      {/* FORM MANUAL */}
-      <div style={{ marginTop: 12, padding: 12, borderRadius: 12, border: "1px solid #e5e5e5", background: "#fff" }}>
-        <div style={{ fontWeight: 900, marginBottom: 10 }}>➕ Crear incidencia manual</div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
+        <button
+          onClick={() => load(selectedMonth)}
+          disabled={loading}
+          style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900 }}
+        >
+          {loading ? "Actualizando..." : "Actualizar"}
+        </button>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 180px 180px", gap: 10 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontWeight: 900, color: "#666" }}>Mes:</span>
           <select
-            value={fWorkerId}
-            onChange={(e) => setFWorkerId(e.target.value)}
-            style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
+            value={selectedMonth || data?.month_date || ""}
+            onChange={(e) => setSelectedMonth(e.target.value || null)}
+            style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", minWidth: 220 }}
+            disabled={months.length === 0}
           >
-            {workers.length === 0 ? <option value="">(No hay tarotistas)</option> : null}
+            {months.length === 0 ? <option value="">—</option> : months.map((m) => <option key={m} value={m}>{formatMonthLabel(m)}</option>)}
+          </select>
+
+          <span style={{ fontWeight: 900, color: "#666" }}>Tarotista:</span>
+          <select
+            value={filterWorker}
+            onChange={(e) => setFilterWorker(e.target.value)}
+            style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", minWidth: 240 }}
+          >
+            <option value="">Todas</option>
             {workers.map((w) => (
               <option key={w.id} value={w.id}>
                 {w.display_name}
@@ -239,70 +224,60 @@ export default function AdminIncidentsPage() {
             ))}
           </select>
 
-          <input
-            type="date"
-            value={fDate}
-            onChange={(e) => setFDate(e.target.value)}
-            style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
-          />
-
-          <select value={fType} onChange={(e) => setFType(e.target.value)} style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd" }}>
-            <option value="leve">Leve (0,50€)</option>
-            <option value="moderada">Moderada (3€)</option>
-            <option value="grave">Grave (sin bonos)</option>
+          <span style={{ fontWeight: 900, color: "#666" }}>Estado:</span>
+          <select
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value)}
+            style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", minWidth: 200 }}
+          >
+            <option value="">Todos</option>
+            <option value="pending">Pendiente</option>
+            <option value="justified">Justificada</option>
+            <option value="unjustified">No justificada</option>
           </select>
         </div>
+      </div>
 
-        <textarea
-          value={fNotes}
-          onChange={(e) => setFNotes(e.target.value)}
-          placeholder="Notas (ej: No respondió 1 llamada / No cerró llamada / Volvió tarde del descanso...)"
-          style={{ marginTop: 10, width: "100%", minHeight: 80, padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
-        />
-
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
-          <button
-            onClick={createManual}
-            disabled={loading}
-            style={{ padding: 10, borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", fontWeight: 900 }}
-          >
-            {loading ? "Guardando..." : "Crear incidencia"}
-          </button>
-
-          <button onClick={load} disabled={loading} style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900 }}>
-            {loading ? "Actualizando..." : "Actualizar"}
-          </button>
-
-          {fWorkerId ? (
-            <div style={{ color: "#666", display: "flex", alignItems: "center" }}>
-              Para: <b style={{ marginLeft: 6, color: "#111" }}>{workerNameById.get(fWorkerId) || fWorkerId.slice(0, 8)}</b>
-            </div>
-          ) : null}
+      {/* Resumen */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
+        <div style={{ padding: 10, borderRadius: 12, border: "1px solid #eee", background: "#fff" }}>
+          <b>Total:</b> {summary.total}
         </div>
-
-        <div style={{ marginTop: 8, color: "#666", fontSize: 12 }}>
-          * Se crea como <b>PENDIENTE</b>. Luego puedes “No justificada” o “Quitar”.
+        <div style={{ padding: 10, borderRadius: 12, border: "1px solid #eee", background: "#fff" }}>
+          <b>Pendientes:</b> {summary.pending}
+        </div>
+        <div style={{ padding: 10, borderRadius: 12, border: "1px solid #eee", background: "#fff" }}>
+          <b>Justificadas:</b> {summary.justified}
+        </div>
+        <div style={{ padding: 10, borderRadius: 12, border: "1px solid #eee", background: "#fff" }}>
+          <b>No justificadas:</b> {summary.unjustified}
+        </div>
+        <div style={{ padding: 10, borderRadius: 12, border: "1px solid #eee", background: "#fff" }}>
+          <b>Penalización:</b> {euro(summary.penalty)}
         </div>
       </div>
 
       {err ? (
-        <div style={{ marginTop: 12, padding: 10, borderRadius: 10, background: "#fff3f3", border: "1px solid #ffcccc" }}>{err}</div>
+        <div style={{ marginTop: 12, padding: 10, borderRadius: 10, background: "#fff3f3", border: "1px solid #ffcccc" }}>
+          {err}
+        </div>
       ) : null}
 
       {okMsg ? (
-        <div style={{ marginTop: 12, padding: 10, borderRadius: 10, background: "#eaffea", border: "1px solid #c6f6c6" }}>{okMsg}</div>
+        <div style={{ marginTop: 12, padding: 10, borderRadius: 10, background: "#eaffea", border: "1px solid #c6f6c6" }}>
+          {okMsg}
+        </div>
       ) : null}
 
-      {/* TABLE PENDIENTES */}
       <div style={{ marginTop: 12, border: "1px solid #ddd", borderRadius: 12, overflow: "hidden" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1100 }}>
           <thead>
             <tr>
-              <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Trabajador</th>
+              <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Tarotista</th>
               <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Fecha</th>
               <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Tipo</th>
-              <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Severidad</th>
               <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 10 }}>Min tarde</th>
+              <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 10 }}>€</th>
               <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Estado</th>
               <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 10 }}>Notas</th>
               <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 10 }}>Acciones</th>
@@ -312,7 +287,7 @@ export default function AdminIncidentsPage() {
             {items.length === 0 ? (
               <tr>
                 <td colSpan={8} style={{ padding: 12, color: "#666" }}>
-                  No hay incidencias pendientes.
+                  Sin incidencias para este filtro.
                 </td>
               </tr>
             ) : (
@@ -320,14 +295,17 @@ export default function AdminIncidentsPage() {
                 const name = it.worker_name || it.worker_id?.slice(0, 8) || "—";
                 const date = it.incident_date || it.month_date || "—";
                 const minLate = it.minutes_late ?? 0;
+                const pen = Number(it.penalty_eur) || 0;
 
                 return (
                   <tr key={it.id}>
                     <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3", fontWeight: 900 }}>{name}</td>
                     <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{date}</td>
-                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{badgeKind(it.kind)}</td>
-                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{(it.incident_type || "—").toUpperCase()}</td>
+                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{badgeKind(it.kind || it.incident_type)}</td>
                     <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{minLate}</td>
+                    <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>
+                      {pen ? euro(pen) : "—"}
+                    </td>
                     <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3" }}>{badgeStatus(it.status)}</td>
                     <td style={{ padding: 10, borderBottom: "1px solid #f3f3f3", color: "#666", maxWidth: 360 }}>
                       <div style={{ whiteSpace: "pre-wrap" }}>{it.notes || "—"}</div>
@@ -345,7 +323,14 @@ export default function AdminIncidentsPage() {
                         <button
                           disabled={actingId === it.id}
                           onClick={() => action(it.id, "unjustified")}
-                          style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", fontWeight: 900 }}
+                          style={{
+                            padding: "8px 10px",
+                            borderRadius: 10,
+                            border: "1px solid #111",
+                            background: "#111",
+                            color: "#fff",
+                            fontWeight: 900,
+                          }}
                         >
                           No justificada
                         </button>
@@ -368,7 +353,7 @@ export default function AdminIncidentsPage() {
       </div>
 
       <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
-        * “Quitar” = marca la incidencia como anulada (para que no vuelva a salir como pendiente).
+        * “Quitar” = deja de molestar en el listado (la marcamos como <b>justified</b> sin penalizar).
       </div>
     </div>
   );
