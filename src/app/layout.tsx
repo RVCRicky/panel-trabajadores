@@ -41,7 +41,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           color: "#111827",
         }}
       >
-        {/* ===== HEADER CORPORATIVO ===== */}
         <header
           style={{
             width: "100%",
@@ -61,34 +60,26 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               alignItems: "center",
               justifyContent: "space-between",
               gap: 12,
+              flexWrap: "wrap",
             }}
           >
-            {/* Logo + Nombre */}
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ position: "relative", width: 42, height: 42 }}>
-                <Image
-                  src="/logo.png"
-                  alt="Logo Tarot Celestial"
-                  fill
-                  style={{ objectFit: "contain" }}
-                  priority
-                />
+            <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 240 }}>
+              <div style={{ position: "relative", width: 42, height: 42, flex: "0 0 auto" }}>
+                <Image src="/logo.png" alt="Logo Tarot Celestial" fill style={{ objectFit: "contain" }} priority />
               </div>
 
               <div style={{ lineHeight: 1.2 }}>
                 <div style={{ fontWeight: 800, fontSize: 15 }}>Tarot Celestial</div>
-                <div style={{ fontSize: 12, color: "#6b7280" }}>
-                  Panel Interno · Fichaje · Objetivos · Facturación
-                </div>
+                <div style={{ fontSize: 12, color: "#6b7280" }}>Panel Interno · Fichaje · Objetivos · Facturación</div>
               </div>
             </div>
 
-            {/* Mes actual */}
             <div
               style={{
                 fontSize: 13,
                 color: "#6b7280",
                 textTransform: "capitalize",
+                marginLeft: "auto",
               }}
             >
               {currentMonth}
@@ -96,12 +87,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
         </header>
 
-        {/* ===== CONTENIDO PRINCIPAL ===== */}
         <main
           style={{
             maxWidth: "1200px",
             margin: "0 auto",
-            padding: "20px 20px 28px",
+            padding: "20px 12px 28px",
           }}
         >
           {children}
