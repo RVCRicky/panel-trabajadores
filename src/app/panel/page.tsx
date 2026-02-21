@@ -1,3 +1,4 @@
+// src/app/panel/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -5,7 +6,20 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
-import { QuickLink } from "@/components/ui/QuickLink";
+
+function useIsMobile(bp = 720) {
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${bp}px)`);
+    const onChange = () => setIsMobile(mq.matches);
+    onChange();
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, [bp]);
+
+  return isMobile;
+}
 
 function fmt(n: any) {
   return (Number(n) || 0).toLocaleString("es-ES");
@@ -17,7 +31,6 @@ function medal(pos: number) {
   return pos === 1 ? "🥇" : pos === 2 ? "🥈" : pos === 3 ? "🥉" : "";
 }
 
-// ✅ añadido eur_total y eur_bonus
 type RankKey = "minutes" | "repite_pct" | "cliente_pct" | "captadas" | "eur_total" | "eur_bonus";
 
 type TeamMember = { worker_id: string; name: string };
@@ -50,8 +63,6 @@ type DashboardResp = {
     repite_pct: any[];
     cliente_pct: any[];
     captadas: any[];
-
-    // ✅ NUEVO (tarotistas)
     eur_total?: any[];
     eur_bonus?: any[];
   };
@@ -130,8 +141,8 @@ function formatMonthLabel(isoMonthDate: string) {
 
 export default function PanelPage() {
   const router = useRouter();
+  const isMobile = useIsMobile();
 
-  // ✅ para tarotistas, empezamos con € total si existe
   const [rankType, setRankType] = useState<RankKey>("minutes");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -209,9 +220,8 @@ export default function PanelPage() {
         await loadPresence();
       }
 
-      // ✅ si es tarotista y existe eur_total, lo ponemos por defecto
       const r = String(role || "").toLowerCase();
-      if (r === "tarotista" && Array.isArray(j.rankings?.eur_total) && j.rankings.eur_total.length > 0) {
+      if (r === "tarotista" && Array.isArray(j.rankings?.eur_total) && (j.rankings.eur_total?.length || 0) > 0) {
         setRankType((prev) => (prev === "minutes" ? "eur_total" : prev));
       }
     } catch (e: any) {
@@ -321,7 +331,6 @@ export default function PanelPage() {
   const isCentral = myRole === "central";
   const isTarot = myRole === "tarotista";
 
-  // ✅ ranks dinámico (incluye eur_total/eur_bonus)
   const ranks = (data?.rankings as any)?.[rankType] || [];
 
   const myRankTarot = useMemo(() => {
@@ -381,25 +390,29 @@ export default function PanelPage() {
       : pState === "online"
       ? "Estás online. Si paras, usa Pausa o Baño."
       : "Estás en pausa/baño. Cuando vuelvas, pulsa “Volver (Online)”.";
+
   const bigActionLabel = pState === "offline" ? "Entrar a trabajar" : "Salir del turno";
   const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
-      {/* Header */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <h1 style={{ margin: 0 }}>Panel</h1>
 
-        {/* Selector mes */}
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", width: isMobile ? "100%" : "auto" }}>
           <span style={{ color: "#666", fontWeight: 800 }}>Mes:</span>
 
           <select
             value={selectedMonth || data?.month_date || ""}
             onChange={(e) => setSelectedMonth(e.target.value || null)}
-            style={{ padding: 8, borderRadius: 10, border: "1px solid #ddd", minWidth: 220 }}
+            style={{
+              padding: 8,
+              borderRadius: 10,
+              border: "1px solid #ddd",
+              minWidth: isMobile ? "100%" : 220,
+              width: isMobile ? "100%" : "auto",
+            }}
             disabled={loading || months.length === 0}
-            title={months.length === 0 ? "No hay meses disponibles" : "Selecciona mes"}
           >
             {months.length === 0 ? (
               <option value="">{data?.month_date || "—"}</option>
@@ -417,12 +430,33 @@ export default function PanelPage() {
           </span>
         </div>
 
-        <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button onClick={() => load(selectedMonth)} disabled={loading} style={{ padding: 10, borderRadius: 10, border: "1px solid #111", fontWeight: 900 }}>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap", width: isMobile ? "100%" : "auto" }}>
+          <button
+            onClick={() => load(selectedMonth)}
+            disabled={loading}
+            style={{
+              padding: 10,
+              borderRadius: 10,
+              border: "1px solid #111",
+              fontWeight: 900,
+              flex: isMobile ? "1 1 160px" : "0 0 auto",
+            }}
+          >
             {loading ? "Actualizando..." : "Actualizar"}
           </button>
 
-          <button onClick={logout} style={{ padding: 10, borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", fontWeight: 900 }}>
+          <button
+            onClick={logout}
+            style={{
+              padding: 10,
+              borderRadius: 10,
+              border: "1px solid #111",
+              background: "#111",
+              color: "#fff",
+              fontWeight: 900,
+              flex: isMobile ? "1 1 160px" : "0 0 auto",
+            }}
+          >
             Cerrar sesión
           </button>
         </div>
@@ -430,7 +464,6 @@ export default function PanelPage() {
 
       {err ? <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div> : null}
 
-      {/* Marcador equipos (solo central, sin €) */}
       {isCentral && teams.length > 0 ? (
         <div style={{ border: "2px solid #111", borderRadius: 18, padding: 14, background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
@@ -446,14 +479,14 @@ export default function PanelPage() {
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 12, alignItems: "stretch", marginTop: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr auto 1fr", gap: 12, alignItems: "stretch", marginTop: 12 }}>
             {[team1, team2].map((t, idx) => {
               const pos = idx + 1;
               const isMine = (data?.myTeamRank || 0) === pos;
 
               return (
                 <div key={pos} style={{ border: isMine ? "2px solid #111" : "1px solid #eaeaea", borderRadius: 16, padding: 12, background: isMine ? "#fff" : "#fcfcfc" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                     <div style={{ fontWeight: 1100, fontSize: 16 }}>{t ? `${medal(pos)} #${pos} ${t.team_name}` : "—"}</div>
                     {isMine ? <span style={{ border: "1px solid #111", borderRadius: 999, padding: "4px 10px", fontWeight: 1000 }}>Tu equipo</span> : null}
                   </div>
@@ -483,9 +516,11 @@ export default function PanelPage() {
               );
             })}
 
-            <div style={{ display: "grid", placeItems: "center", padding: 6 }}>
-              <div style={{ fontWeight: 1100, color: "#666" }}>VS</div>
-            </div>
+            {!isMobile ? (
+              <div style={{ display: "grid", placeItems: "center", padding: 6 }}>
+                <div style={{ fontWeight: 1100, color: "#666" }}>VS</div>
+              </div>
+            ) : null}
           </div>
 
           <div style={{ marginTop: 10, color: "#666", fontWeight: 900 }}>
@@ -494,8 +529,7 @@ export default function PanelPage() {
         </div>
       ) : null}
 
-      {/* Cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
         <Card>
           <CardTitle>Estado</CardTitle>
           <CardValue>
@@ -533,7 +567,6 @@ export default function PanelPage() {
         </Card>
       </div>
 
-      {/* Control horario PRO */}
       {me?.role === "tarotista" || me?.role === "central" ? (
         <div style={{ border: "2px solid #111", borderRadius: 18, padding: 14, background: "linear-gradient(180deg, #ffffff 0%, #fbfbfb 100%)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -552,7 +585,7 @@ export default function PanelPage() {
 
           <div style={{ marginTop: 10, color: "#666", fontWeight: 900 }}>{helpText}</div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12, marginTop: 12 }}>
             <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 12, background: "#fff" }}>
               <div style={{ fontWeight: 1100 }}>Sesión</div>
               <div style={{ marginTop: 6, color: "#666" }}>{sessionId ? <b>{sessionId}</b> : "—"}</div>
@@ -574,7 +607,8 @@ export default function PanelPage() {
                     background: pState === "offline" ? "#111" : "#fff",
                     color: pState === "offline" ? "#fff" : "#111",
                     fontWeight: 1100,
-                    minWidth: 220,
+                    width: isMobile ? "100%" : "auto",
+                    minWidth: isMobile ? undefined : 220,
                   }}
                 >
                   {bigActionLabel}
@@ -601,11 +635,10 @@ export default function PanelPage() {
         </div>
       ) : null}
 
-      {/* Top 3 */}
       <Card>
         <CardTitle>Top 3 del mes</CardTitle>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginTop: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginTop: 10 }}>
           {(isCentral
             ? (["minutes", "captadas"] as RankKey[])
             : isTarot
@@ -623,9 +656,7 @@ export default function PanelPage() {
                         {medal(idx + 1)} {idx + 1}
                       </td>
                       <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                      <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>
-                        {valueOf(k, r)}
-                      </td>
+                      <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{valueOf(k, r)}</td>
                     </tr>
                   ))}
                   {top3For(k).length === 0 ? (
@@ -642,12 +673,11 @@ export default function PanelPage() {
         </div>
       </Card>
 
-      {/* Rankings */}
       <Card>
         <CardTitle>Rankings (tabla completa)</CardTitle>
 
         <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <select value={rankType} onChange={(e) => setRankType(e.target.value as RankKey)} style={{ padding: 8 }}>
+          <select value={rankType} onChange={(e) => setRankType(e.target.value as RankKey)} style={{ padding: 8, width: isMobile ? "100%" : "auto" }}>
             {isTarot ? (
               <>
                 <option value="eur_total">Ranking por € Total</option>
@@ -675,8 +705,8 @@ export default function PanelPage() {
           </div>
         </div>
 
-        <div style={{ overflowX: "auto", marginTop: 10 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 780 }}>
+        <div style={{ overflowX: "auto", marginTop: 10, WebkitOverflowScrolling: "touch" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: isMobile ? 520 : 780 }}>
             <thead>
               <tr>
                 <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
