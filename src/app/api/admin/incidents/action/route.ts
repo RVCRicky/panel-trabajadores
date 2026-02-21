@@ -1,3 +1,4 @@
+// src/app/api/admin/incidents/action/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -61,16 +62,17 @@ export async function POST(req: Request) {
     if (eInc) return NextResponse.json({ ok: false, error: eInc.message }, { status: 500 });
     if (!inc) return NextResponse.json({ ok: false, error: "NOT_FOUND" }, { status: 404 });
 
-    let newStatus: string = String(inc.status || "pending");
+    // ✅ CHECK en BD solo permite: pending | justified | unjustified
+    let newStatus: "pending" | "justified" | "unjustified" = (String(inc.status || "pending") as any);
 
-    if (body.action === "dismiss") newStatus = "cancelled";
-    if (body.action === "justified") newStatus = "resolved"; // se considera revisada
-    if (body.action === "unjustified") newStatus = "resolved"; // revisada (y se penaliza por SQL)
+    // dismiss = quitar sin penalizar (lo marcamos justified)
+    if (body.action === "dismiss") newStatus = "justified";
+    if (body.action === "justified") newStatus = "justified";
+    if (body.action === "unjustified") newStatus = "unjustified";
 
-    // marcar estado + guardar una nota rápida si quieres
     const note =
       body.action === "dismiss"
-        ? "Anulada desde /admin/incidents"
+        ? "Quitada (sin penalizar) desde /admin/incidents"
         : body.action === "justified"
         ? "Marcada como justificada desde /admin/incidents"
         : "Marcada como NO justificada desde /admin/incidents";
@@ -86,15 +88,12 @@ export async function POST(req: Request) {
 
     if (eUp) return NextResponse.json({ ok: false, error: eUp.message }, { status: 500 });
 
-    // ✅ IMPORTANTE:
-    // Si tu recálculo de factura depende de incidencias, aquí puedes dispararlo.
-    // (Si no tienes el RPC, no pasa nada: lo dejamos "best effort".)
+    // 🔁 best-effort recalc invoice (si existe)
     try {
       const wid = String((inc as any).worker_id || "");
       const m = (inc as any).month_date;
 
       if (wid && m) {
-        // buscar invoice del mes y recalcular
         const { data: inv, error: eInv } = await db
           .from("worker_invoices")
           .select("id")
@@ -103,14 +102,16 @@ export async function POST(req: Request) {
           .maybeSingle();
 
         if (!eInv && inv?.id) {
-  try {
-    await db.rpc("recalc_invoice", { p_invoice_id: inv.id });
-  } catch {
-    // ignore
-  }
-}
+          try {
+            await db.rpc("recalc_invoice", { p_invoice_id: inv.id });
+          } catch {
+            // ignore
+          }
+        }
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
