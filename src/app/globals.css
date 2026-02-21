@@ -126,3 +126,8 @@ canvas {
     display: none !important;
   }
 }
+.tc-hide-mobile { display: inline-flex; }
+
+@media (max-width: 640px) {
+  .tc-hide-mobile { display: none !important; }
+}
