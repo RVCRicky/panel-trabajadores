@@ -7,7 +7,6 @@ import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { QuickLink } from "@/components/ui/QuickLink";
 import { MiniBarChart } from "@/components/charts/MiniBarChart";
-
 import styles from "./page.module.css";
 
 type WorkerRole = "admin" | "central" | "tarotista";
@@ -285,7 +284,7 @@ export default function AdminPage() {
     return Math.round(((presence.online || 0) / presence.total) * 100);
   }, [presence]);
 
-  // ✅ FINANZAS
+  // ✅ FINANZAS: ingresos vs gastos
   const revenue = overview?.finance?.revenue_eur ?? null;
   const expensesTotal = overview?.finance?.expenses_total_eur ?? null;
   const margin = overview?.finance?.margin_eur ?? null;
@@ -316,374 +315,527 @@ export default function AdminPage() {
   }, [pending, presence, presenceRatio, cronInfo.text, revenue, overview?.dailySeries?.length]);
 
   return (
-    <div className={styles.wrap}>
-      {/* Header */}
-      <div className={styles.header}>
-        <h1 className={styles.h1}>Dashboard Admin</h1>
+    <div className={styles.page}>
+      <div className={styles.main}>
+        <div className={styles.safe} style={{ display: "grid", gap: 14 }}>
+          {/* Header */}
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <h1 style={{ margin: 0 }}>Dashboard Admin</h1>
 
-        {/* Selector de mes */}
-        <div className={styles.monthRow}>
-          <span className={styles.monthLabel}>Mes:</span>
-          <select
-            value={selectedMonth || overview?.month_date || ""}
-            onChange={(e) => setSelectedMonth(e.target.value || null)}
-            className={styles.select}
-            disabled={loading || months.length === 0 || status !== "OK"}
-          >
-            {months.length === 0 ? (
-              <option value="">{overview?.month_date || "—"}</option>
-            ) : (
-              months.map((m) => (
-                <option key={m} value={m}>
-                  {formatMonthLabel(m)}
-                </option>
-              ))
-            )}
-          </select>
-          <span className={styles.monthHuman}>
-            <b>{monthLabel}</b>
-          </span>
-        </div>
+            {/* Selector de mes */}
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ color: "#666", fontWeight: 900 }}>Mes:</span>
+              <select
+                value={selectedMonth || overview?.month_date || ""}
+                onChange={(e) => setSelectedMonth(e.target.value || null)}
+                style={{ padding: 8, borderRadius: 10, border: "1px solid #ddd", minWidth: 220 }}
+                disabled={loading || months.length === 0 || status !== "OK"}
+              >
+                {months.length === 0 ? (
+                  <option value="">{overview?.month_date || "—"}</option>
+                ) : (
+                  months.map((m) => (
+                    <option key={m} value={m}>
+                      {formatMonthLabel(m)}
+                    </option>
+                  ))
+                )}
+              </select>
+              <span style={{ color: "#666" }}>
+                <b>{monthLabel}</b>
+              </span>
+            </div>
 
-        <div className={styles.headerRight}>
-          <span className={styles.statusText}>
-            Estado: <b className={styles.statusStrong}>{status}</b>
-            {status === "OK" ? (
-              <>
-                {" "}
-                · Admin: <b className={styles.statusStrong}>{meName}</b>
-              </>
-            ) : null}
-          </span>
+            <span style={{ marginLeft: "auto", color: "#666" }}>
+              Estado: <b style={{ color: "#111" }}>{status}</b>
+              {status === "OK" ? (
+                <>
+                  {" "}
+                  · Admin: <b style={{ color: "#111" }}>{meName}</b>
+                </>
+              ) : null}
+            </span>
 
-          <div className={styles.headerButtons}>
-            <button onClick={() => loadOverview(selectedMonth)} disabled={loading || status !== "OK"} className={styles.btn}>
+            <button
+              onClick={() => loadOverview(selectedMonth)}
+              disabled={loading || status !== "OK"}
+              style={{
+                padding: 10,
+                borderRadius: 10,
+                border: "1px solid #111",
+                fontWeight: 900,
+                cursor: loading ? "not-allowed" : "pointer",
+              }}
+            >
               {loading ? "Actualizando..." : "Actualizar"}
             </button>
 
-            <button onClick={logout} className={styles.btnPrimary}>
+            <button
+              onClick={logout}
+              style={{
+                padding: 10,
+                borderRadius: 10,
+                border: "1px solid #111",
+                background: "#111",
+                color: "#fff",
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
+            >
               Cerrar sesión
             </button>
           </div>
-        </div>
-      </div>
 
-      {err ? <div className={styles.errorBox}>{err}</div> : null}
+          {err ? (
+            <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
+          ) : null}
 
-      {/* ===== CENTRO DE CONTROL ===== */}
-      <div className={styles.section}>
-        <div className={styles.sectionHead}>
-          <div>
-            <div className={styles.sectionTitle}>Centro de control</div>
-            <div className={styles.sectionDesc}>En 10 segundos sabes si el mes va bien, quién lidera y dónde hay que apretar.</div>
-          </div>
-
-          <div className={styles.chips}>
-            <span className={styles.chip}>📌 Objetivo: foco en repetición</span>
-            <span className={styles.chip}>🧾 Cierre de mes: preparado</span>
-          </div>
-        </div>
-
-        {/* KPIs */}
-        <div className={styles.kpiGrid}>
-          <Card>
-            <CardTitle>Facturación mes</CardTitle>
-            <CardValue>{revenue == null ? "—" : fmtEur(revenue)}</CardValue>
-            <CardHint>Ingresos reales del mes</CardHint>
-          </Card>
-
-          <Card>
-            <CardTitle>Gastos mes</CardTitle>
-            <CardValue>{expensesTotal == null ? "—" : fmtEur(expensesTotal)}</CardValue>
-            <CardHint>Pagos totales del mes</CardHint>
-          </Card>
-
-          <Card>
-            <CardTitle>Margen estimado</CardTitle>
-            <CardValue>{margin == null ? "—" : fmtEur(margin)}</CardValue>
-            <CardHint>Facturación − Gastos</CardHint>
-          </Card>
-
-          <Card>
-            <CardTitle>Minutos del mes</CardTitle>
-            <CardValue>{overview?.totals ? `${fmt(overview.totals.minutes)} min` : "—"}</CardValue>
-            <CardHint>Producción acumulada</CardHint>
-          </Card>
-
-          <Card>
-            <CardTitle>Captadas del mes</CardTitle>
-            <CardValue>{overview?.totals ? fmt(overview.totals.captadas) : "—"}</CardValue>
-            <CardHint>Conversión / captación</CardHint>
-          </Card>
-
-          <Card>
-            <CardTitle>Presencia ahora</CardTitle>
-            <CardValue>{presence ? `${fmt(presence.online)} ONLINE` : "—"}</CardValue>
-            <CardHint>
-              <Badge tone={toneOnline as any}>ONLINE</Badge> · Total: <b>{presence ? fmt(presence.total) : "—"}</b> · Ratio:{" "}
-              <b>{presence ? `${presenceRatio}%` : "—"}</b>
-            </CardHint>
-          </Card>
-        </div>
-
-        {/* Top 3 + Alertas */}
-        <div className={styles.twoCol}>
-          <Card>
-            <div className={styles.cardHeadRow}>
+          {/* ===== CENTRO DE CONTROL (REAL con €) ===== */}
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
               <div>
-                <CardTitle>Top 3 gasto tarotistas (€)</CardTitle>
-                <CardHint>Gasto (no facturación)</CardHint>
+                <div style={{ fontSize: 18, fontWeight: 900 }}>Centro de control</div>
+                <div style={{ fontSize: 13, color: "#6b7280" }}>
+                  En 10 segundos sabes si el mes va bien, quién lidera y dónde hay que apretar.
+                </div>
               </div>
-              <span className={styles.chip}>🧾 Pagos</span>
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ padding: "8px 12px", borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", fontSize: 13 }}>
+                  📌 Objetivo: foco en repetición
+                </span>
+                <span style={{ padding: "8px 12px", borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", fontSize: 13 }}>
+                  🧾 Cierre de mes: preparado
+                </span>
+              </div>
             </div>
 
-            <div className={styles.top3List}>
-              {top3ExpenseTarot.length === 0 ? (
-                <div className={styles.muted}>Sin datos de gasto tarotistas para este mes.</div>
-              ) : (
-                top3ExpenseTarot.map((r, idx) => {
-                  const max = Math.max(1, ...top3ExpenseTarot.map((x) => Number(x.total_eur) || 0));
-                  const w = Math.round(((Number(r.total_eur) || 0) / max) * 100);
+            {/* KPIs */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+              <Card>
+                <CardTitle>Facturación mes</CardTitle>
+                <CardValue>{revenue == null ? "—" : fmtEur(revenue)}</CardValue>
+                <CardHint>Ingresos reales del mes</CardHint>
+              </Card>
 
-                  return (
-                    <div key={r.worker_id} className={styles.top3Item}>
-                      <div className={styles.top3Row}>
-                        <div className={styles.top3Left}>
-                          <div className={styles.rank}>{idx + 1}</div>
-                          <div className={styles.top3NameWrap}>
-                            <div className={styles.top3Name}>{r.name}</div>
-                            <div className={styles.top3Role}>Tarotista</div>
+              <Card>
+                <CardTitle>Gastos mes</CardTitle>
+                <CardValue>{expensesTotal == null ? "—" : fmtEur(expensesTotal)}</CardValue>
+                <CardHint>Pagos totales del mes</CardHint>
+              </Card>
+
+              <Card>
+                <CardTitle>Margen estimado</CardTitle>
+                <CardValue>{margin == null ? "—" : fmtEur(margin)}</CardValue>
+                <CardHint>Facturación − Gastos</CardHint>
+              </Card>
+
+              <Card>
+                <CardTitle>Minutos del mes</CardTitle>
+                <CardValue>{overview?.totals ? `${fmt(overview.totals.minutes)} min` : "—"}</CardValue>
+                <CardHint>Producción acumulada del mes</CardHint>
+              </Card>
+
+              <Card>
+                <CardTitle>Captadas del mes</CardTitle>
+                <CardValue>{overview?.totals ? fmt(overview.totals.captadas) : "—"}</CardValue>
+                <CardHint>Conversión / captación registrada</CardHint>
+              </Card>
+
+              <Card>
+                <CardTitle>Presencia ahora</CardTitle>
+                <CardValue>{presence ? `${fmt(presence.online)} ONLINE` : "—"}</CardValue>
+                <CardHint>
+                  <Badge tone={toneOnline as any}>ONLINE</Badge> · Total: <b>{presence ? fmt(presence.total) : "—"}</b> · Ratio:{" "}
+                  <b>{presence ? `${presenceRatio}%` : "—"}</b>
+                </CardHint>
+              </Card>
+            </div>
+
+            {/* Top 3 gasto tarotistas + Alertas */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
+              <Card>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                  <div>
+                    <CardTitle>Top 3 gasto tarotistas (€)</CardTitle>
+                    <CardHint>Gasto (no facturación)</CardHint>
+                  </div>
+                  <span style={{ padding: "8px 12px", borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", fontSize: 13 }}>
+                    🧾 Pagos
+                  </span>
+                </div>
+
+                <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+                  {top3ExpenseTarot.length === 0 ? (
+                    <div style={{ color: "#6b7280" }}>Sin datos de gasto tarotistas para este mes.</div>
+                  ) : (
+                    top3ExpenseTarot.map((r, idx) => {
+                      const max = Math.max(1, ...top3ExpenseTarot.map((x) => Number(x.total_eur) || 0));
+                      const w = Math.round(((Number(r.total_eur) || 0) / max) * 100);
+                      const badgeBg = idx === 0 ? "#fef3c7" : idx === 1 ? "#e5e7eb" : "#fee2e2";
+
+                      return (
+                        <div
+                          key={r.worker_id}
+                          style={{
+                            border: "1px solid #e5e7eb",
+                            borderRadius: 12,
+                            padding: 12,
+                            background: "#fff",
+                            display: "grid",
+                            gap: 10,
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                              <div
+                                style={{
+                                  width: 28,
+                                  height: 28,
+                                  borderRadius: 10,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  fontWeight: 900,
+                                  border: "1px solid #e5e7eb",
+                                  background: badgeBg,
+                                }}
+                              >
+                                {idx + 1}
+                              </div>
+
+                              <div>
+                                <div style={{ fontWeight: 900, fontSize: 16 }}>{r.name}</div>
+                                <div style={{ fontSize: 12, color: "#6b7280" }}>Tarotista</div>
+                              </div>
+                            </div>
+
+                            <div style={{ textAlign: "right" }}>
+                              <div style={{ fontWeight: 900, fontSize: 18 }}>{fmtEur(r.total_eur)}</div>
+                              <div style={{ fontSize: 12, color: "#6b7280" }}>Total</div>
+                            </div>
+                          </div>
+
+                          <div
+                            style={{
+                              width: "100%",
+                              height: 10,
+                              borderRadius: 999,
+                              background: "#f3f4f6",
+                              border: "1px solid #e5e7eb",
+                              overflow: "hidden",
+                            }}
+                          >
+                            <div style={{ width: `${clamp(w)}%`, height: "100%", background: "#111" }} />
                           </div>
                         </div>
+                      );
+                    })
+                  )}
+                </div>
+              </Card>
 
-                        <div className={styles.top3Right}>
-                          <div className={styles.top3Eur}>{fmtEur(r.total_eur)}</div>
-                          <div className={styles.top3Small}>Total</div>
-                        </div>
-                      </div>
-
-                      <div className={styles.barOuter}>
-                        <div className={styles.barInner} style={{ width: `${clamp(w)}%` }} />
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </Card>
-
-          <Card>
-            <div className={styles.cardHeadRow}>
-              <div>
-                <CardTitle>Alertas</CardTitle>
-                <CardHint>Lo que necesita acción hoy</CardHint>
-              </div>
-              <span className={styles.chip}>⚠️ Prioridades</span>
-            </div>
-
-            <div className={styles.alertsList}>
-              {alerts.length === 0 ? (
-                <div className={styles.muted}>Sin alertas.</div>
-              ) : (
-                alerts.map((a, i) => (
-                  <div key={i} className={`${styles.alertItem} ${a.tone === "warn" ? styles.warn : a.tone === "ok" ? styles.ok : styles.neutral}`}>
-                    <div className={styles.alertText}>{a.text}</div>
-                    {a.href ? (
-                      <button onClick={() => router.push(a.href!)} className={styles.btnPrimary}>
-                        Abrir
-                      </button>
-                    ) : null}
+              <Card>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                  <div>
+                    <CardTitle>Alertas</CardTitle>
+                    <CardHint>Lo que necesita acción hoy</CardHint>
                   </div>
-                ))
-              )}
+                  <span style={{ padding: "8px 12px", borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", fontSize: 13 }}>
+                    ⚠️ Prioridades
+                  </span>
+                </div>
+
+                <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+                  {alerts.length === 0 ? (
+                    <div style={{ color: "#6b7280" }}>Sin alertas.</div>
+                  ) : (
+                    alerts.map((a, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          borderRadius: 12,
+                          border: "1px solid #e5e7eb",
+                          padding: 12,
+                          background: a.tone === "warn" ? "#fff7ed" : a.tone === "ok" ? "#f0fdf4" : "#f9fafb",
+                          display: "flex",
+                          gap: 10,
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                        }}
+                      >
+                        <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                          <span
+                            style={{
+                              width: 10,
+                              height: 10,
+                              marginTop: 5,
+                              borderRadius: 999,
+                              background: a.tone === "warn" ? "#f59e0b" : a.tone === "ok" ? "#10b981" : "#9ca3af",
+                              display: "inline-block",
+                            }}
+                          />
+                          <div style={{ fontSize: 13, lineHeight: 1.35 }}>{a.text}</div>
+                        </div>
+
+                        {a.href ? (
+                          <button
+                            onClick={() => router.push(a.href!)}
+                            style={{
+                              padding: "10px 12px",
+                              borderRadius: 12,
+                              border: "1px solid #111",
+                              background: "#111",
+                              color: "#fff",
+                              fontWeight: 900,
+                              cursor: "pointer",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            Abrir
+                          </button>
+                        ) : null}
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div style={{ marginTop: 10, color: "#6b7280", fontSize: 13 }}>
+                  Consejo: cuando esto baja, sube el rendimiento sin “perseguir” a nadie.
+                </div>
+              </Card>
+            </div>
+          </div>
+
+          {/* Accesos */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+            <QuickLink href="/admin/live" title="Presencia" desc="Quién está online / pausa / baño y quién falta." />
+            <QuickLink href="/admin/incidents" title="Incidencias" desc="Justificar / No justificar, historial y control." />
+            <QuickLink href="/admin/workers" title="Trabajadores" desc="Altas, bajas, roles, activar/desactivar." />
+            <QuickLink href="/admin/mappings" title="Mappings" desc="Enlaces de CSV/Drive con trabajadores." />
+            <QuickLink href="/admin/invoices" title="Facturas" desc="Ver facturas, añadir extras y sanciones." />
+          </div>
+
+          {/* Gráfico con toggle */}
+          <Card>
+            <CardTitle>Serie diaria</CardTitle>
+            <CardHint>Mes seleccionado · Toggle Minutos / Captadas.</CardHint>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+              <button
+                onClick={() => setChartMode("minutes")}
+                style={{
+                  padding: 10,
+                  borderRadius: 12,
+                  border: "1px solid #111",
+                  fontWeight: 900,
+                  background: chartMode === "minutes" ? "#111" : "#fff",
+                  color: chartMode === "minutes" ? "#fff" : "#111",
+                }}
+              >
+                Minutos
+              </button>
+
+              <button
+                onClick={() => setChartMode("captadas")}
+                disabled={dailyCaptadasData.length === 0}
+                style={{
+                  padding: 10,
+                  borderRadius: 12,
+                  border: "1px solid #111",
+                  fontWeight: 900,
+                  background: chartMode === "captadas" ? "#111" : "#fff",
+                  color: chartMode === "captadas" ? "#fff" : "#111",
+                  opacity: dailyCaptadasData.length === 0 ? 0.5 : 1,
+                  cursor: dailyCaptadasData.length === 0 ? "not-allowed" : "pointer",
+                }}
+              >
+                Captadas
+              </button>
+
+              <div style={{ marginLeft: "auto", color: "#666", display: "flex", alignItems: "center" }}>
+                Mostrando:{" "}
+                <b style={{ color: "#111", marginLeft: 6 }}>{chartMode === "minutes" ? "Minutos/día" : "Captadas/día"}</b>
+              </div>
             </div>
 
-            <div className={styles.tip}>Consejo: cuando esto baja, sube el rendimiento sin “perseguir” a nadie.</div>
+            <div style={{ marginTop: 10 }}>
+              <MiniBarChart data={chartData} height={180} unit={chartUnit} />
+            </div>
           </Card>
-        </div>
-      </div>
 
-      {/* Accesos */}
-      <div className={styles.linksGrid}>
-        <QuickLink href="/admin/live" title="Presencia" desc="Quién está online / pausa / baño y quién falta." />
-        <QuickLink href="/admin/incidents" title="Incidencias" desc="Justificar / No justificar, historial y control." />
-        <QuickLink href="/admin/workers" title="Trabajadores" desc="Altas, bajas, roles, activar/desactivar." />
-        <QuickLink href="/admin/mappings" title="Mappings" desc="Enlaces de CSV/Drive con trabajadores." />
-        <QuickLink href="/admin/invoices" title="Facturas" desc="Ver facturas, añadir extras y sanciones." />
-      </div>
+          {/* Sync CSV */}
+          <Card>
+            <CardTitle>Sincronizar Google Sheets (CSV)</CardTitle>
 
-      {/* Gráfico */}
-      <Card>
-        <CardTitle>Serie diaria</CardTitle>
-        <CardHint>Mes seleccionado · Toggle Minutos / Captadas.</CardHint>
+            <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+              <input
+                value={csvUrl}
+                onChange={(e) => setCsvUrl(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/d/e/.../pub?gid=...&single=true&output=csv"
+                style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc", width: "100%" }}
+              />
 
-        <div className={styles.toggleRow}>
-          <button
-            onClick={() => setChartMode("minutes")}
-            className={`${styles.toggleBtn} ${chartMode === "minutes" ? styles.toggleActive : ""}`}
-          >
-            Minutos
-          </button>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button
+                  onClick={runSync}
+                  disabled={syncing || status !== "OK" || !csvUrl.trim()}
+                  style={{
+                    padding: 12,
+                    borderRadius: 10,
+                    border: "1px solid #111",
+                    background: syncing ? "#eee" : "#111",
+                    color: syncing ? "#111" : "#fff",
+                    cursor: syncing ? "not-allowed" : "pointer",
+                    fontWeight: 900,
+                  }}
+                >
+                  {syncing ? "Sincronizando..." : "Sync ahora"}
+                </button>
 
-          <button
-            onClick={() => setChartMode("captadas")}
-            disabled={dailyCaptadasData.length === 0}
-            className={`${styles.toggleBtn} ${chartMode === "captadas" ? styles.toggleActive : ""}`}
-          >
-            Captadas
-          </button>
+                <button
+                  onClick={() => loadOverview(selectedMonth)}
+                  disabled={loading || status !== "OK"}
+                  style={{
+                    padding: 12,
+                    borderRadius: 10,
+                    border: "1px solid #ddd",
+                    background: "#fff",
+                    cursor: loading ? "not-allowed" : "pointer",
+                    fontWeight: 900,
+                  }}
+                >
+                  {loading ? "Cargando..." : "Refrescar dashboard"}
+                </button>
+              </div>
 
-          <div className={styles.toggleHint}>
-            Mostrando: <b>{chartMode === "minutes" ? "Minutos/día" : "Captadas/día"}</b>
-          </div>
-        </div>
+              {syncMsg ? (
+                <div style={{ padding: 10, borderRadius: 10, background: "#f6f6f6", border: "1px solid #e5e5e5" }}>{syncMsg}</div>
+              ) : null}
 
-        <div className={styles.chartWrap}>
-          <MiniBarChart data={chartData} height={180} unit={chartUnit} />
-        </div>
-      </Card>
-
-      {/* Sync CSV */}
-      <Card>
-        <CardTitle>Sincronizar Google Sheets (CSV)</CardTitle>
-
-        <div className={styles.syncBox}>
-          <input
-            value={csvUrl}
-            onChange={(e) => setCsvUrl(e.target.value)}
-            placeholder="https://docs.google.com/spreadsheets/d/e/.../pub?gid=...&single=true&output=csv"
-            className={styles.input}
-          />
-
-          <div className={styles.syncBtns}>
-            <button onClick={runSync} disabled={syncing || status !== "OK" || !csvUrl.trim()} className={styles.btnPrimary}>
-              {syncing ? "Sincronizando..." : "Sync ahora"}
-            </button>
-
-            <button onClick={() => loadOverview(selectedMonth)} disabled={loading || status !== "OK"} className={styles.btn}>
-              {loading ? "Cargando..." : "Refrescar dashboard"}
-            </button>
-          </div>
-
-          {syncMsg ? <div className={styles.noteBox}>{syncMsg}</div> : null}
-
-          {syncDebug ? (
-            <div className={styles.debugBox}>
-              <b>DEBUG:</b>
-              <pre className={styles.pre}>{syncDebug}</pre>
+              {syncDebug ? (
+                <div style={{ padding: 10, borderRadius: 10, background: "#fff", border: "1px solid #e5e5e5" }}>
+                  <b>DEBUG:</b>
+                  <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{syncDebug}</pre>
+                </div>
+              ) : null}
             </div>
-          ) : null}
-        </div>
-      </Card>
+          </Card>
 
-      {/* Top tables */}
-      <div className={styles.twoCol}>
-        {[
-          { key: "minutes", title: "Top 10 (Minutos)" },
-          { key: "captadas", title: "Top 10 (Captadas)" },
-          { key: "cliente_pct", title: "Top 10 (Cliente %)" },
-          { key: "repite_pct", title: "Top 10 (Repite %)" },
-        ].map((box) => {
-          const list: any[] = (overview?.top as any)?.[box.key] || [];
-          const label = box.key === "minutes" ? "Min" : box.key === "captadas" ? "Cap" : "%";
+          {/* Top tables */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
+            {[
+              { key: "minutes", title: "Top 10 (Minutos)" },
+              { key: "captadas", title: "Top 10 (Captadas)" },
+              { key: "cliente_pct", title: "Top 10 (Cliente %)" },
+              { key: "repite_pct", title: "Top 10 (Repite %)" },
+            ].map((box) => {
+              const list: any[] = (overview?.top as any)?.[box.key] || [];
+              const label = box.key === "minutes" ? "Min" : box.key === "captadas" ? "Cap" : "%";
 
-          return (
-            <Card key={box.key}>
-              <CardTitle>{box.title}</CardTitle>
-              <CardHint>Mes seleccionado.</CardHint>
+              return (
+                <Card key={box.key}>
+                  <CardTitle>{box.title}</CardTitle>
+                  <CardHint>Mes seleccionado.</CardHint>
 
-              <div className={styles.tableWrap}>
-                <table className={styles.table}>
-                  <thead>
-                    <tr>
-                      <th className={styles.th}>#</th>
-                      <th className={styles.th}>Tarotista</th>
-                      <th className={`${styles.th} ${styles.thRight}`}>{label}</th>
-                      {box.key === "minutes" ? <th className={`${styles.th} ${styles.thRight} ${styles.hideOnMobile}`}>Cap</th> : null}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {list.length === 0 ? (
-                      <tr>
-                        <td colSpan={box.key === "minutes" ? 4 : 3} className={styles.tdMuted}>
-                          Sin datos.
-                        </td>
-                      </tr>
-                    ) : (
-                      list.map((r: any, idx: number) => (
-                        <tr key={r.worker_id}>
-                          <td className={styles.td}>{idx + 1}</td>
-                          <td className={`${styles.td} ${styles.tdEllipsis}`}>{r.name}</td>
-                          <td className={`${styles.td} ${styles.tdRight} ${styles.tdStrong}`}>
-                            {box.key === "minutes"
-                              ? fmt(r.minutes)
-                              : box.key === "captadas"
-                              ? fmt(r.captadas)
-                              : `${fmt(box.key === "cliente_pct" ? r.cliente_pct : r.repite_pct)} %`}
-                          </td>
+                  <div className={styles.tableWrap} style={{ marginTop: 10 }}>
+                    <table className={styles.tableMin520} style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
+                          <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Tarotista</th>
+                          <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>{label}</th>
                           {box.key === "minutes" ? (
-                            <td className={`${styles.td} ${styles.tdRight} ${styles.hideOnMobile}`}>{fmt(r.captadas)}</td>
+                            <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Cap</th>
                           ) : null}
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          );
-        })}
-      </div>
+                      </thead>
+                      <tbody>
+                        {list.length === 0 ? (
+                          <tr>
+                            <td colSpan={box.key === "minutes" ? 4 : 3} style={{ padding: 10, color: "#666" }}>
+                              Sin datos.
+                            </td>
+                          </tr>
+                        ) : (
+                          list.map((r: any, idx: number) => (
+                            <tr key={r.worker_id}>
+                              <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{idx + 1}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>
+                                {box.key === "minutes"
+                                  ? fmt(r.minutes)
+                                  : box.key === "captadas"
+                                  ? fmt(r.captadas)
+                                  : `${fmt(box.key === "cliente_pct" ? r.cliente_pct : r.repite_pct)} %`}
+                              </td>
+                              {box.key === "minutes" ? (
+                                <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{fmt(r.captadas)}</td>
+                              ) : null}
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
 
-      {/* Cron logs */}
-      <Card>
-        <CardTitle>Últimas ejecuciones CRON</CardTitle>
-        <CardHint>Si ves FAIL, revisa Vercel Functions Logs.</CardHint>
+          {/* Cron logs */}
+          <Card>
+            <CardTitle>Últimas ejecuciones CRON</CardTitle>
+            <CardHint>Si ves FAIL, revisa Vercel Functions Logs.</CardHint>
 
-        <div className={styles.tableWrap}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th className={styles.th}>Fecha</th>
-                <th className={styles.th}>Job</th>
-                <th className={styles.th}>Estado</th>
-                <th className={`${styles.th} ${styles.thRight} ${styles.hideOnMobile}`}>Duración</th>
-                <th className={`${styles.th} ${styles.hideOnMobile}`}>Detalle</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(overview?.cronLogs || []).length === 0 ? (
-                <tr>
-                  <td colSpan={5} className={styles.tdMuted}>
-                    Sin logs aún.
-                  </td>
-                </tr>
-              ) : (
-                (overview?.cronLogs || []).slice(0, 10).map((l) => {
-                  const tone = l.ok ? "ok" : "warn";
-                  const dur = l.details?.duration_ms != null ? `${fmt(l.details.duration_ms)} ms` : "—";
-                  const msg = l.ok ? "OK" : "FAIL";
-                  const detail = l.ok
-                    ? JSON.stringify(l.details?.rebuilt || l.details?.stage || "ok")
-                    : String(l.details?.error || "error");
-
-                  return (
-                    <tr key={l.id}>
-                      <td className={`${styles.td} ${styles.tdEllipsis}`}>{new Date(l.started_at).toLocaleString("es-ES")}</td>
-                      <td className={`${styles.td} ${styles.tdEllipsis}`}>{l.job}</td>
-                      <td className={styles.td}>
-                        <Badge tone={tone as any}>{msg}</Badge>
+            <div className={styles.tableWrap} style={{ marginTop: 10 }}>
+              <table className={styles.tableMin900} style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Fecha</th>
+                    <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Job</th>
+                    <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Estado</th>
+                    <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Duración</th>
+                    <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Detalle</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(overview?.cronLogs || []).length === 0 ? (
+                    <tr>
+                      <td colSpan={5} style={{ padding: 10, color: "#666" }}>
+                        Sin logs aún.
                       </td>
-                      <td className={`${styles.td} ${styles.tdRight} ${styles.hideOnMobile}`}>{dur}</td>
-                      <td className={`${styles.td} ${styles.tdEllipsis} ${styles.hideOnMobile}`}>{detail}</td>
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+                  ) : (
+                    (overview?.cronLogs || []).slice(0, 10).map((l) => {
+                      const tone = l.ok ? "ok" : "warn";
+                      const dur = l.details?.duration_ms != null ? `${fmt(l.details.duration_ms)} ms` : "—";
+                      const msg = l.ok ? "OK" : "FAIL";
+                      const detail = l.ok
+                        ? JSON.stringify(l.details?.rebuilt || l.details?.stage || "ok")
+                        : String(l.details?.error || "error");
+
+                      return (
+                        <tr key={l.id}>
+                          <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
+                            {new Date(l.started_at).toLocaleString("es-ES")}
+                          </td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{l.job}</td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
+                            <Badge tone={tone as any}>{msg}</Badge>
+                          </td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{dur}</td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", color: "#555" }}>{detail}</td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
         </div>
-      </Card>
+      </div>
     </div>
   );
 }
