@@ -103,8 +103,12 @@ export async function POST(req: Request) {
           .maybeSingle();
 
         if (!eInv && inv?.id) {
-          await db.rpc("recalc_invoice", { p_invoice_id: inv.id }).catch(() => null);
-        }
+  try {
+    await db.rpc("recalc_invoice", { p_invoice_id: inv.id });
+  } catch {
+    // ignore
+  }
+}
       }
     } catch {}
 
