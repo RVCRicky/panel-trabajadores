@@ -2,11 +2,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ResponsiveActions } from "@/components/ui/ResponsiveActions";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
+import { ResponsiveActions } from "@/components/ui/ResponsiveActions";
 
 function useIsMobile(bp = 720) {
   const [isMobile, setIsMobile] = useState(false);
@@ -396,74 +396,98 @@ export default function PanelPage() {
   const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
 
   return (
-    <div style={{ display: "grid", gap: 14 }}>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <h1 style={{ margin: 0 }}>Panel</h1>
+    <div style={{ display: "grid", gap: 14, width: "100%" }}>
+      {/* ===== Header responsive (NO SE CORTA EN MÓVIL) ===== */}
+      <div
+        style={{
+          display: "grid",
+          gap: 12,
+          gridTemplateColumns: isMobile ? "1fr" : "auto 1fr auto",
+          alignItems: "center",
+          width: "100%",
+        }}
+      >
+        <h1 style={{ margin: 0, lineHeight: 1.1 }}>Panel</h1>
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", width: isMobile ? "100%" : "auto" }}>
-          <span style={{ color: "#666", fontWeight: 800 }}>Mes:</span>
+        {/* Mes */}
+        <div
+          style={{
+            display: "grid",
+            gap: 8,
+            width: "100%",
+            justifyItems: "start",
+          }}
+        >
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", width: "100%" }}>
+            <span style={{ color: "#666", fontWeight: 800 }}>Mes:</span>
 
-          <select
-            value={selectedMonth || data?.month_date || ""}
-            onChange={(e) => setSelectedMonth(e.target.value || null)}
-            style={{
-              padding: 8,
-              borderRadius: 10,
-              border: "1px solid #ddd",
-              minWidth: isMobile ? "100%" : 220,
-              width: isMobile ? "100%" : "auto",
-            }}
-            disabled={loading || months.length === 0}
-          >
-            {months.length === 0 ? (
-              <option value="">{data?.month_date || "—"}</option>
-            ) : (
-              months.map((m) => (
-                <option key={m} value={m}>
-                  {formatMonthLabel(m)}
-                </option>
-              ))
-            )}
-          </select>
+            <select
+              value={selectedMonth || data?.month_date || ""}
+              onChange={(e) => setSelectedMonth(e.target.value || null)}
+              style={{
+                padding: 10,
+                borderRadius: 10,
+                border: "1px solid #ddd",
+                width: isMobile ? "100%" : 260,
+                maxWidth: "100%",
+              }}
+              disabled={loading || months.length === 0}
+            >
+              {months.length === 0 ? (
+                <option value="">{data?.month_date || "—"}</option>
+              ) : (
+                months.map((m) => (
+                  <option key={m} value={m}>
+                    {formatMonthLabel(m)}
+                  </option>
+                ))
+              )}
+            </select>
+          </div>
 
-          <span style={{ color: "#666" }}>
-            <b>{monthLabel}</b>
-          </span>
+          <div style={{ color: "#666" }}>
+            <b style={{ textTransform: "capitalize" }}>{monthLabel}</b>
+          </div>
         </div>
 
-        <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap", width: isMobile ? "100%" : "auto" }}>
-          <button
-            onClick={() => load(selectedMonth)}
-            disabled={loading}
-            style={{
-              padding: 10,
-              borderRadius: 10,
-              border: "1px solid #111",
-              fontWeight: 900,
-              flex: isMobile ? "1 1 160px" : "0 0 auto",
-            }}
-          >
-            {loading ? "Actualizando..." : "Actualizar"}
-          </button>
+        {/* Acciones (responsive) */}
+        <div style={{ width: "100%" }}>
+          <ResponsiveActions>
+            <button
+              onClick={() => load(selectedMonth)}
+              disabled={loading}
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                border: "1px solid #111",
+                fontWeight: 900,
+                cursor: loading ? "not-allowed" : "pointer",
+              }}
+            >
+              {loading ? "Actualizando..." : "Actualizar"}
+            </button>
 
-          <button
-            onClick={logout}
-            style={{
-              padding: 10,
-              borderRadius: 10,
-              border: "1px solid #111",
-              background: "#111",
-              color: "#fff",
-              fontWeight: 900,
-              flex: isMobile ? "1 1 160px" : "0 0 auto",
-            }}
-          >
-            Cerrar sesión
-          </button>
+            <button
+              onClick={logout}
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                border: "1px solid #111",
+                background: "#111",
+                color: "#fff",
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
+            >
+              Cerrar sesión
+            </button>
+          </ResponsiveActions>
         </div>
       </div>
 
-      {err ? <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div> : null}
+      {err ? (
+        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
+      ) : null}
 
       {isCentral && teams.length > 0 ? (
         <div style={{ border: "2px solid #111", borderRadius: 18, padding: 14, background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)" }}>
@@ -600,7 +624,6 @@ export default function PanelPage() {
               <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 10 }}>
                 <button
                   onClick={bigActionFn}
-                  disabled={pState === "offline" ? false : !isLogged}
                   style={{
                     padding: "12px 14px",
                     borderRadius: 14,
@@ -615,19 +638,57 @@ export default function PanelPage() {
                   {bigActionLabel}
                 </button>
 
-                <button onClick={() => presenceSet("pause")} disabled={!isLogged} style={{ padding: "12px 14px", borderRadius: 14, border: "1px solid #ddd", fontWeight: 1000, opacity: !isLogged ? 0.5 : 1 }}>
+                <button
+                  onClick={() => presenceSet("pause")}
+                  disabled={!isLogged}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: 14,
+                    border: "1px solid #ddd",
+                    fontWeight: 1000,
+                    opacity: !isLogged ? 0.5 : 1,
+                  }}
+                >
                   Pausa
                 </button>
 
-                <button onClick={() => presenceSet("bathroom")} disabled={!isLogged} style={{ padding: "12px 14px", borderRadius: 14, border: "1px solid #ddd", fontWeight: 1000, opacity: !isLogged ? 0.5 : 1 }}>
+                <button
+                  onClick={() => presenceSet("bathroom")}
+                  disabled={!isLogged}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: 14,
+                    border: "1px solid #ddd",
+                    fontWeight: 1000,
+                    opacity: !isLogged ? 0.5 : 1,
+                  }}
+                >
                   Baño
                 </button>
 
-                <button onClick={() => presenceSet("online")} disabled={!isLogged} style={{ padding: "12px 14px", borderRadius: 14, border: "1px solid #ddd", fontWeight: 1000, opacity: !isLogged ? 0.5 : 1 }}>
+                <button
+                  onClick={() => presenceSet("online")}
+                  disabled={!isLogged}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: 14,
+                    border: "1px solid #ddd",
+                    fontWeight: 1000,
+                    opacity: !isLogged ? 0.5 : 1,
+                  }}
+                >
                   Volver (Online)
                 </button>
 
-                <button onClick={loadPresence} style={{ padding: "12px 14px", borderRadius: 14, border: "1px solid #ddd", fontWeight: 1000 }}>
+                <button
+                  onClick={loadPresence}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: 14,
+                    border: "1px solid #ddd",
+                    fontWeight: 1000,
+                  }}
+                >
                   Refrescar
                 </button>
               </div>
@@ -677,8 +738,18 @@ export default function PanelPage() {
       <Card>
         <CardTitle>Rankings (tabla completa)</CardTitle>
 
-        <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <select value={rankType} onChange={(e) => setRankType(e.target.value as RankKey)} style={{ padding: 8, width: isMobile ? "100%" : "auto" }}>
+        <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+          <select
+            value={rankType}
+            onChange={(e) => setRankType(e.target.value as RankKey)}
+            style={{
+              padding: 10,
+              borderRadius: 10,
+              border: "1px solid #ddd",
+              width: "100%",
+              maxWidth: 520,
+            }}
+          >
             {isTarot ? (
               <>
                 <option value="eur_total">Ranking por € Total</option>
