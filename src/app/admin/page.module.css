@@ -1,132 +1,129 @@
-.page {
-  --background: #fafafa;
-  --foreground: #fff;
+"use client";
 
-  --text-primary: #000;
-  --text-secondary: #666;
+import { useEffect, useState } from "react";
+import { useRouter, usePathname } from "next/navigation";
+import { supabase } from "@/lib/supabaseClient";
 
-  --button-primary-hover: #383838;
-  --button-secondary-hover: #f2f2f2;
-  --button-secondary-border: #ebebeb;
+export default function AdminLayout({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
 
-  min-height: 100vh;
-  width: 100%;
-  background-color: var(--background);
+  const [name, setName] = useState("");
+  const [loading, setLoading] = useState(true);
 
-  /* móvil: no centrar como landing */
-  display: block;
-  padding: 14px;
-}
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) {
+        router.replace("/login");
+        return;
+      }
 
-/* Caja blanca */
-.main {
-  width: 100%;
-  max-width: 1100px;
-  margin: 0 auto;
+      const res = await fetch("/api/me", { headers: { Authorization: `Bearer ${token}` } });
+      const j = await res.json().catch(() => null);
 
-  background-color: var(--foreground);
-  border: 1px solid #e5e7eb;
-  border-radius: 14px;
+      if (!j?.ok || !j?.worker) {
+        router.replace("/login");
+        return;
+      }
 
-  padding: 16px;
-}
+      if (j.worker.role !== "admin") {
+        router.replace("/panel");
+        return;
+      }
 
-/* Contenedor interior */
-.safe {
-  width: 100%;
-  max-width: 100%;
-  overflow-x: hidden;
-}
+      setName(j.worker.display_name || "");
+      setLoading(false);
+    })();
+  }, [router]);
 
-/* ✅ “Global” permitido dentro de CSS Modules (anclado a .page) */
-.page :global(html),
-.page :global(body) {
-  width: 100%;
-  max-width: 100%;
-  overflow-x: hidden;
-}
-
-.page :global(*) {
-  box-sizing: border-box;
-}
-
-/* Inputs / selects / botones: no salirse */
-.safe :global(input),
-.safe :global(select),
-.safe :global(button) {
-  max-width: 100%;
-}
-
-.safe :global(select) {
-  min-width: 0 !important;
-}
-
-/* Tablas: scroll horizontal siempre */
-.tableWrap {
-  width: 100%;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  border: 1px solid #eee;
-  border-radius: 12px;
-}
-
-.tableMin520 {
-  min-width: 520px;
-}
-
-.tableMin900 {
-  min-width: 900px;
-}
-
-@media (max-width: 900px) {
-  .page {
-    padding: 10px;
-  }
-  .main {
-    padding: 14px;
-    border-radius: 12px;
-  }
-}
-
-@media (max-width: 600px) {
-  .page {
-    padding: 8px;
+  async function logout() {
+    await supabase.auth.signOut();
+    router.replace("/login");
   }
 
-  .main {
-    padding: 12px;
-    border-radius: 12px;
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", color: "#666" }}>
+        Cargando…
+      </div>
+    );
   }
 
-  /* Botones en móvil: full width */
-  .safe :global(button) {
-    width: 100%;
-  }
+  const isActive = (href: string) => {
+    if (href === "/admin") return pathname === "/admin";
+    return pathname === href || pathname.startsWith(href + "/");
+  };
 
-  .safe :global(h1) {
-    font-size: 20px;
-    line-height: 1.2;
-  }
-}
+  const linkStyle = (href: string) => {
+    const active = isActive(href);
+    return {
+      padding: "10px 12px",
+      borderRadius: 10,
+      border: "1px solid #ddd",
+      textDecoration: "none",
+      fontWeight: 900,
+      background: active ? "#111" : "#fff",
+      color: active ? "#fff" : "#111",
+    } as React.CSSProperties;
+  };
 
-@media (prefers-color-scheme: dark) {
-  .page {
-    --background: #000;
-    --foreground: #0b0b0b;
+  return (
+    <div>
+      {/* Header */}
+      <div style={{ position: "sticky", top: 0, zIndex: 10, background: "#fff", borderBottom: "1px solid #eee" }}>
+        <div style={{ maxWidth: 1100, margin: "0 auto", padding: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ fontWeight: 1000, letterSpacing: 0.2 }}>Tarot Celestial · Admin</div>
 
-    --text-primary: #ededed;
-    --text-secondary: #999;
+          <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ color: "#666" }}>
+              Admin: <b style={{ color: "#111" }}>{name}</b>
+            </span>
 
-    --button-primary-hover: #ccc;
-    --button-secondary-hover: #1a1a1a;
-    --button-secondary-border: #1a1a1a;
-  }
+            <a href="/panel" style={{ ...linkStyle("/panel"), fontWeight: 900 }}>
+              Ir al Panel →
+            </a>
 
-  .main {
-    border-color: #1f1f1f;
-  }
+            <button
+              onClick={logout}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid #111",
+                background: "#111",
+                color: "#fff",
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
+            >
+              Cerrar sesión
+            </button>
+          </div>
+        </div>
 
-  .tableWrap {
-    border-color: #222;
-  }
+        {/* Menu */}
+        <div style={{ maxWidth: 1100, margin: "0 auto", padding: "0 14px 14px", display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <a href="/admin" style={linkStyle("/admin")}>
+            Dashboard
+          </a>
+          <a href="/admin/live" style={linkStyle("/admin/live")}>
+            Presencia
+          </a>
+          <a href="/admin/incidents" style={linkStyle("/admin/incidents")}>
+            Incidencias
+          </a>
+          <a href="/admin/workers" style={linkStyle("/admin/workers")}>
+            Trabajadores
+          </a>
+          <a href="/admin/mappings" style={linkStyle("/admin/mappings")}>
+            Mappings
+          </a>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: 14 }}>{children}</div>
+    </div>
+  );
 }
