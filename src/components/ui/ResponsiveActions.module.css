@@ -1,0 +1,20 @@
+/* src/components/ui/ResponsiveActions.module.css */
+
+.wrap {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.wrap :global(button),
+.wrap :global(a) {
+  width: 100%;
+  max-width: 100%;
+}
+
+@media (max-width: 640px) {
+  .wrap {
+    grid-template-columns: 1fr;
+  }
+}
