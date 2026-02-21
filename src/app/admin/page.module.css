@@ -14,7 +14,6 @@
   margin: 0 auto;
 }
 
-/* Evita que cualquier cosa “reviente” el ancho en móvil */
 .safe {
   min-width: 0;
 }
@@ -35,7 +34,7 @@
   }
 }
 
-/* Helpers para tablas/scroll horizontal limpio en móvil */
+/* wrappers para tablas */
 .tableWrap {
   width: 100%;
   overflow-x: auto;
