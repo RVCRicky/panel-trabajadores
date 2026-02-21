@@ -1,4 +1,5 @@
-import type { Metadata } from "next";
+// src/app/layout.tsx
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Image from "next/image";
 import "./globals.css";
@@ -13,16 +14,17 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+};
+
 export const metadata: Metadata = {
   title: "Panel Interno - Tarot Celestial",
   description: "Sistema interno de gestión de trabajadores",
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   const currentMonth = new Date().toLocaleDateString("es-ES", {
     month: "long",
     year: "numeric",
@@ -74,9 +76,7 @@ export default function RootLayout({
               </div>
 
               <div style={{ lineHeight: 1.2 }}>
-                <div style={{ fontWeight: 800, fontSize: 15 }}>
-                  Tarot Celestial
-                </div>
+                <div style={{ fontWeight: 800, fontSize: 15 }}>Tarot Celestial</div>
                 <div style={{ fontSize: 12, color: "#6b7280" }}>
                   Panel Interno · Fichaje · Objetivos · Facturación
                 </div>
