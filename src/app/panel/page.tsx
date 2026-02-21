@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
-import { ResponsiveActions } from "@/components/ui/ResponsiveActions";
 
 function useIsMobile(bp = 720) {
   const [isMobile, setIsMobile] = useState(false);
@@ -33,7 +32,6 @@ function medal(pos: number) {
 }
 
 type RankKey = "minutes" | "repite_pct" | "cliente_pct" | "captadas" | "eur_total" | "eur_bonus";
-
 type TeamMember = { worker_id: string; name: string };
 
 type TeamRow = {
@@ -131,7 +129,7 @@ function formatHMS(sec: number) {
 }
 
 function formatMonthLabel(isoMonthDate: string) {
-  const [y, m] = isoMonthDate.split("-");
+  const [y, m] = String(isoMonthDate || "").split("-");
   const monthNum = Number(m);
   const yearNum = Number(y);
   if (!monthNum || !yearNum) return isoMonthDate;
@@ -367,7 +365,11 @@ export default function PanelPage() {
   const captadasTotal = data?.myEarnings?.captadas ?? null;
 
   const months = data?.months || [];
-  const monthLabel = selectedMonth ? formatMonthLabel(selectedMonth) : data?.month_date ? formatMonthLabel(data.month_date) : "—";
+  const monthLabel = selectedMonth
+    ? formatMonthLabel(selectedMonth)
+    : data?.month_date
+    ? formatMonthLabel(data.month_date)
+    : "—";
 
   const teams = data?.teamsRanking || [];
   const team1 = teams[0] || null;
@@ -395,93 +397,75 @@ export default function PanelPage() {
   const bigActionLabel = pState === "offline" ? "Entrar a trabajar" : "Salir del turno";
   const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
 
+  // ===== estilos básicos reutilizables (sin CSS module para que copies fácil) =====
+  const btnBase: React.CSSProperties = {
+    padding: 12,
+    borderRadius: 12,
+    border: "1px solid #111",
+    fontWeight: 900,
+    cursor: "pointer",
+    width: isMobile ? "100%" : "auto",
+  };
+
+  const btnPrimary: React.CSSProperties = {
+    ...btnBase,
+    background: "#111",
+    color: "#fff",
+  };
+
+  const btnGhost: React.CSSProperties = {
+    ...btnBase,
+    background: "#fff",
+    color: "#111",
+    border: "1px solid #ddd",
+  };
+
   return (
-    <div style={{ display: "grid", gap: 14, width: "100%" }}>
-      {/* ===== Header responsive (NO SE CORTA EN MÓVIL) ===== */}
-      <div
-        style={{
-          display: "grid",
-          gap: 12,
-          gridTemplateColumns: isMobile ? "1fr" : "auto 1fr auto",
-          alignItems: "center",
-          width: "100%",
-        }}
-      >
-        <h1 style={{ margin: 0, lineHeight: 1.1 }}>Panel</h1>
-
-        {/* Mes */}
-        <div
-          style={{
-            display: "grid",
-            gap: 8,
-            width: "100%",
-            justifyItems: "start",
-          }}
-        >
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", width: "100%" }}>
-            <span style={{ color: "#666", fontWeight: 800 }}>Mes:</span>
-
-            <select
-              value={selectedMonth || data?.month_date || ""}
-              onChange={(e) => setSelectedMonth(e.target.value || null)}
-              style={{
-                padding: 10,
-                borderRadius: 10,
-                border: "1px solid #ddd",
-                width: isMobile ? "100%" : 260,
-                maxWidth: "100%",
-              }}
-              disabled={loading || months.length === 0}
-            >
-              {months.length === 0 ? (
-                <option value="">{data?.month_date || "—"}</option>
-              ) : (
-                months.map((m) => (
-                  <option key={m} value={m}>
-                    {formatMonthLabel(m)}
-                  </option>
-                ))
-              )}
-            </select>
-          </div>
-
-          <div style={{ color: "#666" }}>
-            <b style={{ textTransform: "capitalize" }}>{monthLabel}</b>
-          </div>
+    <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: "100%" }}>
+      {/* ===== Header limpio (móvil: todo en columna) ===== */}
+      <div style={{ display: "grid", gap: 10, width: "100%" }}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <h1 style={{ margin: 0, lineHeight: 1.1 }}>Panel</h1>
+          {/* En móvil lo dejamos pequeño para no duplicar demasiado */}
+          <div style={{ color: "#6b7280", textTransform: "capitalize", fontWeight: 900 }}>{monthLabel}</div>
         </div>
 
-        {/* Acciones (responsive) */}
-        <div style={{ width: "100%" }}>
-          <ResponsiveActions>
-            <button
-              onClick={() => load(selectedMonth)}
-              disabled={loading}
-              style={{
-                padding: 12,
-                borderRadius: 12,
-                border: "1px solid #111",
-                fontWeight: 900,
-                cursor: loading ? "not-allowed" : "pointer",
-              }}
-            >
-              {loading ? "Actualizando..." : "Actualizar"}
-            </button>
+        {/* Mes */}
+        <div style={{ display: "grid", gap: 8, width: "100%" }}>
+          <div style={{ color: "#666", fontWeight: 900 }}>Mes:</div>
+          <select
+            value={selectedMonth || data?.month_date || ""}
+            onChange={(e) => setSelectedMonth(e.target.value || null)}
+            style={{
+              padding: 12,
+              borderRadius: 12,
+              border: "1px solid #ddd",
+              width: "100%",
+              maxWidth: "100%",
+            }}
+            disabled={loading || months.length === 0}
+          >
+            {months.length === 0 ? (
+              <option value="">{data?.month_date || "—"}</option>
+            ) : (
+              months.map((m) => (
+                <option key={m} value={m}>
+                  {formatMonthLabel(m)}
+                </option>
+              ))
+            )}
+          </select>
+        </div>
 
-            <button
-              onClick={logout}
-              style={{
-                padding: 12,
-                borderRadius: 12,
-                border: "1px solid #111",
-                background: "#111",
-                color: "#fff",
-                fontWeight: 900,
-                cursor: "pointer",
-              }}
-            >
-              Cerrar sesión
-            </button>
-          </ResponsiveActions>
+        {/* Acciones (móvil: 2 botones apilados) */}
+        <div style={{ display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
+          <button onClick={() => load(selectedMonth)} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}>
+            {loading ? "Actualizando..." : "Actualizar"}
+          </button>
+
+          <button onClick={logout} style={btnPrimary}>
+            Cerrar sesión
+          </button>
         </div>
       </div>
 
@@ -489,10 +473,11 @@ export default function PanelPage() {
         <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
       ) : null}
 
+      {/* ===== Equipos (si central) ===== */}
       {isCentral && teams.length > 0 ? (
         <div style={{ border: "2px solid #111", borderRadius: 18, padding: 14, background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 1100, fontSize: 20 }}>🏆 Ranking por equipos (GLOBAL)</div>
+            <div style={{ fontWeight: 1100, fontSize: 18 }}>🏆 Ranking por equipos (GLOBAL)</div>
             <div style={{ color: "#666", fontWeight: 900 }}>
               Criterio: <b>%Clientes + %Repite</b>
               {bonusTeamWinner ? (
@@ -554,6 +539,7 @@ export default function PanelPage() {
         </div>
       ) : null}
 
+      {/* ===== KPIs ===== */}
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
         <Card>
           <CardTitle>Estado</CardTitle>
@@ -574,7 +560,8 @@ export default function PanelPage() {
             <CardTitle>Total € este mes</CardTitle>
             <CardValue>{totalEur === null ? "—" : eur(totalEur)}</CardValue>
             <CardHint>
-              Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas: <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
+              Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas:{" "}
+              <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
             </CardHint>
           </Card>
         ) : isCentral ? (
@@ -592,6 +579,7 @@ export default function PanelPage() {
         </Card>
       </div>
 
+      {/* ===== Control horario ===== */}
       {me?.role === "tarotista" || me?.role === "central" ? (
         <div style={{ border: "2px solid #111", borderRadius: 18, padding: 14, background: "linear-gradient(180deg, #ffffff 0%, #fbfbfb 100%)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -621,33 +609,30 @@ export default function PanelPage() {
 
             <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 12, background: "#fff" }}>
               <div style={{ fontWeight: 1100 }}>Acciones</div>
-              <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 10 }}>
+
+              <div
+                style={{
+                  marginTop: 10,
+                  display: "grid",
+                  gap: 10,
+                  gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
+                }}
+              >
                 <button
                   onClick={bigActionFn}
-                  style={{
-                    padding: "12px 14px",
-                    borderRadius: 14,
-                    border: "1px solid #111",
-                    background: pState === "offline" ? "#111" : "#fff",
-                    color: pState === "offline" ? "#fff" : "#111",
-                    fontWeight: 1100,
-                    width: isMobile ? "100%" : "auto",
-                    minWidth: isMobile ? undefined : 220,
-                  }}
+                  style={pState === "offline" ? btnPrimary : btnGhost}
                 >
                   {bigActionLabel}
+                </button>
+
+                <button onClick={loadPresence} style={btnGhost}>
+                  Refrescar
                 </button>
 
                 <button
                   onClick={() => presenceSet("pause")}
                   disabled={!isLogged}
-                  style={{
-                    padding: "12px 14px",
-                    borderRadius: 14,
-                    border: "1px solid #ddd",
-                    fontWeight: 1000,
-                    opacity: !isLogged ? 0.5 : 1,
-                  }}
+                  style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
                 >
                   Pausa
                 </button>
@@ -655,13 +640,7 @@ export default function PanelPage() {
                 <button
                   onClick={() => presenceSet("bathroom")}
                   disabled={!isLogged}
-                  style={{
-                    padding: "12px 14px",
-                    borderRadius: 14,
-                    border: "1px solid #ddd",
-                    fontWeight: 1000,
-                    opacity: !isLogged ? 0.5 : 1,
-                  }}
+                  style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
                 >
                   Baño
                 </button>
@@ -669,27 +648,9 @@ export default function PanelPage() {
                 <button
                   onClick={() => presenceSet("online")}
                   disabled={!isLogged}
-                  style={{
-                    padding: "12px 14px",
-                    borderRadius: 14,
-                    border: "1px solid #ddd",
-                    fontWeight: 1000,
-                    opacity: !isLogged ? 0.5 : 1,
-                  }}
+                  style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
                 >
                   Volver (Online)
-                </button>
-
-                <button
-                  onClick={loadPresence}
-                  style={{
-                    padding: "12px 14px",
-                    borderRadius: 14,
-                    border: "1px solid #ddd",
-                    fontWeight: 1000,
-                  }}
-                >
-                  Refrescar
                 </button>
               </div>
             </div>
@@ -697,6 +658,7 @@ export default function PanelPage() {
         </div>
       ) : null}
 
+      {/* ===== Top 3 ===== */}
       <Card>
         <CardTitle>Top 3 del mes</CardTitle>
 
@@ -718,7 +680,9 @@ export default function PanelPage() {
                         {medal(idx + 1)} {idx + 1}
                       </td>
                       <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                      <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{valueOf(k, r)}</td>
+                      <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>
+                        {valueOf(k, r)}
+                      </td>
                     </tr>
                   ))}
                   {top3For(k).length === 0 ? (
@@ -735,6 +699,7 @@ export default function PanelPage() {
         </div>
       </Card>
 
+      {/* ===== Ranking completo ===== */}
       <Card>
         <CardTitle>Rankings (tabla completa)</CardTitle>
 
@@ -743,8 +708,8 @@ export default function PanelPage() {
             value={rankType}
             onChange={(e) => setRankType(e.target.value as RankKey)}
             style={{
-              padding: 10,
-              borderRadius: 10,
+              padding: 12,
+              borderRadius: 12,
               border: "1px solid #ddd",
               width: "100%",
               maxWidth: 520,
@@ -777,8 +742,8 @@ export default function PanelPage() {
           </div>
         </div>
 
-        <div style={{ overflowX: "auto", marginTop: 10, WebkitOverflowScrolling: "touch" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: isMobile ? 520 : 780 }}>
+        <div style={{ overflowX: "auto", marginTop: 10, WebkitOverflowScrolling: "touch", width: "100%" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
             <thead>
               <tr>
                 <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
