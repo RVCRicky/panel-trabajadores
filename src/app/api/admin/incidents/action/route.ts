@@ -1,4 +1,3 @@
-// src/app/api/admin/incidents/action/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -21,6 +20,18 @@ function normRole(r: any) {
 }
 
 type Body = { id: string; action: "justified" | "unjustified" | "dismiss" };
+
+// ✅ Penalización mínima por defecto (por ahora)
+// Luego lo hacemos pro con leves/moderadas/graves automático.
+function defaultPenaltyFor(inc: any) {
+  const kind = String(inc?.kind || inc?.incident_type || "").toLowerCase();
+
+  // ejemplo: ausencia injustificada suele ser más grave, pero de momento:
+  if (kind === "absence") return 3;
+
+  // retraso / llamada / etc
+  return 0.5;
+}
 
 export async function POST(req: Request) {
   try {
@@ -55,53 +66,63 @@ export async function POST(req: Request) {
     // cargar incidencia
     const { data: inc, error: eInc } = await db
       .from("shift_incidents")
-      .select("id, worker_id, month_date, status")
+      .select("id, worker_id, month_date, status, kind, incident_type, penalty_eur")
       .eq("id", body.id)
       .maybeSingle();
 
     if (eInc) return NextResponse.json({ ok: false, error: eInc.message }, { status: 500 });
     if (!inc) return NextResponse.json({ ok: false, error: "NOT_FOUND" }, { status: 404 });
 
-    // ✅ CHECK en BD solo permite: pending | justified | unjustified
-    let newStatus: "pending" | "justified" | "unjustified" = (String(inc.status || "pending") as any);
+    // ✅ status que coincide con tu CHECK: pending/justified/unjustified
+    let newStatus: "pending" | "justified" | "unjustified" = (String(inc.status || "pending") as any) || "pending";
 
-    // dismiss = quitar sin penalizar (lo marcamos justified)
-    if (body.action === "dismiss") newStatus = "justified";
+    if (body.action === "dismiss") newStatus = "justified"; // "quitar" = no penaliza y no molesta
     if (body.action === "justified") newStatus = "justified";
     if (body.action === "unjustified") newStatus = "unjustified";
 
     const note =
       body.action === "dismiss"
-        ? "Quitada (sin penalizar) desde /admin/incidents"
+        ? "Quitada desde /admin/incidents"
         : body.action === "justified"
-        ? "Marcada como justificada desde /admin/incidents"
-        : "Marcada como NO justificada desde /admin/incidents";
+        ? "Marcada como JUSTIFICADA desde /admin/incidents"
+        : "Marcada como NO JUSTIFICADA desde /admin/incidents";
 
-    const { error: eUp } = await db
-      .from("shift_incidents")
-      .update({
-        status: newStatus,
-        notes: note,
-        updated_at: new Date().toISOString(),
-      } as any)
-      .eq("id", body.id);
+    // ✅ si es unjustified, guarda penalty_eur (si no existe o es 0)
+    const currentPenalty = Number((inc as any).penalty_eur) || 0;
+    const penaltyToSet =
+      body.action === "unjustified"
+        ? (currentPenalty > 0 ? currentPenalty : defaultPenaltyFor(inc))
+        : 0;
 
+    const patch: any = {
+      status: newStatus,
+      notes: note,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (body.action === "unjustified") {
+      patch.penalty_eur = penaltyToSet;
+    } else if (body.action === "justified" || body.action === "dismiss") {
+      patch.penalty_eur = 0;
+    }
+
+    const { error: eUp } = await db.from("shift_incidents").update(patch).eq("id", body.id);
     if (eUp) return NextResponse.json({ ok: false, error: eUp.message }, { status: 500 });
 
-    // 🔁 best-effort recalc invoice (si existe)
+    // best effort: recalcular factura si existe
     try {
       const wid = String((inc as any).worker_id || "");
       const m = (inc as any).month_date;
 
       if (wid && m) {
-        const { data: inv, error: eInv } = await db
+        const { data: inv } = await db
           .from("worker_invoices")
           .select("id")
           .eq("worker_id", wid)
           .eq("month_date", m)
           .maybeSingle();
 
-        if (!eInv && inv?.id) {
+        if (inv?.id) {
           try {
             await db.rpc("recalc_invoice", { p_invoice_id: inv.id });
           } catch {
