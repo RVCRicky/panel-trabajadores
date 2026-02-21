@@ -44,11 +44,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
   }
 
   if (loading) {
-    return (
-      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", color: "#666" }}>
-        Cargando…
-      </div>
-    );
+    return <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", color: "#666" }}>Cargando…</div>;
   }
 
   const isActive = (href: string) => {
@@ -66,7 +62,8 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
       fontWeight: 900,
       background: active ? "#111" : "#fff",
       color: active ? "#fff" : "#111",
-      maxWidth: "100%",
+      whiteSpace: "nowrap",
+      flex: "0 0 auto",
     } as React.CSSProperties;
   };
 
@@ -92,7 +89,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
               Admin: <b style={{ color: "#111" }}>{name}</b>
             </span>
 
-            <a href="/panel" style={{ ...linkStyle("/panel"), fontWeight: 900 }}>
+            <a href="/panel" style={linkStyle("/panel")}>
               Ir al Panel →
             </a>
 
@@ -106,6 +103,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
                 color: "#fff",
                 fontWeight: 900,
                 cursor: "pointer",
+                whiteSpace: "nowrap",
               }}
             >
               Cerrar sesión
@@ -113,7 +111,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
           </div>
         </div>
 
-        {/* Menu */}
+        {/* Menu (scroll horizontal en móvil) */}
         <div
           style={{
             maxWidth: 1100,
@@ -121,7 +119,8 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
             padding: "0 14px 14px",
             display: "flex",
             gap: 10,
-            flexWrap: "wrap",
+            overflowX: "auto",
+            WebkitOverflowScrolling: "touch",
           }}
         >
           <a href="/admin" style={linkStyle("/admin")}>
@@ -143,7 +142,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
       </div>
 
       {/* Content */}
-      <div style={{ width: "100%", margin: "0 auto", padding: 14, maxWidth: 1100 }}>
+      <div style={{ width: "100%", maxWidth: 1100, margin: "0 auto", padding: 14 }}>
         {children}
       </div>
     </div>
