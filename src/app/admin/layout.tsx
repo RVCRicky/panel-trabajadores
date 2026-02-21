@@ -1,13 +1,11 @@
-"use client";
-
-import { useEffect, useState } from "react";
-import { useRouter, usePathname } from "next/navigation";
-import { supabase } from "@/lib/supabaseClient";
-
 export const viewport = {
   width: "device-width",
   initialScale: 1,
 };
+
+import { useEffect, useState } from "react";
+import { useRouter, usePathname } from "next/navigation";
+import { supabase } from "@/lib/supabaseClient";
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
