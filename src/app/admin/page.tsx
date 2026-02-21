@@ -284,7 +284,7 @@ export default function AdminPage() {
     return Math.round(((presence.online || 0) / presence.total) * 100);
   }, [presence]);
 
-  // ✅ FINANZAS: ingresos vs gastos
+  // ✅ FINANZAS
   const revenue = overview?.finance?.revenue_eur ?? null;
   const expensesTotal = overview?.finance?.expenses_total_eur ?? null;
   const margin = overview?.finance?.margin_eur ?? null;
@@ -328,7 +328,7 @@ export default function AdminPage() {
               <select
                 value={selectedMonth || overview?.month_date || ""}
                 onChange={(e) => setSelectedMonth(e.target.value || null)}
-                style={{ padding: 8, borderRadius: 10, border: "1px solid #ddd", minWidth: 220 }}
+                style={{ padding: 8, borderRadius: 10, border: "1px solid #ddd", minWidth: 220, maxWidth: "100%" }}
                 disabled={loading || months.length === 0 || status !== "OK"}
               >
                 {months.length === 0 ? (
@@ -390,7 +390,7 @@ export default function AdminPage() {
             <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
           ) : null}
 
-          {/* ===== CENTRO DE CONTROL (REAL con €) ===== */}
+          {/* ===== CENTRO DE CONTROL ===== */}
           <div style={{ display: "grid", gap: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
               <div>
@@ -455,7 +455,7 @@ export default function AdminPage() {
             {/* Top 3 gasto tarotistas + Alertas */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 }}>
               <Card>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                   <div>
                     <CardTitle>Top 3 gasto tarotistas (€)</CardTitle>
                     <CardHint>Gasto (no facturación)</CardHint>
@@ -486,8 +486,8 @@ export default function AdminPage() {
                             gap: 10,
                           }}
                         >
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                            <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0 }}>
                               <div
                                 style={{
                                   width: 28,
@@ -499,13 +499,16 @@ export default function AdminPage() {
                                   fontWeight: 900,
                                   border: "1px solid #e5e7eb",
                                   background: badgeBg,
+                                  flex: "0 0 auto",
                                 }}
                               >
                                 {idx + 1}
                               </div>
 
-                              <div>
-                                <div style={{ fontWeight: 900, fontSize: 16 }}>{r.name}</div>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontWeight: 900, fontSize: 16, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {r.name}
+                                </div>
                                 <div style={{ fontSize: 12, color: "#6b7280" }}>Tarotista</div>
                               </div>
                             </div>
@@ -536,7 +539,7 @@ export default function AdminPage() {
               </Card>
 
               <Card>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                   <div>
                     <CardTitle>Alertas</CardTitle>
                     <CardHint>Lo que necesita acción hoy</CardHint>
@@ -562,9 +565,10 @@ export default function AdminPage() {
                           gap: 10,
                           alignItems: "center",
                           justifyContent: "space-between",
+                          flexWrap: "wrap",
                         }}
                       >
-                        <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", minWidth: 0, flex: "1 1 auto" }}>
                           <span
                             style={{
                               width: 10,
@@ -573,9 +577,10 @@ export default function AdminPage() {
                               borderRadius: 999,
                               background: a.tone === "warn" ? "#f59e0b" : a.tone === "ok" ? "#10b981" : "#9ca3af",
                               display: "inline-block",
+                              flex: "0 0 auto",
                             }}
                           />
-                          <div style={{ fontSize: 13, lineHeight: 1.35 }}>{a.text}</div>
+                          <div style={{ fontSize: 13, lineHeight: 1.35, minWidth: 0 }}>{a.text}</div>
                         </div>
 
                         {a.href ? (
@@ -590,6 +595,7 @@ export default function AdminPage() {
                               fontWeight: 900,
                               cursor: "pointer",
                               whiteSpace: "nowrap",
+                              flex: "0 0 auto",
                             }}
                           >
                             Abrir
@@ -673,7 +679,7 @@ export default function AdminPage() {
                 value={csvUrl}
                 onChange={(e) => setCsvUrl(e.target.value)}
                 placeholder="https://docs.google.com/spreadsheets/d/e/.../pub?gid=...&single=true&output=csv"
-                style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc", width: "100%" }}
+                style={{ padding: 10, borderRadius: 10, border: "1px solid #ccc", width: "100%", maxWidth: "100%" }}
               />
 
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
