@@ -114,7 +114,16 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
         </div>
 
         {/* Menu */}
-        <div style={{ maxWidth: 1100, margin: "0 auto", padding: "0 14px 14px", display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div
+          style={{
+            maxWidth: 1100,
+            margin: "0 auto",
+            padding: "0 14px 14px",
+            display: "flex",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
           <a href="/admin" style={linkStyle("/admin")}>
             Dashboard
           </a>
@@ -134,7 +143,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
       </div>
 
       {/* Content */}
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: 14, width: "100%", maxWidth: "100%" }}>
+      <div style={{ width: "100%", margin: "0 auto", padding: 14, maxWidth: 1100 }}>
         {children}
       </div>
     </div>
