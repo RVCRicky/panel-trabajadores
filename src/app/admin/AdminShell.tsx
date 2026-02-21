@@ -1,4 +1,3 @@
-// src/app/admin/AdminShell.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -16,7 +15,6 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
     (async () => {
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token;
-
       if (!token) {
         router.replace("/login");
         return;
@@ -45,6 +43,14 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
     router.replace("/login");
   }
 
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", color: "#666" }}>
+        Cargando…
+      </div>
+    );
+  }
+
   const isActive = (href: string) => {
     if (href === "/admin") return pathname === "/admin";
     return pathname === href || pathname.startsWith(href + "/");
@@ -60,18 +66,9 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
       fontWeight: 900,
       background: active ? "#111" : "#fff",
       color: active ? "#fff" : "#111",
-      whiteSpace: "nowrap",
-      flex: "0 0 auto",
+      maxWidth: "100%",
     } as React.CSSProperties;
   };
-
-  if (loading) {
-    return (
-      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", color: "#666" }}>
-        Cargando…
-      </div>
-    );
-  }
 
   return (
     <div style={{ width: "100%", maxWidth: "100%", overflowX: "hidden" }}>
@@ -90,16 +87,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
         >
           <div style={{ fontWeight: 1000, letterSpacing: 0.2 }}>Tarot Celestial · Admin</div>
 
-          <div
-            style={{
-              marginLeft: "auto",
-              display: "flex",
-              gap: 10,
-              flexWrap: "wrap",
-              alignItems: "center",
-              justifyContent: "flex-end",
-            }}
-          >
+          <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <span style={{ color: "#666" }}>
               Admin: <b style={{ color: "#111" }}>{name}</b>
             </span>
@@ -118,7 +106,6 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
                 color: "#fff",
                 fontWeight: 900,
                 cursor: "pointer",
-                whiteSpace: "nowrap",
               }}
             >
               Cerrar sesión
@@ -126,18 +113,8 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
           </div>
         </div>
 
-        {/* Menu (scroll horizontal en móvil) */}
-        <div
-          style={{
-            maxWidth: 1100,
-            margin: "0 auto",
-            padding: "0 14px 14px",
-            display: "flex",
-            gap: 10,
-            overflowX: "auto",
-            WebkitOverflowScrolling: "touch",
-          }}
-        >
+        {/* Menu */}
+        <div style={{ maxWidth: 1100, margin: "0 auto", padding: "0 14px 14px", display: "flex", gap: 10, flexWrap: "wrap" }}>
           <a href="/admin" style={linkStyle("/admin")}>
             Dashboard
           </a>
@@ -157,7 +134,9 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
       </div>
 
       {/* Content */}
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: 14, width: "100%" }}>{children}</div>
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: 14, width: "100%", maxWidth: "100%" }}>
+        {children}
+      </div>
     </div>
   );
 }
