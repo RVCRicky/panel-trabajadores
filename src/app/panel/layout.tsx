@@ -1,136 +1,102 @@
-"use client";
+// src/app/layout.tsx
+import type { Metadata, Viewport } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import Image from "next/image";
+import "./globals.css";
 
-import { useEffect, useState } from "react";
-import { useRouter, usePathname } from "next/navigation";
-import { supabase } from "@/lib/supabaseClient";
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
 
-type WorkerRole = "admin" | "central" | "tarotista";
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
 
-export default function PanelLayout({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
-  const pathname = usePathname();
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+};
 
-  const [name, setName] = useState("");
-  const [role, setRole] = useState<WorkerRole | null>(null);
-  const [loading, setLoading] = useState(true);
+export const metadata: Metadata = {
+  title: "Panel Interno - Tarot Celestial",
+  description: "Sistema interno de gestión de trabajadores",
+};
 
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-
-      if (!token) {
-        router.replace("/login");
-        return;
-      }
-
-      const res = await fetch("/api/me", { headers: { Authorization: `Bearer ${token}` } });
-      const j = await res.json().catch(() => null);
-
-      if (!j?.ok || !j?.worker) {
-        router.replace("/login");
-        return;
-      }
-
-      if (!j.worker.is_active) {
-        router.replace("/login");
-        return;
-      }
-
-      // ✅ IMPORTANTE: NO redirigimos a admin. Admin puede ver /panel.
-      setName(j.worker.display_name || "");
-      setRole((j.worker.role as WorkerRole) || null);
-      setLoading(false);
-    })();
-  }, [router]);
-
-  async function logout() {
-    await supabase.auth.signOut();
-    router.replace("/login");
-  }
-
-  if (loading) {
-    return <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", color: "#666" }}>Cargando…</div>;
-  }
-
-  const linkStyle = (href: string) => ({
-    padding: "10px 12px",
-    borderRadius: 10,
-    border: "1px solid #ddd",
-    textDecoration: "none",
-    fontWeight: 900 as const,
-    background: pathname === href ? "#111" : "#fff",
-    color: pathname === href ? "#fff" : "#111",
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  const currentMonth = new Date().toLocaleDateString("es-ES", {
+    month: "long",
+    year: "numeric",
   });
 
   return (
-    <div>
-      {/* Header */}
-      <div style={{ position: "sticky", top: 0, zIndex: 10, background: "#fff", borderBottom: "1px solid #eee" }}>
-        <div
+    <html lang="es">
+      <body
+        className={`${geistSans.variable} ${geistMono.variable}`}
+        style={{
+          margin: 0,
+          background: "#f3f4f6",
+          fontFamily: "var(--font-geist-sans)",
+          color: "#111827",
+        }}
+      >
+        <header
           style={{
-            maxWidth: 1100,
-            margin: "0 auto",
-            padding: 14,
-            display: "flex",
-            gap: 10,
-            alignItems: "center",
-            flexWrap: "wrap",
+            width: "100%",
+            background: "#ffffff",
+            borderBottom: "1px solid #e5e7eb",
+            position: "sticky",
+            top: 0,
+            zIndex: 50,
           }}
         >
-          <div style={{ fontWeight: 1000, letterSpacing: 0.2 }}>Tarot Celestial · Panel</div>
+          <div
+            style={{
+              maxWidth: "1200px",
+              margin: "0 auto",
+              padding: "12px 20px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 240 }}>
+              <div style={{ position: "relative", width: 42, height: 42, flex: "0 0 auto" }}>
+                <Image src="/logo.png" alt="Logo Tarot Celestial" fill style={{ objectFit: "contain" }} priority />
+              </div>
 
-          <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <span style={{ color: "#666" }}>
-              {role ? (
-                <>
-                  {role === "admin" ? "Admin" : role === "central" ? "Central" : "Tarotista"}:{" "}
-                  <b style={{ color: "#111" }}>{name}</b>
-                </>
-              ) : (
-                <>
-                  Usuario: <b style={{ color: "#111" }}>{name}</b>
-                </>
-              )}
-            </span>
+              <div style={{ lineHeight: 1.2 }}>
+                <div style={{ fontWeight: 800, fontSize: 15 }}>Tarot Celestial</div>
+                <div style={{ fontSize: 12, color: "#6b7280" }}>Panel Interno · Fichaje · Objetivos · Facturación</div>
+              </div>
+            </div>
 
-            {/* ✅ SOLO si es admin mostramos botón para ir a Admin */}
-            {role === "admin" ? (
-              <a href="/admin" style={{ ...linkStyle("/admin"), fontWeight: 900 }}>
-                Ir a Admin →
-              </a>
-            ) : null}
-
-            <button
-              onClick={logout}
+            <div
               style={{
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid #111",
-                background: "#111",
-                color: "#fff",
-                fontWeight: 900,
-                cursor: "pointer",
+                fontSize: 13,
+                color: "#6b7280",
+                textTransform: "capitalize",
+                marginLeft: "auto",
               }}
             >
-              Cerrar sesión
-            </button>
+              {currentMonth}
+            </div>
           </div>
-        </div>
+        </header>
 
-        {/* Menu Panel */}
-        <div style={{ maxWidth: 1100, margin: "0 auto", padding: "0 14px 14px", display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <a href="/panel" style={linkStyle("/panel")}>
-            Dashboard
-          </a>
-          <a href="/panel/invoices" style={linkStyle("/panel/invoices")}>
-            Facturas
-          </a>
-        </div>
-      </div>
-
-      {/* Content */}
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: 14 }}>{children}</div>
-    </div>
+        <main
+          style={{
+            maxWidth: "1200px",
+            margin: "0 auto",
+            padding: "20px 12px 28px",
+          }}
+        >
+          {children}
+        </main>
+      </body>
+    </html>
   );
 }
