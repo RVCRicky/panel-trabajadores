@@ -96,6 +96,14 @@ type DashboardResp = {
     created_at?: string;
     is_active?: boolean;
   }>;
+
+  // ✅ NUEVO (opcional). Si el backend lo trae, lo mostramos.
+  // Si no existe, no rompe nada.
+  myIncidentsMonth?: {
+    count: number;
+    penalty_eur: number;
+    grave: boolean;
+  };
 };
 
 type PresenceState = "offline" | "online" | "pause" | "bathroom";
@@ -199,7 +207,6 @@ export default function PanelPage() {
       const month = monthOverride ?? selectedMonth ?? null;
       const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
 
-      // ✅ CAMBIO: no cache para que siempre traiga datos nuevos
       const res = await fetch(`/api/dashboard/full${qs}`, {
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
@@ -403,7 +410,6 @@ export default function PanelPage() {
   const bigActionLabel = pState === "offline" ? "Entrar a trabajar" : "Salir del turno";
   const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
 
-  // ===== estilos básicos reutilizables (sin CSS module para que copies fácil) =====
   const btnBase: React.CSSProperties = {
     padding: 12,
     borderRadius: 12,
@@ -426,13 +432,17 @@ export default function PanelPage() {
     border: "1px solid #ddd",
   };
 
+  // ✅ Resumen incidencias del mes (si backend lo trae)
+  const incCount = data?.myIncidentsMonth?.count ?? null;
+  const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
+  const incGrave = !!data?.myIncidentsMonth?.grave;
+
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: "100%" }}>
-      {/* ===== Header limpio (móvil: todo en columna) ===== */}
+      {/* ===== Header ===== */}
       <div style={{ display: "grid", gap: 10, width: "100%" }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
           <h1 style={{ margin: 0, lineHeight: 1.1 }}>Panel</h1>
-          {/* En móvil lo dejamos pequeño para no duplicar demasiado */}
           <div style={{ color: "#6b7280", textTransform: "capitalize", fontWeight: 900 }}>{monthLabel}</div>
         </div>
 
@@ -463,7 +473,7 @@ export default function PanelPage() {
           </select>
         </div>
 
-        {/* Acciones (móvil: 2 botones apilados) */}
+        {/* Acciones */}
         <div style={{ display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
           <button onClick={() => load(selectedMonth)} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}>
             {loading ? "Actualizando..." : "Actualizar"}
@@ -473,6 +483,29 @@ export default function PanelPage() {
             Cerrar sesión
           </button>
         </div>
+
+        {/* ✅ Botón incidencias (tarotista/central) */}
+        {(isTarot || isCentral) ? (
+          <a
+            href="/panel/incidents"
+            style={{
+              padding: 12,
+              borderRadius: 12,
+              border: "1px solid #111",
+              background: "#111",
+              color: "#fff",
+              fontWeight: 900,
+              textDecoration: "none",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              width: "100%",
+            }}
+          >
+            ⚠️ Mis incidencias
+          </a>
+        ) : null}
       </div>
 
       {err ? (
@@ -583,6 +616,25 @@ export default function PanelPage() {
           <CardValue>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</CardValue>
           <CardHint>{isCentral ? "Según ranking global de equipos." : "Según el ranking seleccionado abajo."}</CardHint>
         </Card>
+
+        {/* ✅ NUEVO: resumen incidencias (si existe) */}
+        {(isTarot || isCentral) ? (
+          <Card>
+            <CardTitle>Incidencias del mes</CardTitle>
+            <CardValue>
+              {incCount == null ? "—" : `${fmt(incCount)} incidencias`}
+            </CardValue>
+            <CardHint>
+              Penalización: <b>{incPenalty == null ? "—" : eur(incPenalty)}</b>
+              {incGrave ? (
+                <>
+                  {" "}
+                  · <b style={{ color: "#b91c1c" }}>GRAVE: sin bonos este mes</b>
+                </>
+              ) : null}
+            </CardHint>
+          </Card>
+        ) : null}
       </div>
 
       {/* ===== Control horario ===== */}
