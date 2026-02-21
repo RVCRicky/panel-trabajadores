@@ -8,33 +8,15 @@ function getEnv(name: string) {
   if (!v) throw new Error(`Missing env var: ${name}`);
   return v;
 }
+
 function bearer(req: Request) {
   const h = req.headers.get("authorization") || "";
   const m = h.match(/^Bearer\s+(.+)$/i);
   return m?.[1] || null;
 }
 
-type AdminCheck =
-  | { ok: true; uid: string }
-  | { ok: false; status: number; error: string };
-
-async function assertAdmin(db: any, token: string): Promise<AdminCheck> {
-  const { data: u, error: eu } = await db.auth.getUser(token);
-  if (eu || !u?.user) return { ok: false, status: 401, error: "BAD_TOKEN" };
-  const uid = u.user.id;
-
-  const { data: me, error: eme } = await db
-    .from("workers")
-    .select("id,role,is_active")
-    .eq("user_id", uid)
-    .maybeSingle();
-
-  if (eme) return { ok: false, status: 500, error: eme.message };
-  if (!me) return { ok: false, status: 403, error: "NO_WORKER" };
-  if (!me.is_active) return { ok: false, status: 403, error: "INACTIVE" };
-  if (me.role !== "admin") return { ok: false, status: 403, error: "NOT_ADMIN" };
-
-  return { ok: true, uid };
+function normRole(r: any) {
+  return String(r || "").trim().toLowerCase();
 }
 
 export async function GET(req: Request) {
@@ -46,38 +28,64 @@ export async function GET(req: Request) {
     const service = getEnv("SUPABASE_SERVICE_ROLE_KEY");
     const db = createClient(url, service, { auth: { persistSession: false } });
 
-    const a = await assertAdmin(db, token);
-    if (!a.ok) return NextResponse.json({ ok: false, error: a.error }, { status: a.status });
+    // auth
+    const { data: u, error: eu } = await db.auth.getUser(token);
+    if (eu || !u?.user) return NextResponse.json({ ok: false, error: "BAD_TOKEN" }, { status: 401 });
 
-    const { data, error } = await db
+    // worker + role
+    const { data: me, error: eme } = await db
+      .from("workers")
+      .select("id, user_id, role, display_name, is_active")
+      .eq("user_id", u.user.id)
+      .maybeSingle();
+
+    if (eme) return NextResponse.json({ ok: false, error: eme.message }, { status: 500 });
+    if (!me) return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
+    if (!(me as any).is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
+
+    const role = normRole((me as any).role);
+    if (role !== "admin") return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
+
+    // ✅ lista pendientes (tabla shift_incidents)
+    // Nota: tu UI espera worker_name, así que hacemos join a workers
+    const { data: rows, error } = await db
       .from("shift_incidents")
-      .select("id,worker_id,incident_date,month_date,kind,incident_type,minutes_late,status,penalty_eur,notes,created_at")
+      .select(
+        `
+        id,
+        incident_date,
+        month_date,
+        kind,
+        incident_type,
+        status,
+        minutes_late,
+        penalty_eur,
+        notes,
+        worker_id,
+        workers:workers ( display_name )
+      `
+      )
       .eq("status", "pending")
-      .order("created_at", { ascending: false })
-      .limit(200);
+      .order("incident_date", { ascending: false })
+      .limit(5000);
 
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
 
-    // traer nombres
-    const workerIds = Array.from(new Set((data || []).map((x: any) => x.worker_id))).filter(Boolean);
-
-    const namesById = new Map<string, any>();
-    if (workerIds.length) {
-      const { data: ws, error: ew } = await db
-        .from("workers")
-        .select("id,display_name,role")
-        .in("id", workerIds);
-
-      if (ew) return NextResponse.json({ ok: false, error: ew.message }, { status: 500 });
-      for (const w of ws || []) namesById.set(w.id, w);
-    }
-
-    const out = (data || []).map((i: any) => ({
-      ...i,
-      worker: namesById.get(i.worker_id) || null,
+    const items = (rows || []).map((r: any) => ({
+      id: r.id,
+      incident_date: r.incident_date ?? null,
+      month_date: r.month_date ?? null,
+      kind: r.kind ?? null,
+      incident_type: r.incident_type ?? null,
+      status: r.status ?? null,
+      minutes_late: r.minutes_late ?? null,
+      penalty_eur: r.penalty_eur ?? null,
+      notes: r.notes ?? null,
+      worker_id: r.worker_id ?? null,
+      worker_name: r.workers?.display_name ?? null,
     }));
 
-    return NextResponse.json({ ok: true, incidents: out });
+    return NextResponse.json({ ok: true, items });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
   }
