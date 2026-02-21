@@ -173,6 +173,7 @@ export default function PanelPage() {
 
       const res = await fetch("/api/presence/me", {
         headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
       });
 
       const j = await res.json().catch(() => null);
@@ -198,8 +199,10 @@ export default function PanelPage() {
       const month = monthOverride ?? selectedMonth ?? null;
       const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
 
+      // ✅ CAMBIO: no cache para que siempre traiga datos nuevos
       const res = await fetch(`/api/dashboard/full${qs}`, {
         headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
       });
 
       const j = (await res.json().catch(() => null)) as DashboardResp | null;
@@ -240,6 +243,7 @@ export default function PanelPage() {
       const res = await fetch("/api/presence/login", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
       });
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error login presencia");
@@ -261,6 +265,7 @@ export default function PanelPage() {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ state }),
+        cache: "no-store",
       });
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error cambio estado");
@@ -281,6 +286,7 @@ export default function PanelPage() {
       const res = await fetch("/api/presence/logout", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
       });
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error logout presencia");
@@ -618,10 +624,7 @@ export default function PanelPage() {
                   gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
                 }}
               >
-                <button
-                  onClick={bigActionFn}
-                  style={pState === "offline" ? btnPrimary : btnGhost}
-                >
+                <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
                   {bigActionLabel}
                 </button>
 
