@@ -173,6 +173,7 @@ export default function PanelPage() {
 
   const isLogged = pState !== "offline";
 
+  // panel/me para total oficial de factura
   const [panelMe, setPanelMe] = useState<PanelMeResp | null>(null);
 
   async function getToken() {
@@ -207,8 +208,8 @@ export default function PanelPage() {
       const token = await getToken();
       if (!token) return;
 
-      const m = monthOverride ?? selectedMonth ?? null;
-      const qs = m ? `?month_date=${encodeURIComponent(m)}` : "";
+      const month = monthOverride ?? selectedMonth ?? null;
+      const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
 
       const res = await fetch(`/api/panel/me${qs}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -256,7 +257,7 @@ export default function PanelPage() {
       const role = j?.user?.worker?.role || null;
       if (role === "tarotista" || role === "central") {
         await loadPresence();
-        await loadPanelMe(month ?? j.month_date ?? null);
+        await loadPanelMe(month); // ✅ importante: mismo mes seleccionado
       }
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
@@ -277,6 +278,7 @@ export default function PanelPage() {
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
       });
+
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error login presencia");
 
@@ -299,6 +301,7 @@ export default function PanelPage() {
         body: JSON.stringify({ state }),
         cache: "no-store",
       });
+
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error cambio estado");
 
@@ -320,6 +323,7 @@ export default function PanelPage() {
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
       });
+
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error logout presencia");
 
@@ -341,8 +345,9 @@ export default function PanelPage() {
 
   useEffect(() => {
     if (!selectedMonth) return;
+    if (!data) return;
+    if (data.month_date === selectedMonth) return;
     load(selectedMonth);
-    loadPanelMe(selectedMonth);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedMonth]);
 
@@ -367,7 +372,7 @@ export default function PanelPage() {
   const isCentral = myRole === "central";
   const isTarot = myRole === "tarotista";
 
-  // ✅ Tarotistas: nunca mostrar ranking € en selector
+  // tarotistas: no permitir rankType eur_* (no quieres que se muestre)
   useEffect(() => {
     if (!isTarot) return;
     if (rankType === "eur_total" || rankType === "eur_bonus") setRankType("minutes");
@@ -406,9 +411,12 @@ export default function PanelPage() {
   const minutesTotal = data?.myEarnings?.minutes_total ?? null;
   const captadasTotal = data?.myEarnings?.captadas ?? null;
 
-  // ✅ Totales oficiales (panel-me)
+  // ✅ total oficial de factura
   const totalEurOfficial = panelMe?.invoice?.total_eur ?? null;
-  const bonusOfficial = panelMe?.bonuses_month_eur ?? null;
+
+  const incCount = data?.myIncidentsMonth?.count ?? null;
+  const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
+  const incGrave = !!data?.myIncidentsMonth?.grave;
 
   const months = data?.months || [];
   const monthLabel = selectedMonth
@@ -465,13 +473,51 @@ export default function PanelPage() {
     border: "1px solid #e5e7eb",
   };
 
-  const incCount = data?.myIncidentsMonth?.count ?? null;
-  const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
-  const incGrave = !!data?.myIncidentsMonth?.grave;
+  // ✅ BONOS DINÁMICOS: según bonusRules + tu posición actual en cada ranking
+  const bonusNowTarot = useMemo(() => {
+    if (!isTarot) return { total: 0, breakdown: [] as Array<{ label: string; amount: number; pos: number }> };
+    if (incGrave) return { total: 0, breakdown: [] as Array<{ label: string; amount: number; pos: number }> };
+
+    const myName = me?.display_name;
+    if (!myName) return { total: 0, breakdown: [] as Array<{ label: string; amount: number; pos: number }> };
+
+    const rules = (data?.bonusRules || []).filter((r) => (r.is_active === undefined ? true : !!r.is_active));
+    const rankings = data?.rankings || ({} as any);
+
+    // rankings que aplican a tarotistas (sin €)
+    const keys: Array<{ k: RankKey; rt: string; label: string }> = [
+      { k: "minutes", rt: "minutes", label: "Minutos" },
+      { k: "captadas", rt: "captadas", label: "Captadas" },
+      { k: "repite_pct", rt: "repite_pct", label: "Repite %" },
+      { k: "cliente_pct", rt: "cliente_pct", label: "Clientes %" },
+    ];
+
+    const breakdown: Array<{ label: string; amount: number; pos: number }> = [];
+
+    for (const it of keys) {
+      const list = (rankings as any)?.[it.k] || [];
+      const idx = list.findIndex((x: any) => x.name === myName);
+      const pos = idx === -1 ? null : idx + 1;
+      if (!pos) continue;
+
+      const hit = rules.find(
+        (r) =>
+          String(r.role || "").toLowerCase() === "tarotista" &&
+          String(r.ranking_type || "").toLowerCase() === it.rt &&
+          Number(r.position) === Number(pos)
+      );
+
+      const amount = hit ? Number(hit.amount_eur) || 0 : 0;
+      if (amount > 0) breakdown.push({ label: it.label, amount, pos });
+    }
+
+    const total = breakdown.reduce((acc, x) => acc + x.amount, 0);
+    return { total, breakdown };
+  }, [isTarot, incGrave, me?.display_name, data?.bonusRules, data?.rankings]);
 
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: "100%" }}>
-      {/* ===== Header ===== */}
+      {/* ===== Cabecera interna (sin botones duplicados, ya están en el layout) ===== */}
       <div
         style={{
           border: "2px solid #111",
@@ -480,10 +526,10 @@ export default function PanelPage() {
           background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
         }}
       >
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: isMobile ? "1fr" : "1fr auto", alignItems: "start" }}>
-          <div style={{ display: "grid", gap: 8 }}>
+        <div style={{ display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "1fr auto", alignItems: "center" }}>
+          <div style={{ display: "grid", gap: 6 }}>
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-              <h1 style={{ margin: 0, lineHeight: 1.1, fontSize: 22, fontWeight: 1200 }}>Panel</h1>
+              <h1 style={{ margin: 0, lineHeight: 1.1, fontSize: 22, fontWeight: 1200 }}>Dashboard</h1>
               <div style={{ color: "#6b7280", textTransform: "capitalize", fontWeight: 1000 }}>{monthLabel}</div>
             </div>
 
@@ -496,48 +542,41 @@ export default function PanelPage() {
                 </div>
               ) : null}
             </div>
-
-            <div style={{ display: "grid", gap: 8, width: "100%" }}>
-              <div style={{ color: "#6b7280", fontWeight: 1000 }}>Mes</div>
-              <select
-                value={selectedMonth || data?.month_date || ""}
-                onChange={(e) => setSelectedMonth(e.target.value || null)}
-                style={{ padding: 12, borderRadius: 12, border: "1px solid #e5e7eb", width: "100%", maxWidth: "100%" }}
-                disabled={loading || months.length === 0}
-              >
-                {months.length === 0 ? (
-                  <option value="">{data?.month_date || "—"}</option>
-                ) : (
-                  months.map((m) => (
-                    <option key={m} value={m}>
-                      {formatMonthLabel(m)}
-                    </option>
-                  ))
-                )}
-              </select>
-            </div>
           </div>
 
           <div style={{ display: "grid", gap: 10, justifyItems: isMobile ? "stretch" : "end" }}>
-            <button
-              onClick={() => load(selectedMonth)}
-              disabled={loading}
-              style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}
-            >
+            <button onClick={() => load(selectedMonth)} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}>
               {loading ? "Actualizando..." : "Actualizar"}
             </button>
-
             <button onClick={logout} style={btnPrimary}>
               Cerrar sesión
             </button>
           </div>
         </div>
+
+        <div style={{ marginTop: 12, display: "grid", gap: 8, width: "100%" }}>
+          <div style={{ color: "#6b7280", fontWeight: 1000 }}>Mes</div>
+          <select
+            value={selectedMonth || data?.month_date || ""}
+            onChange={(e) => setSelectedMonth(e.target.value || null)}
+            style={{ padding: 12, borderRadius: 12, border: "1px solid #e5e7eb", width: "100%", maxWidth: "100%" }}
+            disabled={loading || months.length === 0}
+          >
+            {months.length === 0 ? (
+              <option value="">{data?.month_date || "—"}</option>
+            ) : (
+              months.map((m) => (
+                <option key={m} value={m}>
+                  {formatMonthLabel(m)}
+                </option>
+              ))
+            )}
+          </select>
+        </div>
       </div>
 
       {err ? (
-        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>
-          {err}
-        </div>
+        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
       ) : null}
 
       {/* ===== Equipos (si central) ===== */}
@@ -562,15 +601,7 @@ export default function PanelPage() {
               const isMine = (data?.myTeamRank || 0) === pos;
 
               return (
-                <div
-                  key={pos}
-                  style={{
-                    border: isMine ? "2px solid #111" : "1px solid #eaeaea",
-                    borderRadius: 16,
-                    padding: 12,
-                    background: isMine ? "#fff" : "#fcfcfc",
-                  }}
-                >
+                <div key={pos} style={{ border: isMine ? "2px solid #111" : "1px solid #eaeaea", borderRadius: 16, padding: 12, background: isMine ? "#fff" : "#fcfcfc" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                     <div style={{ fontWeight: 1100, fontSize: 16 }}>{t ? `${medal(pos)} #${pos} ${t.team_name}` : "—"}</div>
                     {isMine ? <span style={{ border: "1px solid #111", borderRadius: 999, padding: "4px 10px", fontWeight: 1000 }}>Tu equipo</span> : null}
@@ -636,15 +667,26 @@ export default function PanelPage() {
               <CardTitle>Total € del mes</CardTitle>
               <CardValue>{totalEurOfficial === null ? "—" : eur(totalEurOfficial)}</CardValue>
               <CardHint>
-                Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas:{" "}
-                <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
+                Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas: <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
               </CardHint>
             </Card>
 
             <Card>
               <CardTitle>Bonos ganados (mes)</CardTitle>
-              <CardValue>{bonusOfficial === null ? "—" : eur(bonusOfficial)}</CardValue>
-              <CardHint>Fuente oficial: worker_invoices / líneas.</CardHint>
+              <CardValue>{incGrave ? eur(0) : eur(bonusNowTarot.total)}</CardValue>
+              <CardHint>
+                {incGrave ? (
+                  <b style={{ color: "#b91c1c" }}>Bloqueados por incidencia GRAVE</b>
+                ) : bonusNowTarot.total > 0 ? (
+                  <span style={{ color: "#6b7280", fontWeight: 900 }}>
+                    Provisional (según tu posición actual)
+                  </span>
+                ) : (
+                  <span style={{ color: "#6b7280", fontWeight: 900 }}>
+                    Aún no estás en posiciones con bono
+                  </span>
+                )}
+              </CardHint>
             </Card>
           </>
         ) : isCentral ? (
@@ -677,6 +719,29 @@ export default function PanelPage() {
           </Card>
         ) : null}
       </div>
+
+      {/* ✅ Desglose compacto de bonos (solo si hay algo) */}
+      {isTarot && !incGrave && bonusNowTarot.breakdown.length > 0 ? (
+        <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
+          <div style={{ fontWeight: 1100, marginBottom: 8 }}>Detalle de bonos provisionales</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+            {bonusNowTarot.breakdown.map((b) => (
+              <span
+                key={`${b.label}-${b.pos}`}
+                style={{
+                  border: "1px solid rgba(17,17,17,0.12)",
+                  borderRadius: 999,
+                  padding: "8px 10px",
+                  fontWeight: 1000,
+                  background: "rgba(255,255,255,0.92)",
+                }}
+              >
+                {b.label}: <b>{medal(b.pos)} #{b.pos}</b> · <b>{eur(b.amount)}</b>
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {/* ===== Control horario ===== */}
       {me?.role === "tarotista" || me?.role === "central" ? (
@@ -757,9 +822,7 @@ export default function PanelPage() {
                         {medal(idx + 1)} {idx + 1}
                       </td>
                       <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                      <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>
-                        {valueOf(k, r)}
-                      </td>
+                      <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{valueOf(k, r)}</td>
                     </tr>
                   ))}
                   {top3For(k).length === 0 ? (
@@ -781,11 +844,7 @@ export default function PanelPage() {
         <CardTitle>Rankings (tabla completa)</CardTitle>
 
         <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-          <select
-            value={rankType}
-            onChange={(e) => setRankType(e.target.value as RankKey)}
-            style={{ padding: 12, borderRadius: 12, border: "1px solid #ddd", width: "100%", maxWidth: 520 }}
-          >
+          <select value={rankType} onChange={(e) => setRankType(e.target.value as RankKey)} style={{ padding: 12, borderRadius: 12, border: "1px solid #ddd", width: "100%", maxWidth: 520 }}>
             {isTarot ? (
               <>
                 <option value="minutes">Ranking por Minutos</option>
@@ -827,7 +886,7 @@ export default function PanelPage() {
                 const pos = idx + 1;
                 const isMe = me?.display_name === r.name;
                 return (
-                  <tr key={r.worker_id || `${pos}-${r.name}`} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 900 : 400 }}>
+                  <tr key={r.worker_id} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 900 : 400 }}>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
                       {medal(pos)} {pos}
                     </td>
