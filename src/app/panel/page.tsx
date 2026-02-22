@@ -1,4 +1,48 @@
-// src/app/panel/page.tsx
+
+    try {
+      const token = await getToken();
+      if (!token) {
+        router.replace("/login");
+        return;
+      }
+
+      const res = await fetch("/api/presence/me", {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+
+      const j = await res.json().catch(() => null);
+      if (!j?.ok) return;
+
+      setPState((j.state as PresenceState) || "offline");
+      setSessionId(j.session_id || null);
+      setStartedAt(j.started_at || null);
+    } catch {}
+  }
+
+  async function loadPanelMe() {
+    try {
+      const token = await getToken();
+      if (!token) return;
+
+      const res = await fetch("/api/panel/me", {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+
+      const j = (await res.json().catch(() => null)) as PanelMeResp | null;
+      if (!j?.ok) return;
+
+      setPanelMe(j);
+    } catch {}
+  }
+
+  async function load(monthOverride?: string | null) {
+    setErr(null);
+    setLoading(true);
+
+    try {
+      const token = await getToken();// src/app/panel/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -176,6 +220,8 @@ export default function PanelPage() {
 
   const [panelMe, setPanelMe] = useState<PanelMeResp | null>(null);
 
+  const [redirectTo, setRedirectTo] = useState<string | null>(null);
+
   async function getToken() {
     const { data } = await supabase.auth.getSession();
     return data.session?.access_token || null;
@@ -251,8 +297,20 @@ export default function PanelPage() {
         setSelectedMonth(j.month_date);
       }
 
-      const role = j?.user?.worker?.role || null;
-      if (role === "tarotista" || role === "central") {
+      const role = String(j?.user?.worker?.role || "").toLowerCase();
+
+      // ✅ Routing por rol (3 paneles separados)
+      if (role === "central") {
+        setRedirectTo("/panel/central");
+        return; // no cargamos presence/panelMe aquí, lo hará el panel central
+      }
+      if (role === "admin") {
+        setRedirectTo("/panel/admin");
+        return;
+      }
+
+      // Tarotista: se queda en este dashboard
+      if (role === "tarotista") {
         await loadPresence();
         await loadPanelMe();
       }
@@ -337,6 +395,13 @@ export default function PanelPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ✅ ejecuta la redirección por rol cuando ya lo sabemos
+  useEffect(() => {
+    if (!redirectTo) return;
+    router.replace(redirectTo);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [redirectTo]);
+
   useEffect(() => {
     if (!selectedMonth) return;
     if (!data) return;
@@ -363,8 +428,28 @@ export default function PanelPage() {
 
   const me = data?.user?.worker || null;
   const myRole = String(me?.role || "").toLowerCase();
-  const isCentral = myRole === "central";
   const isTarot = myRole === "tarotista";
+
+  // ✅ Si es central o admin, NO renderizamos el dashboard de tarotistas
+  if (redirectTo) {
+    const shellCard: React.CSSProperties = {
+      borderRadius: 18,
+      border: "1px solid #e5e7eb",
+      background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
+      boxShadow: "0 12px 45px rgba(0,0,0,0.08)",
+    };
+
+    return (
+      <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: 1100 }}>
+        <div style={{ ...shellCard, padding: 16 }}>
+          <div style={{ fontWeight: 1400, fontSize: 18 }}>Redirigiendo…</div>
+          <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>
+            Entrando en tu panel: <b>{redirectTo}</b>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Tarotistas: no permitir rankType eur_*
   useEffect(() => {
@@ -382,7 +467,7 @@ export default function PanelPage() {
     return idx === -1 ? null : idx + 1;
   }, [me?.display_name, ranks]);
 
-  const myRank = isCentral ? (data?.myTeamRank ?? null) : myRankTarot;
+  const myRank = myRankTarot;
 
   function top3For(k: RankKey) {
     const list = (data?.rankings as any)?.[k] || [];
@@ -415,22 +500,6 @@ export default function PanelPage() {
     : data?.month_date
     ? formatMonthLabel(data.month_date)
     : "—";
-
-  const teams = data?.teamsRanking || [];
-  const team1 = teams[0] || null;
-  const team2 = teams[1] || null;
-
-  const bonusTeamWinner = useMemo(() => {
-    const rules = data?.bonusRules || [];
-    const r = rules.find(
-      (x) =>
-        String(x.ranking_type || "").toLowerCase() === "team_winner" &&
-        Number(x.position) === 1 &&
-        String(x.role || "").toLowerCase() === "central" &&
-        (x.is_active === undefined ? true : !!x.is_active)
-    );
-    return r ? Number(r.amount_eur) || 0 : 0;
-  }, [data?.bonusRules]);
 
   const helpText =
     pState === "offline"
@@ -564,9 +633,7 @@ export default function PanelPage() {
         >
           <div style={{ display: "grid", gap: 8 }}>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <div style={{ fontWeight: 1400, fontSize: 18, lineHeight: 1 }}>
-                Dashboard
-              </div>
+              <div style={{ fontWeight: 1400, fontSize: 18, lineHeight: 1 }}>Dashboard</div>
 
               <Badge tone={stateTone as any}>{stateText}</Badge>
               <div style={{ fontWeight: 1400 }}>{formatHMS(elapsedSec)}</div>
@@ -606,7 +673,6 @@ export default function PanelPage() {
                 </select>
               </div>
 
-              {/* Etiqueta mes (solo desktop, en móvil ya se ve en el select) */}
               {!isMobile ? (
                 <div style={{ color: "#6b7280", fontWeight: 1100, textTransform: "capitalize" }}>{monthLabel}</div>
               ) : null}
@@ -635,73 +701,7 @@ export default function PanelPage() {
         ) : null}
       </div>
 
-      {/* ===== Equipos (si central) ===== */}
-      {isCentral && teams.length > 0 ? (
-        <div style={{ ...shellCard, padding: 14, border: "1px solid #111" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 1300, fontSize: 18 }}>🏆 Ranking por equipos (GLOBAL)</div>
-            <div style={{ color: "#6b7280", fontWeight: 1000 }}>
-              Criterio: <b>%Clientes + %Repite</b>
-              {bonusTeamWinner ? (
-                <>
-                  {" "}
-                  · Bono ganadora: <b>{eur(bonusTeamWinner)}</b>
-                </>
-              ) : null}
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr auto 1fr", gap: 12, alignItems: "stretch", marginTop: 12 }}>
-            {[team1, team2].map((t, idx) => {
-              const pos = idx + 1;
-              const isMine = (data?.myTeamRank || 0) === pos;
-
-              return (
-                <div key={pos} style={{ border: isMine ? "2px solid #111" : "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 1200, fontSize: 16 }}>{t ? `${medal(pos)} #${pos} ${t.team_name}` : "—"}</div>
-                    {isMine ? <span style={{ border: "1px solid #111", borderRadius: 999, padding: "4px 10px", fontWeight: 1100 }}>Tu equipo</span> : null}
-                  </div>
-
-                  <div style={{ fontSize: 34, fontWeight: 1500, marginTop: 10 }}>
-                    {t?.team_score ?? "—"} <span style={{ fontSize: 12, fontWeight: 1100, color: "#6b7280" }}>score</span>
-                  </div>
-
-                  <div style={{ color: "#6b7280", marginTop: 6, fontWeight: 1000 }}>
-                    Clientes: <b>{t?.team_cliente_pct ?? "—"}%</b> · Repite: <b>{t?.team_repite_pct ?? "—"}%</b>
-                  </div>
-
-                  <div style={{ color: "#6b7280", marginTop: 6 }}>
-                    Minutos: <b>{t ? fmt(t.total_minutes) : "—"}</b> · Captadas: <b>{t ? fmt(t.total_captadas) : "—"}</b>
-                  </div>
-
-                  <div style={{ marginTop: 10, fontWeight: 1100 }}>Tarotistas</div>
-                  <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {(t?.members || []).map((m) => (
-                      <span key={m.worker_id} style={{ border: "1px solid #e5e7eb", borderRadius: 999, padding: "6px 10px", fontWeight: 900, background: "#fff" }}>
-                        {m.name}
-                      </span>
-                    ))}
-                    {(t?.members || []).length === 0 ? <span style={{ color: "#6b7280", fontWeight: 900 }}>Sin tarotistas asignadas.</span> : null}
-                  </div>
-                </div>
-              );
-            })}
-
-            {!isMobile ? (
-              <div style={{ display: "grid", placeItems: "center", padding: 6 }}>
-                <div style={{ fontWeight: 1200, color: "#6b7280" }}>VS</div>
-              </div>
-            ) : null}
-          </div>
-
-          <div style={{ marginTop: 10, color: "#6b7280", fontWeight: 1000 }}>
-            Tu equipo va: <b>{data?.myTeamRank ? `${medal(data.myTeamRank)} #${data.myTeamRank}` : "—"}</b>
-          </div>
-        </div>
-      ) : null}
-
-      {/* ===== KPIs ===== */}
+      {/* ===== KPIs (Tarotista) ===== */}
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
         <Card>
           <CardTitle>Estado</CardTitle>
@@ -717,49 +717,37 @@ export default function PanelPage() {
           <CardHint>Se actualiza en tiempo real.</CardHint>
         </Card>
 
-        {isTarot ? (
-          <>
-            <Card>
-              <CardTitle>Total € del mes</CardTitle>
-              <CardValue>{totalEurOfficial === null ? "—" : eur(totalEurOfficial)}</CardValue>
-              <CardHint>
-                Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas: <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
-              </CardHint>
-            </Card>
+        <Card>
+          <CardTitle>Total € del mes</CardTitle>
+          <CardValue>{totalEurOfficial === null ? "—" : eur(totalEurOfficial)}</CardValue>
+          <CardHint>
+            Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas: <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
+          </CardHint>
+        </Card>
 
-            <Card>
-              <CardTitle>Bonos ganados</CardTitle>
-              <CardValue>{bonusOfficial === null ? "—" : eur(bonusOfficial)}</CardValue>
-              <CardHint>{incGrave ? <b style={{ color: "#b91c1c" }}>GRAVE: sin bonos este mes</b> : "Según tu posición actual."}</CardHint>
-            </Card>
-          </>
-        ) : isCentral ? (
-          <Card>
-            <CardTitle>Bono del mes</CardTitle>
-            <CardValue>{data?.myEarnings?.amount_bonus_eur == null ? "—" : eur(data.myEarnings.amount_bonus_eur)}</CardValue>
-            <CardHint>Según posición del equipo.</CardHint>
-          </Card>
-        ) : null}
+        <Card>
+          <CardTitle>Bonos ganados</CardTitle>
+          <CardValue>{bonusOfficial === null ? "—" : eur(bonusOfficial)}</CardValue>
+          <CardHint>{incGrave ? <b style={{ color: "#b91c1c" }}>GRAVE: sin bonos este mes</b> : "Según tu posición actual."}</CardHint>
+        </Card>
 
         <Card>
           <CardTitle>Mi posición</CardTitle>
           <CardValue>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</CardValue>
-          <CardHint>{isCentral ? "Ranking global de equipos." : "Según el ranking seleccionado."}</CardHint>
+          <CardHint>Según el ranking seleccionado.</CardHint>
         </Card>
 
-        {(isTarot || isCentral) ? (
-          <Card>
-            <CardTitle>Incidencias</CardTitle>
-            <CardValue>{incCount == null ? "—" : `${fmt(incCount)}`}</CardValue>
-            <CardHint>
-              Penalización: <b>{incPenalty == null ? "—" : eur(incPenalty)}</b>
-            </CardHint>
-          </Card>
-        ) : null}
+        <Card>
+          <CardTitle>Incidencias</CardTitle>
+          <CardValue>{incCount == null ? "—" : `${fmt(incCount)}`}</CardValue>
+          <CardHint>
+            Penalización: <b>{incPenalty == null ? "—" : eur(incPenalty)}</b>
+          </CardHint>
+        </Card>
       </div>
 
       {/* ===== Control horario ===== */}
-      {me?.role === "tarotista" || me?.role === "central" ? (
+      {me?.role === "tarotista" ? (
         <div style={{ ...shellCard, padding: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div>
@@ -802,11 +790,7 @@ export default function PanelPage() {
                   Baño
                 </button>
 
-                <button
-                  onClick={() => presenceSet("online")}
-                  disabled={!isLogged}
-                  style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
-                >
+                <button onClick={() => presenceSet("online")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
                   Volver
                 </button>
               </div>
@@ -819,12 +803,7 @@ export default function PanelPage() {
       <div style={{ ...shellCard, padding: 14 }}>
         <div style={{ fontWeight: 1300, fontSize: 16 }}>Top 3 del mes</div>
         <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))", gap: 12 }}>
-          {(isCentral
-            ? (["minutes", "captadas"] as RankKey[])
-            : isTarot
-            ? (["minutes", "captadas", "repite_pct", "cliente_pct"] as RankKey[])
-            : (["minutes", "repite_pct", "cliente_pct", "captadas"] as RankKey[])
-          ).map((k) => (
+          {(["minutes", "captadas", "repite_pct", "cliente_pct"] as RankKey[]).map((k) => (
             <Top3Block key={k} k={k} />
           ))}
         </div>
@@ -853,30 +832,13 @@ export default function PanelPage() {
               fontWeight: 1100,
             }}
           >
-            {isTarot ? (
-              <>
-                <option value="minutes">Minutos</option>
-                <option value="captadas">Captadas</option>
-                <option value="repite_pct">Repite %</option>
-                <option value="cliente_pct">Clientes %</option>
-              </>
-            ) : isCentral ? (
-              <>
-                <option value="minutes">Minutos</option>
-                <option value="captadas">Captadas</option>
-              </>
-            ) : (
-              <>
-                <option value="minutes">Minutos</option>
-                <option value="repite_pct">Repite %</option>
-                <option value="cliente_pct">Clientes %</option>
-                <option value="captadas">Captadas</option>
-              </>
-            )}
+            <option value="minutes">Minutos</option>
+            <option value="captadas">Captadas</option>
+            <option value="repite_pct">Repite %</option>
+            <option value="cliente_pct">Clientes %</option>
           </select>
         </div>
 
-        {/* Mobile: cards. Desktop: tabla */}
         {isMobile ? (
           <div style={{ marginTop: 12 }}>
             <RankCards list={ranks as any[]} k={rankType} />
