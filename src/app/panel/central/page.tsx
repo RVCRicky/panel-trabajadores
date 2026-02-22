@@ -9,20 +9,6 @@ import { Badge } from "@/components/ui/Badge";
 
 type PresenceState = "offline" | "online" | "pause" | "bathroom";
 
-type TeamMember = { worker_id: string; name: string; role: string };
-type TeamRow = {
-  team_id: string;
-  team_name: string;
-  total_eur_month: number;
-  total_minutes: number;
-  total_captadas: number;
-  member_count: number;
-  team_cliente_pct?: number;
-  team_repite_pct?: number;
-  team_score?: number;
-  members?: TeamMember[];
-};
-
 type DashboardResp = {
   ok: boolean;
   error?: string;
@@ -50,15 +36,17 @@ type DashboardResp = {
 
   myIncidentsMonth?: { count: number; penalty_eur: number; grave: boolean };
 
-  teamsRanking?: TeamRow[];
+  teamsRanking?: any[];
   myTeamRank?: number | null;
-  myTeam?: { team_id: string; team_name: string } | null;
   winnerTeam?: any;
   bonusRules?: any[];
 
-  // ✅ nuevos
-  teamYami?: TeamRow | null;
-  teamMaria?: TeamRow | null;
+  // si tu /api/dashboard/full ya lo devuelve (por el layout), perfecto
+  myTeam?: { team_id: string; team_name: string } | null;
+
+  // opcional extra (si lo tienes)
+  teamYami?: any;
+  teamMaria?: any;
 };
 
 type PresenceMeResp = { ok: boolean; state: PresenceState; session_id: string | null; started_at: string | null; error?: string };
@@ -80,9 +68,6 @@ function fmt(n: any) {
 }
 function eur(n: any) {
   return (Number(n) || 0).toLocaleString("es-ES", { style: "currency", currency: "EUR" });
-}
-function medal(pos: number) {
-  return pos === 1 ? "🥇" : pos === 2 ? "🥈" : pos === 3 ? "🥉" : "";
 }
 function formatHMS(sec: number) {
   const s = Math.max(0, Math.floor(sec));
@@ -113,11 +98,7 @@ function dailyKeyAt5(prefix: string) {
   return `${prefix}:${y}-${m}-${day}`;
 }
 
-type ChecklistItem = {
-  id: string;
-  label: string;
-  hint?: string;
-};
+type ChecklistItem = { id: string; label: string; hint?: string };
 
 const CHECKLIST: ChecklistItem[] = [
   { id: "login", label: "Loguearse y abrir panel", hint: "Entrar (presencia) y comprobar que todo carga." },
@@ -128,6 +109,38 @@ const CHECKLIST: ChecklistItem[] = [
 ];
 
 type Recommendation = { tone: "ok" | "warn"; title: string; body: string };
+
+// ✅ helper: buscar bono “team winner” dentro de bonus_rules si existe (si no, fallback 40€)
+function getTeamWinnerBonus(bonusRules: any[] | undefined | null) {
+  const fallback = 40;
+
+  const rules = Array.isArray(bonusRules) ? bonusRules : [];
+  if (!rules.length) return fallback;
+
+  // intentamos encontrar una regla activa para ganador de equipo
+  // (no asumimos esquema exacto; buscamos por texto)
+  const pick = rules
+    .filter((r) => r && (r.is_active === true || r.is_active == null))
+    .map((r) => {
+      const rt = String(r.ranking_type || "").toLowerCase();
+      const role = String(r.role || "").toLowerCase();
+      const pos = Number(r.position ?? 0);
+      const amount = Number(r.amount_eur ?? r.amount ?? 0);
+      const created = String(r.created_at || "");
+      return { rt, role, pos, amount, created };
+    })
+    .filter((r) => Number.isFinite(r.amount) && r.amount > 0)
+    .filter((r) => r.rt.includes("team") && (r.rt.includes("winner") || r.rt.includes("ganador") || r.rt.includes("equipo")))
+    // si vienen con position, queremos el #1
+    .sort((a, b) => {
+      const pa = a.pos || 999;
+      const pb = b.pos || 999;
+      if (pa !== pb) return pa - pb;
+      return String(b.created).localeCompare(String(a.created));
+    })[0];
+
+  return pick?.amount ? pick.amount : fallback;
+}
 
 export default function CentralPanelPage() {
   const router = useRouter();
@@ -147,6 +160,12 @@ export default function CentralPanelPage() {
 
   const [checkState, setCheckState] = useState<Record<string, boolean>>({});
   const checklistKey = useMemo(() => dailyKeyAt5("tc_central_checklist"), []);
+
+  const [incName, setIncName] = useState("");
+  const [incKind, setIncKind] = useState<"late" | "absence" | "other">("late");
+  const [incNotes, setIncNotes] = useState("");
+  const [incStatus, setIncStatus] = useState<null | "ok" | "err">(null);
+  const [incMsg, setIncMsg] = useState<string>("");
 
   const isLogged = pState !== "offline";
 
@@ -346,60 +365,95 @@ export default function CentralPanelPage() {
     boxShadow: "0 12px 45px rgba(0,0,0,0.08)",
   };
 
-  const teams = (data?.teamsRanking || []) as TeamRow[];
-  const hasTeams = Array.isArray(teams) && teams.length >= 1;
+  // ✅ BONO EN VIVO: si el equipo del central va #1 ahora mismo
+  const bonusEstimate = useMemo(() => {
+    const bonus = getTeamWinnerBonus(data?.bonusRules);
 
-  const teamBox = (t: TeamRow | null | undefined, fallbackTitle: string) => {
-    const tarotists = (t?.members || []).filter((m) => String(m.role || "").toLowerCase() === "tarotista");
-    return (
-      <div style={{ ...shellCard, padding: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ fontWeight: 1400, fontSize: 16 }}>{t?.team_name || fallbackTitle}</div>
-          <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>{t?.team_id ? t.team_id : "—"}</div>
-        </div>
+    const teams = Array.isArray(data?.teamsRanking) ? data!.teamsRanking! : [];
+    const winnerId = String(data?.winnerTeam?.team_id || "");
 
-        <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 10, background: "#fff" }}>
-            <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Score</div>
-            <div style={{ fontWeight: 1500, fontSize: 18 }}>{t?.team_score ?? "—"}</div>
-          </div>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 10, background: "#fff" }}>
-            <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Tarotistas</div>
-            <div style={{ fontWeight: 1500, fontSize: 18 }}>{tarotists.length}</div>
-          </div>
-        </div>
+    if (!winnerId) return 0;
 
-        <div style={{ marginTop: 12 }}>
-          <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12, marginBottom: 6 }}>Lista tarotistas</div>
-          {tarotists.length === 0 ? (
-            <div style={{ padding: 10, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", fontWeight: 1000 }}>
-              No hay tarotistas en este equipo (o faltan members).
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {tarotists.map((m) => (
-                <span
-                  key={m.worker_id}
-                  style={{
-                    padding: "8px 10px",
-                    borderRadius: 999,
-                    border: "1px solid #e5e7eb",
-                    background: "#fff",
-                    fontWeight: 1100,
-                  }}
-                  title={m.worker_id}
-                >
-                  {m.name}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    );
+    // 1) si el backend devuelve myTeam (a veces no para central), úsalo
+    let myTeamId = String(data?.myTeam?.team_id || "");
+
+    // 2) si no hay myTeamId, lo deducimos por nombre del central:
+    //    “Yami” => “Equipo Yami”
+    if (!myTeamId && me?.display_name && teams.length) {
+      const meName = String(me.display_name || "").toLowerCase();
+      const found = teams.find((t: any) => String(t?.team_name || "").toLowerCase().includes(meName));
+      if (found?.team_id) myTeamId = String(found.team_id);
+    }
+
+    // si no podemos deducir equipo, no inventamos
+    if (!myTeamId) return 0;
+
+    return myTeamId === winnerId ? bonus : 0;
+  }, [data?.bonusRules, data?.winnerTeam, data?.teamsRanking, data?.myTeam, me?.display_name]);
+
+  const incCount = data?.myIncidentsMonth?.count ?? null;
+  const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
+
+  const bigActionLabel = pState === "offline" ? "Entrar" : "Salir";
+  const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
+
+  async function submitIncident() {
+    setIncStatus(null);
+    setIncMsg("");
+    try {
+      const token = await getToken();
+      if (!token) return router.replace("/login");
+
+      const res = await fetch("/api/incidents/create", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target_name: incName.trim(),
+          kind: incKind,
+          notes: incNotes.trim(),
+        }),
+      });
+
+      const j = await res.json().catch(() => null);
+
+      if (!res.ok || !j?.ok) {
+        setIncStatus("err");
+        setIncMsg(j?.error || `No se pudo crear (status ${res.status})`);
+        return;
+      }
+
+      setIncStatus("ok");
+      setIncMsg("Incidencia registrada ✅");
+      setIncName("");
+      setIncNotes("");
+
+      await loadDashboard(selectedMonth);
+    } catch (e: any) {
+      setIncStatus("err");
+      setIncMsg(e?.message || "Error creando incidencia");
+    }
+  }
+
+  const tabBar: React.CSSProperties = {
+    display: "flex",
+    gap: 10,
+    flexWrap: "wrap",
+    alignItems: "center",
   };
 
-  // recomendaciones (igual que antes)
+  const tabBtn = (active: boolean): React.CSSProperties => ({
+    padding: "10px 12px",
+    borderRadius: 999,
+    border: active ? "1px solid #111" : "1px solid #e5e7eb",
+    background: active ? "#111" : "#fff",
+    color: active ? "#fff" : "#111",
+    fontWeight: 1100,
+    cursor: "pointer",
+  });
+
+  const [tab, setTab] = useState<"dashboard" | "incidents">("dashboard");
+
+  // Recomendaciones “inteligentes”
   const recommendations: Recommendation[] = useMemo(() => {
     const out: Recommendation[] = [];
     const cap = (data?.rankings?.captadas || []) as any[];
@@ -413,42 +467,30 @@ export default function CentralPanelPage() {
     const lowCli = [...cli].reverse()[0];
     const lowRep = [...rep].reverse()[0];
 
-    if (topCap?.name) out.push({ tone: "ok", title: "Captación fuerte", body: `${topCap.name} está captando mucho últimamente. Si está disponible, pásale más llamadas para aprovechar el momento.` });
-    if (topCli?.name) out.push({ tone: "ok", title: "Clientes nuevos (muy bien)", body: `${topCli.name} tiene un %Clientes muy alto. Ideal para primeras consultas y picos de demanda.` });
-    if (topRep?.name) out.push({ tone: "ok", title: "Fidelización excelente", body: `${topRep.name} está fidelizando muy bien (%Repite). Si quieres mejorar repetición, priorízale llamadas de seguimiento.` });
-    if (lowCli?.name) out.push({ tone: "warn", title: "Ojo con %Clientes", body: `${lowCli.name} está baja en %Clientes. Revisa si necesita más llamadas de primera consulta o ajustar el enfoque.` });
-    if (lowRep?.name) out.push({ tone: "warn", title: "Ojo con %Repite", body: `${lowRep.name} está baja en %Repite. Quizá conviene reforzar cierres y seguimiento.` });
+    if (topCap?.name) {
+      out.push({ tone: "ok", title: "Captación fuerte", body: `${topCap.name} está captando mucho últimamente. Si está disponible, pásale más llamadas para aprovechar el momento.` });
+    }
+    if (topCli?.name) {
+      out.push({ tone: "ok", title: "Clientes nuevos (muy bien)", body: `${topCli.name} tiene un %Clientes muy alto. Ideal para primeras consultas y picos de demanda.` });
+    }
+    if (topRep?.name) {
+      out.push({ tone: "ok", title: "Fidelización excelente", body: `${topRep.name} está fidelizando muy bien (%Repite). Si quieres mejorar repetición, priorízale llamadas de seguimiento.` });
+    }
+    if (lowCli?.name) {
+      out.push({ tone: "warn", title: "Ojo con %Clientes", body: `${lowCli.name} está baja en %Clientes. Revisa si necesita más llamadas de primera consulta o ajustar el enfoque.` });
+    }
+    if (lowRep?.name) {
+      out.push({ tone: "warn", title: "Ojo con %Repite", body: `${lowRep.name} está baja en %Repite. Quizá conviene reforzar cierres y seguimiento.` });
+    }
 
-    return out.sort(() => Math.random() - 0.5).slice(0, 4);
+    return [...out].sort(() => Math.random() - 0.5).slice(0, 4);
   }, [data?.rankings?.captadas, data?.rankings?.cliente_pct, data?.rankings?.repite_pct]);
 
-  const bonusEstimate = useMemo(() => {
-    const v = data?.myEarnings?.amount_bonus_eur;
-    return typeof v === "number" ? v : 0;
-  }, [data?.myEarnings?.amount_bonus_eur]);
-
-  const incCount = data?.myIncidentsMonth?.count ?? null;
-  const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
-
-  const bigActionLabel = pState === "offline" ? "Entrar" : "Salir";
-  const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
-
-  // Tabs
-  const tabBar: React.CSSProperties = { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" };
-  const tabBtn = (active: boolean): React.CSSProperties => ({
-    padding: "10px 12px",
-    borderRadius: 999,
-    border: active ? "1px solid #111" : "1px solid #e5e7eb",
-    background: active ? "#111" : "#fff",
-    color: active ? "#fff" : "#111",
-    fontWeight: 1100,
-    cursor: "pointer",
-  });
-  const [tab, setTab] = useState<"dashboard" | "incidents">("dashboard");
+  const teams = data?.teamsRanking || [];
+  const hasTeams = Array.isArray(teams) && teams.length >= 2;
 
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: 1100 }}>
-      {/* Header */}
       <div style={{ ...shellCard, padding: 14 }}>
         <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr auto", gap: 12, alignItems: "center" }}>
           <div style={{ display: "grid", gap: 8 }}>
@@ -517,76 +559,21 @@ export default function CentralPanelPage() {
 
       {tab === "dashboard" ? (
         <>
-          {/* ✅ Equipos global (YA con stats reales) */}
           <div style={{ ...shellCard, padding: 14, border: "1px solid #111" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
               <div style={{ fontWeight: 1300, fontSize: 18 }}>🏆 Equipos (GLOBAL)</div>
               <div style={{ color: "#6b7280", fontWeight: 1000 }}>
-                Score = <b>%Clientes + %Repite</b>
-                {data?.myTeamRank ? (
-                  <>
-                    {" "}
-                    · Tu equipo: <b>#{data.myTeamRank}</b>
-                  </>
-                ) : null}
+                Score basado en <b>%Clientes + %Repite</b>
               </div>
             </div>
 
             {!hasTeams ? (
               <div style={{ marginTop: 12, padding: 12, borderRadius: 16, border: "1px solid #e5e7eb", background: "#fff" }}>
-                <div style={{ fontWeight: 1200 }}>Sin datos de equipos para este mes</div>
-                <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>
-                  Ahora el backend calcula desde <b>team_members + monthly_rankings + worker_invoices</b>. Si sigue vacío, es que faltan miembros en <b>team_members</b> o el mes no tiene datos en rankings.
-                </div>
+                <div style={{ fontWeight: 1200 }}>Sin datos de equipos para este mes.</div>
               </div>
-            ) : (
-              <div style={{ marginTop: 12, overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #e5e7eb" }}>#</th>
-                      <th style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #e5e7eb" }}>Equipo</th>
-                      <th style={{ textAlign: "right", padding: 10, borderBottom: "1px solid #e5e7eb" }}>Score</th>
-                      <th style={{ textAlign: "right", padding: 10, borderBottom: "1px solid #e5e7eb" }}>Minutos</th>
-                      <th style={{ textAlign: "right", padding: 10, borderBottom: "1px solid #e5e7eb" }}>Captadas</th>
-                      <th style={{ textAlign: "right", padding: 10, borderBottom: "1px solid #e5e7eb" }}>€ Mes</th>
-                      <th style={{ textAlign: "right", padding: 10, borderBottom: "1px solid #e5e7eb" }}>Miembros</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {teams.map((t, idx) => (
-                      <tr key={t.team_id}>
-                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", fontWeight: 1200 }}>{medal(idx + 1) || idx + 1}</td>
-                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", fontWeight: 1200 }}>{t.team_name}</td>
-                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", textAlign: "right", fontWeight: 1200 }}>{t.team_score ?? 0}</td>
-                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", textAlign: "right" }}>{fmt(t.total_minutes)}</td>
-                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", textAlign: "right" }}>{fmt(t.total_captadas)}</td>
-                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", textAlign: "right" }}>{eur(t.total_eur_month)}</td>
-                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", textAlign: "right" }}>{fmt(t.member_count)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-
-                {data?.winnerTeam ? (
-                  <div style={{ marginTop: 12, padding: 12, borderRadius: 16, border: "1px solid #d1fae5", background: "#fff" }}>
-                    <div style={{ fontWeight: 1300 }}>🏅 Ganador del mes: {data.winnerTeam.team_name}</div>
-                    <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>
-                      Score: <b>{data.winnerTeam.team_score}</b> · Minutos: <b>{fmt(data.winnerTeam.total_minutes)}</b> · Captadas: <b>{fmt(data.winnerTeam.total_captadas)}</b>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            )}
+            ) : null}
           </div>
 
-          {/* ✅ Equipo Yami + Maria con lista */}
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
-            {teamBox(data?.teamYami || null, "Equipo Yami")}
-            {teamBox(data?.teamMaria || null, "Equipo Maria")}
-          </div>
-
-          {/* KPIs */}
           <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
             <Card>
               <CardTitle>Estado</CardTitle>
@@ -605,7 +592,7 @@ export default function CentralPanelPage() {
             <Card>
               <CardTitle>Bono estimado</CardTitle>
               <CardValue>{eur(bonusEstimate)}</CardValue>
-              <CardHint>Por ahora: bono de equipo (team_winner).</CardHint>
+              <CardHint>Se calcula al momento: si tu equipo va 1º ahora mismo.</CardHint>
             </Card>
 
             <Card>
@@ -617,7 +604,6 @@ export default function CentralPanelPage() {
             </Card>
           </div>
 
-          {/* Control horario */}
           <div style={{ ...shellCard, padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <div>
@@ -669,7 +655,6 @@ export default function CentralPanelPage() {
             </div>
           </div>
 
-          {/* Checklist diario (NO TOCADO) */}
           <div style={{ ...shellCard, padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
               <div style={{ fontWeight: 1400, fontSize: 18 }}>✅ Checklist diario</div>
@@ -715,10 +700,11 @@ export default function CentralPanelPage() {
             </div>
           </div>
 
-          {/* Recomendaciones */}
           <div style={{ ...shellCard, padding: 14 }}>
             <div style={{ fontWeight: 1400, fontSize: 18 }}>💡 Recomendaciones</div>
-            <div style={{ marginTop: 8, color: "#6b7280", fontWeight: 1000 }}>Generadas automáticamente según rankings del mes.</div>
+            <div style={{ marginTop: 8, color: "#6b7280", fontWeight: 1000 }}>
+              Generadas automáticamente según rankings del mes.
+            </div>
 
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
               {recommendations.length === 0 ? (
@@ -749,10 +735,74 @@ export default function CentralPanelPage() {
         </>
       ) : (
         <>
-          {/* Incidencias: si ya lo tienes conectado en otro endpoint, lo conectamos después */}
           <div style={{ ...shellCard, padding: 14 }}>
-            <div style={{ fontWeight: 1400, fontSize: 18 }}>🧾 Incidencias</div>
-            <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>Este tab lo dejamos como lo tenías. (Si quieres, conectamos aquí el endpoint real.)</div>
+            <div style={{ fontWeight: 1400, fontSize: 18 }}>🧾 Registrar incidencia a tarotista</div>
+            <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>
+              Marca cuando una tarotista no conecta a la hora u otras incidencias.
+            </div>
+
+            <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 220px", gap: 12 }}>
+              <div style={{ display: "grid", gap: 10 }}>
+                <div style={{ display: "grid", gap: 6 }}>
+                  <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Tarotista (nombre)</div>
+                  <input
+                    value={incName}
+                    onChange={(e) => setIncName(e.target.value)}
+                    placeholder="Ej: Carmelina"
+                    style={{ padding: 12, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 1100 }}
+                  />
+                </div>
+
+                <div style={{ display: "grid", gap: 6 }}>
+                  <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Tipo</div>
+                  <select
+                    value={incKind}
+                    onChange={(e) => setIncKind(e.target.value as any)}
+                    style={{ padding: 12, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 1100 }}
+                  >
+                    <option value="late">Retraso / No conecta</option>
+                    <option value="absence">Ausencia</option>
+                    <option value="other">Otro</option>
+                  </select>
+                </div>
+
+                <div style={{ display: "grid", gap: 6 }}>
+                  <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Notas</div>
+                  <textarea
+                    value={incNotes}
+                    onChange={(e) => setIncNotes(e.target.value)}
+                    placeholder="Detalles (hora, qué pasó, etc.)"
+                    rows={4}
+                    style={{ padding: 12, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 1000, resize: "vertical" }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gap: 10, alignContent: "start" }}>
+                <button onClick={submitIncident} disabled={!incName.trim()} style={!incName.trim() ? { ...btnPrimary, opacity: 0.5, cursor: "not-allowed" } : btnPrimary}>
+                  Registrar
+                </button>
+
+                <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>
+                  Nota: este botón llama a <b>/api/incidents/create</b>.
+                </div>
+
+                {incStatus ? (
+                  <div
+                    style={{
+                      padding: 12,
+                      borderRadius: 14,
+                      border: incStatus === "ok" ? "1px solid #d1fae5" : "1px solid #ffcccc",
+                      background: "#fff",
+                      fontWeight: 1100,
+                      color: incStatus === "ok" ? "#065f46" : "#991b1b",
+                    }}
+                  >
+                    {incMsg}
+                  </div>
+                ) : null}
+              </div>
+            </div>
           </div>
         </>
       )}
