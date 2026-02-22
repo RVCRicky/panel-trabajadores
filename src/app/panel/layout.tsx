@@ -290,7 +290,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                   }}
                   title="Tarot Celestial"
                 >
-                  <Image src="/publi/logo.png" alt="Tarot Celestial" width={40} height={40} />
+                  <Image src="/logo.png" alt="Tarot Celestial" width={40} height={40} />
                 </div>
 
                 <div style={{ display: "grid", gap: 2 }}>
