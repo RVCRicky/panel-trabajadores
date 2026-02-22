@@ -1,4 +1,3 @@
-// src/app/panel/layout.tsx
 "use client";
 
 import Image from "next/image";
@@ -96,6 +95,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
           await hardLogoutToLogin();
           return;
         }
+
         if (!meJson.worker.is_active) {
           await hardLogoutToLogin();
           return;
@@ -105,7 +105,6 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
         setName(meJson.worker.display_name || "");
         setRole(r);
 
-        // months + month_date (para el selector del header)
         const dashRes = await fetch("/api/dashboard/full", {
           headers: { Authorization: `Bearer ${token}` },
           cache: "no-store",
@@ -116,7 +115,6 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
           setMonth(dashJson.month_date || null);
         }
 
-        // presence (solo tarotista/central)
         if (r === "tarotista" || r === "central") {
           const pr = await fetch("/api/presence/me", {
             headers: { Authorization: `Bearer ${token}` },
@@ -133,7 +131,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
         setLoading(false);
       } catch (e: any) {
         if (!alive) return;
-        setFatal(e?.message || "Error cargando tu sesión. Vuelve a iniciar sesión.");
+        setFatal(e?.message || "Error cargando tu sesión.");
         setLoading(false);
       }
     })();
@@ -141,10 +139,9 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     return () => {
       alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
-  // Tick
+  // Tick timer
   useEffect(() => {
     let timer: any = null;
 
@@ -161,47 +158,62 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     return () => timer && clearInterval(timer);
   }, [startedAt, pState]);
 
-  const stateTone = pState === "online" ? "ok" : pState === "pause" || pState === "bathroom" ? "warn" : "neutral";
-  const stateText = pState === "online" ? "ONLINE" : pState === "pause" ? "PAUSA" : pState === "bathroom" ? "BAÑO" : "OFFLINE";
+  const stateTone =
+    pState === "online"
+      ? "ok"
+      : pState === "pause" || pState === "bathroom"
+      ? "warn"
+      : "neutral";
 
-  const titleRole = role === "admin" ? "Admin" : role === "central" ? "Central" : "Tarotista";
-  const canSeeIncidents = role === "tarotista" || role === "central" || role === "admin";
+  const stateText =
+    pState === "online"
+      ? "ONLINE"
+      : pState === "pause"
+      ? "PAUSA"
+      : pState === "bathroom"
+      ? "BAÑO"
+      : "OFFLINE";
 
-  async function logout() {
-    await hardLogoutToLogin();
-  }
+  const titleRole =
+    role === "admin"
+      ? "Admin"
+      : role === "central"
+      ? "Central"
+      : "Tarotista";
+
+  const canSeeIncidents =
+    role === "tarotista" || role === "central" || role === "admin";
+
+  // ✅ DASHBOARD dinámico según rol
+  const dashHref =
+    role === "central"
+      ? "/panel/central"
+      : role === "admin"
+      ? "/panel/admin"
+      : "/panel";
 
   function refreshAll() {
-    // recarga simple y segura (mismo estado)
     window.location.reload();
   }
 
   function changeMonth(next: string) {
     setMonth(next || null);
-
     const base = pathname || "/panel";
     const url = new URL(window.location.href);
     if (next) url.searchParams.set("month_date", next);
     else url.searchParams.delete("month_date");
-
     const qs = url.searchParams.toString();
     router.replace(qs ? `${base}?${qs}` : base);
   }
 
-  // Si URL trae month_date, reflejarlo
-  useEffect(() => {
-    try {
-      const u = new URL(window.location.href);
-      const q = u.searchParams.get("month_date");
-      if (q && q !== month) setMonth(q);
-    } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathname]);
-
-  const monthLabel = useMemo(() => (month ? formatMonthLabel(month) : "—"), [month]);
+  const monthLabel = useMemo(
+    () => (month ? formatMonthLabel(month) : "—"),
+    [month]
+  );
 
   const pill = (href: string, emoji: string, text: string) => {
-    const active = pathname === href || pathname.startsWith(href + "/");
+    const active =
+      pathname === href || pathname.startsWith(href + "/");
     return (
       <a
         href={href}
@@ -215,10 +227,8 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
           fontWeight: 1100,
           display: "inline-flex",
           alignItems: "center",
-          justifyContent: "center",
           gap: 8,
           whiteSpace: "nowrap",
-          flex: "0 0 auto",
         }}
       >
         <span>{emoji}</span>
@@ -227,234 +237,56 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     );
   };
 
-  const shellCard: React.CSSProperties = {
-    borderRadius: 22,
-    border: "1px solid #e5e7eb",
-    background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
-    boxShadow: "0 12px 45px rgba(0,0,0,0.08)",
-  };
-
-  const btnPrimary: React.CSSProperties = {
-    padding: "11px 14px",
-    borderRadius: 14,
-    border: "1px solid #111",
-    background: "#111",
-    color: "#fff",
-    fontWeight: 1200,
-    cursor: "pointer",
-    whiteSpace: "nowrap",
-    height: 42,
-  };
-
-  const btnGhost: React.CSSProperties = {
-    padding: "11px 14px",
-    borderRadius: 14,
-    border: "1px solid #e5e7eb",
-    background: "#fff",
-    color: "#111",
-    fontWeight: 1200,
-    cursor: "pointer",
-    whiteSpace: "nowrap",
-    height: 42,
-  };
-
   if (loading) {
     return (
-      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#f6f7fb" }}>
-        <div style={{ width: "100%", maxWidth: 520, ...shellCard, padding: 16, display: "flex", alignItems: "center", gap: 12 }}>
-          {/* Loader: unoptimized + priority para que no “falle” en build/blur */}
-          <Image src="/logo.png" alt="Tarot Celestial" width={44} height={44} style={{ borderRadius: 12 }} priority unoptimized />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 1300, fontSize: 16 }}>Tarot Celestial</div>
-            <div style={{ color: "#6b7280", fontWeight: 1000, marginTop: 2 }}>Cargando tu sesión…</div>
-            <div style={{ marginTop: 10, height: 8, background: "#eee", borderRadius: 999, overflow: "hidden" }}>
-              <div style={{ width: "55%", height: "100%", background: "#111", borderRadius: 999 }} />
-            </div>
-          </div>
-        </div>
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
+        <div style={{ fontWeight: 1200 }}>Cargando panel…</div>
       </div>
     );
   }
 
   if (fatal) {
     return (
-      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 16, background: "#f6f7fb" }}>
-        <div style={{ width: "100%", maxWidth: 520, border: "2px solid #111", borderRadius: 18, padding: 16, background: "#fff" }}>
-          <div style={{ fontWeight: 1200, fontSize: 18 }}>⚠️ No se pudo abrir el panel</div>
-          <div style={{ marginTop: 8, color: "#6b7280", fontWeight: 900 }}>{fatal}</div>
-          <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
-            <button onClick={logout} style={btnPrimary}>
-              Volver a login
-            </button>
-          </div>
-        </div>
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
+        <div>{fatal}</div>
       </div>
     );
   }
 
   return (
     <div style={{ minHeight: "100vh", background: "#f6f7fb" }}>
-      {/* Sticky header */}
-      <div
-        style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 30,
-          background: "rgba(246,247,251,0.86)",
-          backdropFilter: "blur(10px)",
-          borderBottom: "1px solid #e5e7eb",
-        }}
-      >
-        <div style={{ maxWidth: 1160, margin: "0 auto", padding: isMobile ? "10px 10px" : "14px 14px" }}>
-          <div style={{ ...shellCard, padding: isMobile ? 12 : 14, display: "grid", gap: 12 }}>
-            {/* Row A (mobile-first) */}
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: isMobile ? "1fr" : "auto 1fr auto",
-                gap: 12,
-                alignItems: "center",
-              }}
-            >
-              {/* Brand */}
-              <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-                <div
-                  style={{
-                    width: 46,
-                    height: 46,
-                    borderRadius: 14,
-                    background: "#fff",
-                    border: "1px solid #e5e7eb",
-                    display: "grid",
-                    placeItems: "center",
-                    overflow: "hidden",
-                    flex: "0 0 auto",
-                  }}
-                >
-                  <Image src="/logo.png" alt="Tarot Celestial" width={46} height={46} priority />
+      <div style={{ position: "sticky", top: 0, zIndex: 30 }}>
+        <div style={{ maxWidth: 1160, margin: "0 auto", padding: 14 }}>
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontWeight: 1400 }}>
+                  Tarot Celestial
                 </div>
-
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 1400, fontSize: 16, lineHeight: 1.1 }}>Tarot Celestial</div>
-                  <div style={{ color: "#6b7280", fontWeight: 1000, marginTop: 4, lineHeight: 1.2 }}>
-                    {titleRole}: <b style={{ color: "#111" }}>{name}</b>
-                  </div>
+                <div>
+                  {titleRole}: <b>{name}</b>
                 </div>
               </div>
 
-              {/* Status */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: isMobile ? "flex-start" : "center",
-                  gap: 10,
-                  flexWrap: "wrap",
-                }}
-              >
+              <div style={{ display: "flex", gap: 10 }}>
                 <Badge tone={stateTone as any}>{stateText}</Badge>
-                <div style={{ fontWeight: 1400, fontSize: 18 }}>{formatHMS(elapsedSec)}</div>
-                {!isMobile ? <div style={{ color: "#6b7280", fontWeight: 1000, textTransform: "capitalize" }}>{monthLabel}</div> : null}
-              </div>
-
-              {/* Actions */}
-              <div
-                style={{
-                  display: "grid",
-                  gap: 10,
-                  justifyItems: isMobile ? "stretch" : "end",
-                }}
-              >
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: isMobile ? "1fr 1fr" : "auto auto",
-                    gap: 10,
-                    alignItems: "end",
-                  }}
-                >
-                  {/* Mes compacto */}
-                  <div style={{ display: "grid", gap: 6 }}>
-                    <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Mes</div>
-                    <select
-                      value={month || ""}
-                      onChange={(e) => changeMonth(e.target.value)}
-                      style={{
-                        width: "100%",
-                        padding: "9px 10px",
-                        borderRadius: 12,
-                        border: "1px solid #e5e7eb",
-                        fontWeight: 1100,
-                        background: "#fff",
-                        textTransform: "capitalize",
-                        height: 42,
-                      }}
-                      disabled={months.length === 0}
-                      title={monthLabel}
-                    >
-                      {months.length === 0 ? <option value="">{month || "—"}</option> : null}
-                      {months.map((m) => (
-                        <option key={m} value={m}>
-                          {formatMonthLabel(m)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <button onClick={refreshAll} style={btnPrimary}>
-                    Actualizar
-                  </button>
-                </div>
-
-                {/* Logout pequeño y limpio */}
-                <button onClick={logout} style={btnGhost}>
-                  Cerrar sesión
-                </button>
+                <div>{formatHMS(elapsedSec)}</div>
               </div>
             </div>
 
-            {/* Row B: Nav pills */}
-            <div
-              style={{
-                display: "flex",
-                gap: 10,
-                flexWrap: "nowrap",
-                overflowX: "auto",
-                WebkitOverflowScrolling: "touch",
-                paddingBottom: 2,
-              }}
-            >
-              {pill("/panel", "📊", "Dashboard")}
+            <div style={{ display: "flex", gap: 10 }}>
+              {pill(dashHref, "📊", "Dashboard")}
               {pill("/panel/invoices", "🧾", "Facturas")}
-              {canSeeIncidents ? (
-                pill("/panel/incidents", "⚠️", "Incidencias")
-              ) : (
-                <span
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: 999,
-                    border: "1px solid #e5e7eb",
-                    background: "#fff",
-                    color: "#9ca3af",
-                    fontWeight: 1100,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 8,
-                    whiteSpace: "nowrap",
-                    flex: "0 0 auto",
-                  }}
-                >
-                  ⚠️ Incidencias
-                </span>
-              )}
+              {canSeeIncidents &&
+                pill("/panel/incidents", "⚠️", "Incidencias")}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Body */}
-      <div style={{ maxWidth: 1160, margin: "0 auto", padding: isMobile ? "12px 10px" : "16px 14px" }}>{children}</div>
+      <div style={{ maxWidth: 1160, margin: "0 auto", padding: 16 }}>
+        {children}
+      </div>
     </div>
   );
 }
