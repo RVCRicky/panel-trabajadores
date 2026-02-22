@@ -176,23 +176,6 @@ export default function PanelPage() {
         return;
       }
 
-      // ✅ REDIRECCIÓN POR ROL (SIN ROMPER TU ARCHIVO)
-      const role = String(j?.user?.worker?.role || "").toLowerCase();
-
-      // Mantener el mes al redirigir
-      const targetQs = month ? `?month_date=${encodeURIComponent(month)}` : "";
-
-      if (role === "central") {
-        router.replace(`/panel/central${targetQs}`);
-        return;
-      }
-      if (role === "admin") {
-        // Si tienes panel admin, lo mandamos allí
-        router.replace(`/panel/admin${targetQs}`);
-        return;
-      }
-
-      // tarotista -> se queda aquí
       setData(j);
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
@@ -428,7 +411,9 @@ export default function PanelPage() {
                           {m.name}
                         </span>
                       ))}
-                      {t.members.length > 10 ? <span style={{ color: "#6b7280", fontWeight: 1000 }}>+{t.members.length - 10}</span> : null}
+                      {t.members.length > 10 ? (
+                        <span style={{ color: "#6b7280", fontWeight: 1000 }}>+{t.members.length - 10}</span>
+                      ) : null}
                     </div>
                   </div>
                 ) : null}
@@ -479,7 +464,9 @@ export default function PanelPage() {
       ) : null}
 
       {/* CENTRAL */}
-      {isCentral ? <CentralTeams /> : null}
+      {isCentral ? (
+        <CentralTeams />
+      ) : null}
 
       {/* TAROTISTA / ADMIN */}
       {!isCentral ? (
