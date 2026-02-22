@@ -307,32 +307,7 @@ export async function GET(req: Request) {
       teamNameMap.set(id, name);
     }
 
-    // b) cargar miembros por equipo (intentamos join a workers, si falla fallback)
-    const teamMembersMap = new Map<string, TeamMember[]>();
-    try {
-      const { data: memRows, error } = await (db as any)
-        .from("team_members")
-        .select("team_id, worker_id, user_id, workers:workers(id, display_name, role)")
-        .limit(20000);
-
-      if (!error && Array.isArray(memRows)) {
-        for (const r of memRows) {
-          const tid = safeStr(r?.team_id);
-          if (!tid) continue;
-
-          const wid = safeStr(r?.worker_id || r?.workers?.id);
-          const name = safeStr(r?.workers?.display_name) || (wid ? wid.slice(0, 8) : "—");
-          const role = safeStr(r?.workers?.role) || "";
-
-          if (!wid) continue;
-
-          const arr = teamMembersMap.get(tid) || [];
-          arr.push({ worker_id: wid, name, role });
-          teamMembersMap.set(tid, arr);
-        }
-      }
-    } catch {
-      // fallback: select(*) + lookup names con workersMap
+    cargar miembros por equipo (intentamos join a workers, si falla fallback)
       try {
         const { data: memAll, error } = await (db as any).from("team_members").select("*").limit(20000);
         if (!error && Array.isArray(memAll)) {
