@@ -1,9 +1,9 @@
 // src/app/panel/layout.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
-import { useRouter, usePathname } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
 type WorkerRole = "admin" | "central" | "tarotista";
@@ -29,13 +29,6 @@ function roleLabel(role: WorkerRole | null) {
   return "—";
 }
 
-function rolePill(role: WorkerRole | null) {
-  if (role === "admin") return { bg: "#111", fg: "#fff", bd: "#111" };
-  if (role === "central") return { bg: "rgba(255,255,255,0.9)", fg: "#111", bd: "rgba(17,17,17,0.25)" };
-  if (role === "tarotista") return { bg: "rgba(255,255,255,0.9)", fg: "#111", bd: "rgba(17,17,17,0.10)" };
-  return { bg: "rgba(255,255,255,0.9)", fg: "#111", bd: "rgba(17,17,17,0.10)" };
-}
-
 function initials(name: string) {
   const parts = String(name || "")
     .trim()
@@ -43,7 +36,50 @@ function initials(name: string) {
     .filter(Boolean)
     .slice(0, 2);
   if (parts.length === 0) return "TC";
-  return parts.map((p) => p[0]?.toUpperCase() || "").join("");
+  return parts.map((p) => (p[0] ? p[0].toUpperCase() : "")).join("");
+}
+
+function rolePillStyle(role: WorkerRole | null): { bg: string; fg: string; bd: string } {
+  if (role === "admin") return { bg: "#111", fg: "#fff", bd: "#111" };
+  if (role === "central") return { bg: "rgba(255,255,255,0.92)", fg: "#111", bd: "rgba(17,17,17,0.22)" };
+  if (role === "tarotista") return { bg: "rgba(255,255,255,0.92)", fg: "#111", bd: "rgba(17,17,17,0.14)" };
+  return { bg: "rgba(255,255,255,0.92)", fg: "#111", bd: "rgba(17,17,17,0.14)" };
+}
+
+function LogoMark({ size = 40 }: { size?: number }) {
+  const [broken, setBroken] = useState(false);
+
+  if (broken) {
+    return (
+      <div
+        style={{
+          width: size,
+          height: size,
+          borderRadius: Math.max(12, Math.floor(size * 0.35)),
+          display: "grid",
+          placeItems: "center",
+          fontWeight: 1400,
+          background: "#111",
+          color: "#fff",
+          letterSpacing: -0.2,
+        }}
+      >
+        TC
+      </div>
+    );
+  }
+
+  return (
+    <Image
+      src="/logo.png"
+      alt="Tarot Celestial"
+      width={size}
+      height={size}
+      priority
+      onError={() => setBroken(true)}
+      style={{ objectFit: "contain" }}
+    />
+  );
 }
 
 export default function PanelLayout({ children }: { children: React.ReactNode }) {
@@ -74,11 +110,13 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
           headers: { Authorization: `Bearer ${token}` },
           cache: "no-store",
         });
+
         const j = await res.json().catch(() => null);
 
         if (!alive) return;
 
         if (!j?.ok || !j?.worker) {
+          // cortamos cualquier loop de sesión corrupta
           await supabase.auth.signOut();
           router.replace("/login");
           return;
@@ -95,7 +133,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
         setLoading(false);
       } catch (e: any) {
         if (!alive) return;
-        setFatal(e?.message || "Error cargando tu sesión. Vuelve a iniciar sesión.");
+        setFatal(e?.message || "No se pudo cargar tu sesión. Vuelve a iniciar sesión.");
         setLoading(false);
       }
     })();
@@ -118,11 +156,18 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     ];
   }, []);
 
-  const pillTone = rolePill(role);
+  const bg: React.CSSProperties = {
+    minHeight: "100vh",
+    background:
+      "radial-gradient(900px 520px at 12% 0%, rgba(17,17,17,0.12) 0%, rgba(255,255,255,0) 62%), radial-gradient(900px 520px at 92% 10%, rgba(17,17,17,0.06) 0%, rgba(255,255,255,0) 55%), linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%)",
+  };
+
+  const pill = rolePillStyle(role);
 
   const navPill = (active: boolean): React.CSSProperties => ({
     display: "inline-flex",
     alignItems: "center",
+    justifyContent: "center",
     gap: 10,
     padding: isMobile ? "10px 14px" : "10px 16px",
     borderRadius: 999,
@@ -130,33 +175,24 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     background: active ? "#111" : "rgba(255,255,255,0.92)",
     color: active ? "#fff" : "#111",
     textDecoration: "none",
-    fontWeight: 1100,
+    fontWeight: 1200,
     whiteSpace: "nowrap",
-    boxShadow: active ? "0 14px 30px rgba(0,0,0,0.16)" : "0 10px 22px rgba(0,0,0,0.07)",
+    boxShadow: active ? "0 16px 34px rgba(0,0,0,0.18)" : "0 12px 26px rgba(0,0,0,0.08)",
     transform: active ? "translateY(-1px)" : "translateY(0px)",
     transition: "transform 140ms ease, box-shadow 140ms ease, background 140ms ease",
   });
 
-  const bg: React.CSSProperties = {
-    minHeight: "100vh",
-    background:
-      "radial-gradient(900px 500px at 10% 0%, rgba(17,17,17,0.12) 0%, rgba(255,255,255,0) 62%), radial-gradient(900px 500px at 90% 10%, rgba(17,17,17,0.06) 0%, rgba(255,255,255,0) 55%), linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%)",
+  const cardShell: React.CSSProperties = {
+    borderRadius: 26,
+    border: "1px solid rgba(17,17,17,0.10)",
+    background: "rgba(255,255,255,0.74)",
+    boxShadow: "0 22px 60px rgba(0,0,0,0.10)",
   };
 
   if (loading) {
     return (
       <div style={{ ...bg, display: "grid", placeItems: "center", padding: 16 }}>
-        <div
-          style={{
-            width: "100%",
-            maxWidth: 540,
-            borderRadius: 24,
-            border: "1px solid rgba(17,17,17,0.12)",
-            background: "rgba(255,255,255,0.82)",
-            boxShadow: "0 22px 60px rgba(0,0,0,0.12)",
-            padding: 16,
-          }}
-        >
+        <div style={{ width: "100%", maxWidth: 560, ...cardShell, padding: 16 }}>
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
             <div
               style={{
@@ -164,18 +200,19 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                 height: 46,
                 borderRadius: 16,
                 border: "1px solid rgba(17,17,17,0.12)",
-                background: "rgba(255,255,255,0.9)",
+                background: "rgba(255,255,255,0.92)",
                 display: "grid",
                 placeItems: "center",
                 overflow: "hidden",
+                boxShadow: "0 14px 26px rgba(0,0,0,0.10)",
               }}
             >
-              <Image src="/public/logo.png" alt="Tarot Celestial" width={40} height={40} />
+              <LogoMark size={40} />
             </div>
 
             <div style={{ display: "grid", gap: 2 }}>
-              <div style={{ fontWeight: 1300, letterSpacing: -0.2, fontSize: 18 }}>Tarot Celestial</div>
-              <div style={{ color: "#6b7280", fontWeight: 900, fontSize: 13 }}>Cargando tu sesión…</div>
+              <div style={{ fontWeight: 1400, letterSpacing: -0.2, fontSize: 18 }}>Tarot Celestial</div>
+              <div style={{ color: "#6b7280", fontWeight: 950, fontSize: 13 }}>Cargando tu sesión…</div>
             </div>
           </div>
 
@@ -189,6 +226,10 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                 animation: "tc_bar 900ms ease-in-out infinite alternate",
               }}
             />
+          </div>
+
+          <div style={{ marginTop: 10, color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
+            Si tarda mucho, revisa tu conexión o vuelve a iniciar sesión.
           </div>
 
           <style>{`
@@ -205,19 +246,9 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
   if (fatal) {
     return (
       <div style={{ ...bg, display: "grid", placeItems: "center", padding: 16 }}>
-        <div
-          style={{
-            width: "100%",
-            maxWidth: 560,
-            borderRadius: 24,
-            border: "1px solid rgba(17,17,17,0.14)",
-            background: "rgba(255,255,255,0.92)",
-            boxShadow: "0 22px 60px rgba(0,0,0,0.12)",
-            padding: 16,
-          }}
-        >
-          <div style={{ fontWeight: 1300, fontSize: 18 }}>⚠️ No se pudo abrir el panel</div>
-          <div style={{ marginTop: 8, color: "#6b7280", fontWeight: 900, whiteSpace: "pre-wrap" }}>{fatal}</div>
+        <div style={{ width: "100%", maxWidth: 600, ...cardShell, padding: 16 }}>
+          <div style={{ fontWeight: 1400, fontSize: 18 }}>⚠️ No se pudo abrir el panel</div>
+          <div style={{ marginTop: 8, color: "#6b7280", fontWeight: 950, whiteSpace: "pre-wrap" }}>{fatal}</div>
 
           <button
             onClick={logout}
@@ -229,9 +260,9 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
               border: "1px solid #111",
               background: "#111",
               color: "#fff",
-              fontWeight: 1200,
+              fontWeight: 1300,
               cursor: "pointer",
-              boxShadow: "0 14px 30px rgba(0,0,0,0.16)",
+              boxShadow: "0 16px 34px rgba(0,0,0,0.18)",
             }}
           >
             Volver a login
@@ -256,15 +287,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
         }}
       >
         <div style={{ maxWidth: 1120, margin: "0 auto", padding: isMobile ? 12 : 16 }}>
-          <div
-            style={{
-              borderRadius: 26,
-              border: "1px solid rgba(17,17,17,0.10)",
-              background: "rgba(255,255,255,0.74)",
-              boxShadow: "0 20px 60px rgba(0,0,0,0.10)",
-              padding: isMobile ? 12 : 14,
-            }}
-          >
+          <div style={{ ...cardShell, padding: isMobile ? 12 : 14 }}>
             {/* TOP ROW */}
             <div
               style={{
@@ -290,23 +313,21 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                   }}
                   title="Tarot Celestial"
                 >
-                  <Image src="/logo.png" alt="Tarot Celestial" width={40} height={40} />
+                  <LogoMark size={40} />
                 </div>
 
                 <div style={{ display: "grid", gap: 2 }}>
                   <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 1400, letterSpacing: -0.2, fontSize: 18 }}>
-                      Tarot Celestial
-                    </div>
+                    <div style={{ fontWeight: 1500, letterSpacing: -0.25, fontSize: 18 }}>Tarot Celestial</div>
 
                     <span
                       style={{
                         padding: "4px 10px",
                         borderRadius: 999,
-                        border: `1px solid ${pillTone.bd}`,
-                        background: pillTone.bg,
-                        color: pillTone.fg,
-                        fontWeight: 1200,
+                        border: `1px solid ${pill.bd}`,
+                        background: pill.bg,
+                        color: pill.fg,
+                        fontWeight: 1300,
                         fontSize: 12,
                       }}
                     >
@@ -315,7 +336,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                   </div>
 
                   <div style={{ color: "#6b7280", fontWeight: 950, fontSize: 13 }}>
-                    Panel Interno · Control horario · Facturación · Incidencias
+                    Panel Interno · Fichaje · Objetivos · Facturación
                   </div>
                 </div>
               </div>
@@ -340,7 +361,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                       background: "rgba(255,255,255,0.92)",
                       display: "grid",
                       placeItems: "center",
-                      fontWeight: 1300,
+                      fontWeight: 1400,
                       boxShadow: "0 12px 22px rgba(0,0,0,0.08)",
                     }}
                     title={name || "Usuario"}
@@ -349,12 +370,8 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                   </div>
 
                   <div style={{ display: "grid", gap: 2 }}>
-                    <div style={{ fontWeight: 1300, fontSize: 14, lineHeight: 1.1 }}>
-                      {name || "—"}
-                    </div>
-                    <div style={{ color: "#6b7280", fontWeight: 950, fontSize: 12 }}>
-                      Sesión activa
-                    </div>
+                    <div style={{ fontWeight: 1400, fontSize: 14, lineHeight: 1.1 }}>{name || "—"}</div>
+                    <div style={{ color: "#6b7280", fontWeight: 950, fontSize: 12 }}>Sesión activa</div>
                   </div>
                 </div>
 
@@ -368,7 +385,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                       background: "rgba(255,255,255,0.92)",
                       color: "#111",
                       textDecoration: "none",
-                      fontWeight: 1200,
+                      fontWeight: 1300,
                       boxShadow: "0 12px 22px rgba(0,0,0,0.08)",
                       whiteSpace: "nowrap",
                     }}
@@ -385,9 +402,9 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                     border: "1px solid #111",
                     background: "#111",
                     color: "#fff",
-                    fontWeight: 1200,
+                    fontWeight: 1300,
                     cursor: "pointer",
-                    boxShadow: "0 14px 30px rgba(0,0,0,0.16)",
+                    boxShadow: "0 16px 34px rgba(0,0,0,0.18)",
                     whiteSpace: "nowrap",
                   }}
                 >
