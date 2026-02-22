@@ -542,20 +542,6 @@ export default function PanelPage() {
           </div>
         </div>
 
-        <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-          <div style={segmented}>
-            <a href="/panel" style={navBtn(true)}>📊 Dashboard</a>
-
-            {/* ⚠️ Ajusta esta ruta si tu página real de facturas es otra */}
-            <a href="/panel/invoices" style={navBtn(false)}>🧾 Facturas</a>
-
-            {(isTarot || isCentral) ? (
-              <a href="/panel/incidents" style={navBtn(false)}>⚠️ Mis incidencias</a>
-            ) : (
-              <a href="/panel/incidents" style={{ ...navBtn(false), opacity: 0.4, pointerEvents: "none" }}>⚠️ Mis incidencias</a>
-            )}
-          </div>
-
           <div style={{ display: "grid", gap: 8, width: "100%" }}>
             <div style={{ color: "#6b7280", fontWeight: 1000 }}>Mes</div>
             <select
