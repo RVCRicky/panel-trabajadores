@@ -281,7 +281,7 @@ export async function GET(req: Request) {
     }
 
     // ===============================
-    // 6) EQUIPOS (con fallback REAL)
+    // 6) EQUIPOS (fallback REAL)
     // ===============================
     let teamsRanking: TeamRow[] = [];
     let myTeamRank: number | null = null;
@@ -307,30 +307,76 @@ export async function GET(req: Request) {
       teamNameMap.set(id, name);
     }
 
-    cargar miembros por equipo (intentamos join a workers, si falla fallback)
-      try {
-        const { data: memAll, error } = await (db as any).from("team_members").select("*").limit(20000);
-        if (!error && Array.isArray(memAll)) {
-          for (const r of memAll) {
+    // b) miembros por equipo (leer team_members * y resolver worker_id con extractMemberIds + workers)
+    const teamMembersMap = new Map<string, TeamMember[]>();
+    try {
+      const { data: memAll, error } = await (db as any).from("team_members").select("*").limit(20000);
+      if (!error && Array.isArray(memAll) && memAll.length > 0) {
+        // juntamos IDs posibles
+        const links = memAll
+          .map((r: any) => {
             const tid = safeStr(r?.team_id || r?.team || r?.id_team);
-            if (!tid) continue;
-
+            if (!tid) return null;
             const ids = extractMemberIds(r);
-            const wid = ids.worker_id ? String(ids.worker_id) : "";
-            if (!wid) continue;
+            return { team_id: tid, worker_id: ids.worker_id || null, user_id: ids.user_id || null };
+          })
+          .filter(Boolean) as Array<{ team_id: string; worker_id: string | null; user_id: string | null }>;
 
-            const w = workersMap.get(wid);
-            const name = w?.display_name || wid.slice(0, 8);
-            const role = w?.role || "";
+        const wids = uniq(links.map((x) => x.worker_id).filter(Boolean) as string[]);
+        const uids = uniq(links.map((x) => x.user_id).filter(Boolean) as string[]);
 
-            const arr = teamMembersMap.get(tid) || [];
-            arr.push({ worker_id: wid, name, role });
-            teamMembersMap.set(tid, arr);
+        const workersById = new Map<string, { display_name: string; role: string; user_id: string | null }>();
+        const workersByUser = new Map<string, { id: string; display_name: string; role: string }>();
+
+        if (wids.length) {
+          const { data: ws1 } = await db.from("workers").select("id, user_id, display_name, role").in("id", wids).limit(20000);
+          for (const w of ws1 || []) {
+            const id = safeStr((w as any).id);
+            workersById.set(id, {
+              display_name: safeStr((w as any).display_name) || "—",
+              role: safeStr((w as any).role) || "",
+              user_id: (w as any).user_id ? String((w as any).user_id) : null,
+            });
           }
         }
-      } catch {}
-    
-    // c) mi team (por membresía)
+
+        if (uids.length) {
+          const { data: ws2 } = await db.from("workers").select("id, user_id, display_name, role").in("user_id", uids).limit(20000);
+          for (const w of ws2 || []) {
+            const uid2 = safeStr((w as any).user_id);
+            if (!uid2) continue;
+            workersByUser.set(uid2, {
+              id: safeStr((w as any).id),
+              display_name: safeStr((w as any).display_name) || "—",
+              role: safeStr((w as any).role) || "",
+            });
+          }
+        }
+
+        for (const link of links) {
+          const tid = link.team_id;
+
+          let wid = safeStr(link.worker_id);
+          if (!wid && link.user_id) {
+            const w2 = workersByUser.get(String(link.user_id));
+            if (w2?.id) wid = w2.id;
+          }
+          if (!wid) continue;
+
+          const w1 = workersById.get(wid);
+          const name = w1?.display_name || (link.user_id ? workersByUser.get(String(link.user_id))?.display_name : "") || wid.slice(0, 8);
+          const role = w1?.role || (link.user_id ? workersByUser.get(String(link.user_id))?.role : "") || "";
+
+          const arr = teamMembersMap.get(tid) || [];
+          arr.push({ worker_id: wid, name: name || "—", role });
+          teamMembersMap.set(tid, arr);
+        }
+      }
+    } catch {
+      // si falla, queda vacío y ya
+    }
+
+    // c) mi team (por membresía worker_id)
     for (const [tid, members] of teamMembersMap.entries()) {
       if (members.some((m) => String(m.worker_id) === String(myWorkerId))) {
         myTeam = { team_id: tid, team_name: teamNameMap.get(tid) || `Equipo ${tid.slice(0, 6)}` };
@@ -347,7 +393,7 @@ export async function GET(req: Request) {
       tmrRows = [];
     }
 
-    // e) función: calcula equipos desde monthly_rankings + invoices (FALLBACK REAL)
+    // e) fallback real desde monthly_rankings + invoices
     const buildTeamsFromRankings = (): TeamRow[] => {
       const mrMap = new Map<string, any>();
       for (const r of rows) mrMap.set(String(r.worker_id), r);
@@ -388,7 +434,6 @@ export async function GET(req: Request) {
             wSum += minutes;
           }
 
-          // backup average
           if (Number.isFinite(cli) || Number.isFinite(rep)) {
             avgCliSum += cli;
             avgRepSum += rep;
@@ -396,11 +441,9 @@ export async function GET(req: Request) {
           }
         }
 
-        const team_cliente_pct =
-          wSum > 0 ? Number((wCli / wSum).toFixed(2)) : avgN > 0 ? Number((avgCliSum / avgN).toFixed(2)) : 0;
+        const team_cliente_pct = wSum > 0 ? Number((wCli / wSum).toFixed(2)) : avgN > 0 ? Number((avgCliSum / avgN).toFixed(2)) : 0;
 
-        const team_repite_pct =
-          wSum > 0 ? Number((wRep / wSum).toFixed(2)) : avgN > 0 ? Number((avgRepSum / avgN).toFixed(2)) : 0;
+        const team_repite_pct = wSum > 0 ? Number((wRep / wSum).toFixed(2)) : avgN > 0 ? Number((avgRepSum / avgN).toFixed(2)) : 0;
 
         const team_score = calcTeamScore(team_cliente_pct, team_repite_pct);
 
@@ -422,7 +465,7 @@ export async function GET(req: Request) {
       return out;
     };
 
-    // f) construimos normalized desde tmr si hay, si no fallback real
+    // f) normalized desde tmr si hay, si no fallback real
     let normalized: TeamRow[] = [];
 
     if (Array.isArray(tmrRows) && tmrRows.length > 0) {
@@ -461,11 +504,10 @@ export async function GET(req: Request) {
 
       normalized.sort((a, b) => toNum(b.team_score) - toNum(a.team_score));
     } else {
-      // ✅ FALLBACK REAL
       normalized = buildTeamsFromRankings();
     }
 
-    // ranking equipos: solo lo damos a CENTRAL (pero myTeam lo damos siempre)
+    // ranking equipos: solo CENTRAL (pero myTeam lo devolvemos siempre)
     if (myRole === "central") {
       teamsRanking = normalized.slice(0, 10);
 
@@ -487,7 +529,7 @@ export async function GET(req: Request) {
         : null;
     }
 
-    // g) teamYami / teamMaria (si existen)
+    // g) teamYami / teamMaria
     const findTeamByName = (needle: string) => {
       for (const [tid, name] of teamNameMap.entries()) {
         if (includesLoose(name, needle)) return tid;
@@ -538,7 +580,6 @@ export async function GET(req: Request) {
     return NextResponse.json({
       ok: true,
 
-      // ambas
       month_date,
       monthDate,
 
@@ -563,7 +604,6 @@ export async function GET(req: Request) {
       winnerTeam,
       bonusRules,
 
-      // ✅ extra: equipos concretos
       teamYami,
       teamMaria,
     });
