@@ -151,6 +151,53 @@ export default function PanelPage() {
     return data.session?.access_token || null;
   }
 
+  // ✅ REDIRECCIÓN INMEDIATA POR ROL (NO depende de dashboard/full)
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      try {
+        const token = await getToken();
+        if (!token) {
+          router.replace("/login");
+          return;
+        }
+
+        const month = qs.get("month_date");
+        const targetQs = month ? `?month_date=${encodeURIComponent(month)}` : "";
+
+        const meRes = await fetch("/api/me", {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+
+        const mj = await meRes.json().catch(() => null);
+        if (!alive) return;
+
+        const role = String(mj?.worker?.role || "").toLowerCase();
+
+        if (role === "central") {
+          router.replace(`/panel/central${targetQs}`);
+          return;
+        }
+
+        if (role === "admin") {
+          router.replace(`/panel/admin${targetQs}`);
+          return;
+        }
+
+        // tarotista -> se queda en /panel
+      } catch {
+        // si falla, no hacemos nada; load() manejará lo demás
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function load() {
     setErr(null);
     setLoading(true);
@@ -411,9 +458,7 @@ export default function PanelPage() {
                           {m.name}
                         </span>
                       ))}
-                      {t.members.length > 10 ? (
-                        <span style={{ color: "#6b7280", fontWeight: 1000 }}>+{t.members.length - 10}</span>
-                      ) : null}
+                      {t.members.length > 10 ? <span style={{ color: "#6b7280", fontWeight: 1000 }}>+{t.members.length - 10}</span> : null}
                     </div>
                   </div>
                 ) : null}
@@ -464,9 +509,7 @@ export default function PanelPage() {
       ) : null}
 
       {/* CENTRAL */}
-      {isCentral ? (
-        <CentralTeams />
-      ) : null}
+      {isCentral ? <CentralTeams /> : null}
 
       {/* TAROTISTA / ADMIN */}
       {!isCentral ? (
