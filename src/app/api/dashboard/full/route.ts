@@ -71,9 +71,7 @@ async function safeEqFirst(adb: any, table: string, selectCols: string, candidat
     try {
       const { data, error } = await adb.from(table).select(selectCols).eq(c.col, c.val).limit(1);
       if (!error && Array.isArray(data) && data[0]) return data[0];
-    } catch {
-      // si la columna no existe o falla, probamos la siguiente
-    }
+    } catch {}
   }
   return null;
 }
@@ -87,40 +85,58 @@ export async function GET(req: Request) {
     const service = getEnv("SUPABASE_SERVICE_ROLE_KEY");
     const db = createClient(url, service, { auth: { persistSession: false } });
 
-    // ✅ FIX TS: usar adb:any en TODAS las queries para evitar "instantiation deep"
-    const adb: any = db as any;
+    const urlObj = new URL(req.url);
+    const monthParam = urlObj.searchParams.get("month_date");
+    const debug = urlObj.searchParams.get("debug") === "1";
 
-    // auth user
-    const { data: u, error: eu } = await adb.auth.getUser(token);
+    const { data: u, error: eu } = await db.auth.getUser(token);
     if (eu || !u?.user) return NextResponse.json({ ok: false, error: "BAD_TOKEN" }, { status: 401 });
 
     const uid = u.user.id;
 
-    // worker
-    const { data: me } = await adb
+    const { data: me } = await db
       .from("workers")
       .select("id, user_id, role, display_name, is_active")
       .eq("user_id", uid)
       .maybeSingle();
 
     if (!me) return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
-    if (!me.is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
+    if (!(me as any).is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
 
-    const myWorkerId = String(me.id);
-    const myRole = normRole(me.role);
+    const myWorkerId = String((me as any).id);
+    const myRole = normRole((me as any).role);
 
-    // month param
-    const urlObj = new URL(req.url);
-    const monthParam = urlObj.searchParams.get("month_date");
+    // ===============================
+    // MESES DISPONIBLES
+    // - Tarotistas/Admin: worker_invoices
+    // - Central: si no hay, fallback a team_monthly_results
+    // ===============================
+    let months: string[] = [];
 
-    // meses disponibles (FUENTE: worker_invoices)
-    const { data: invoiceRows } = await adb
-      .from("worker_invoices")
-      .select("month_date")
-      .order("month_date", { ascending: false })
-      .limit(36);
+    try {
+      const { data: invoiceRows } = await db
+        .from("worker_invoices")
+        .select("month_date")
+        .order("month_date", { ascending: false })
+        .limit(36);
 
-    const months = uniq((invoiceRows || []).map((r: any) => r.month_date).filter(Boolean)) as string[];
+      months = uniq((invoiceRows || []).map((r: any) => r.month_date).filter(Boolean)) as string[];
+    } catch {}
+
+    // fallback para central si months vacío
+    if (myRole === "central" && months.length === 0) {
+      try {
+        const adb: any = db as any;
+        const { data: tmrMonths } = await adb
+          .from("team_monthly_results")
+          .select("month_date")
+          .order("month_date", { ascending: false })
+          .limit(36);
+
+        months = uniq((tmrMonths || []).map((r: any) => r.month_date).filter(Boolean)) as string[];
+      } catch {}
+    }
+
     const month_date = monthParam || months[0] || null;
 
     if (!month_date) {
@@ -136,13 +152,14 @@ export async function GET(req: Request) {
         myTeamRank: null,
         winnerTeam: null,
         bonusRules: [],
+        ...(debug ? { debugTeams: { note: "NO_MONTH_DATE" } } : {}),
       });
     }
 
     // ===============================
     // 1) RANKINGS (monthly_rankings)
     // ===============================
-    const { data: mr } = await adb
+    const { data: mr } = await db
       .from("monthly_rankings")
       .select(
         `
@@ -181,15 +198,15 @@ export async function GET(req: Request) {
     const rankRepite = [...tarotistas].sort((a, b) => b.repite_pct - a.repite_pct);
 
     // ===============================
-    // 2) FACTURAS (FUENTE REAL DE €)
+    // 2) FACTURAS (worker_invoices)
     // ===============================
-    const { data: invoices } = await adb
+    const { data: invoices } = await db
       .from("worker_invoices")
       .select("worker_id, total_eur, bonuses_eur")
       .eq("month_date", month_date);
 
     const invoiceMap = new Map<string, any>();
-    for (const inv of invoices || []) invoiceMap.set(String(inv.worker_id), inv);
+    for (const inv of invoices || []) invoiceMap.set(String((inv as any).worker_id), inv);
 
     const rankEurTotal = [...tarotistas]
       .map((t) => ({
@@ -213,7 +230,7 @@ export async function GET(req: Request) {
     const myInvoice = invoiceMap.get(myWorkerId);
     const myRankRow = rows.find((r) => r.worker_id === myWorkerId);
 
-    const myEarnings: any =
+    const myEarnings =
       myRole === "tarotista"
         ? {
             minutes_total: toNum(myRankRow?.minutes),
@@ -231,12 +248,12 @@ export async function GET(req: Request) {
           };
 
     // ===============================
-    // 4) INCIDENCIAS DEL MES (solo unjustified)
+    // 4) INCIDENCIAS (unjustified)
     // ===============================
     let myIncidentsMonth = { count: 0, penalty_eur: 0, grave: false };
 
     try {
-      const { data: incs } = await adb
+      const { data: incs } = await db
         .from("shift_incidents")
         .select("id, kind, status, penalty_eur")
         .eq("worker_id", myWorkerId)
@@ -263,7 +280,7 @@ export async function GET(req: Request) {
     // ===============================
     let bonusRules: any[] = [];
     try {
-      const { data: br } = await adb
+      const { data: br } = await db
         .from("bonus_rules")
         .select("ranking_type, position, role, amount_eur, created_at, is_active")
         .order("created_at", { ascending: false })
@@ -275,29 +292,44 @@ export async function GET(req: Request) {
     }
 
     // ===============================
-    // 6) CENTRAL: EQUIPOS (teams + team_monthly_results + team_members)
+    // 6) CENTRAL: EQUIPOS
+    // teams + team_monthly_results + team_members
     // ===============================
     let teamsRanking: TeamRow[] = [];
     let myTeamRank: number | null = null;
     let winnerTeam: any = null;
 
+    const debugTeams: any = debug ? {} : null;
+
     if (myRole === "central") {
-      // a) resultados mensuales por equipo
+      const adb: any = db as any;
+
+      // a) team_monthly_results del mes
       let tmrRows: any[] = [];
       try {
-        const { data, error } = await adb.from("team_monthly_results").select("*").eq("month_date", month_date).limit(200);
-        if (!error && Array.isArray(data)) tmrRows = data;
-      } catch {
-        tmrRows = [];
-      }
+        const { data, error } = await adb
+          .from("team_monthly_results")
+          .select("*")
+          .eq("month_date", month_date)
+          .limit(2000);
 
-      // b) mapa equipos: team_id -> nombre (teams)
+        if (!error && Array.isArray(data)) tmrRows = data;
+      } catch {}
+
+      // b) teams
       let teamsRows: any[] = [];
       try {
-        const { data, error } = await adb.from("teams").select("*").limit(2000);
+        const { data, error } = await adb.from("teams").select("*").limit(5000);
         if (!error && Array.isArray(data)) teamsRows = data;
-      } catch {
-        teamsRows = [];
+      } catch {}
+
+      // DEBUG info
+      if (debugTeams) {
+        debugTeams.month_date = month_date;
+        debugTeams.team_monthly_results_count = tmrRows.length;
+        debugTeams.team_monthly_results_keys_sample = tmrRows[0] ? Object.keys(tmrRows[0]) : [];
+        debugTeams.teams_count = teamsRows.length;
+        debugTeams.teams_keys_sample = teamsRows[0] ? Object.keys(teamsRows[0]) : [];
       }
 
       const teamNameMap = new Map<string, string>();
@@ -308,10 +340,9 @@ export async function GET(req: Request) {
         teamNameMap.set(id, name);
       }
 
-      // c) normalizar team_monthly_results
       const normalized: TeamRow[] = (tmrRows || [])
         .map((r: any) => {
-          const team_id = safeStr(r?.team_id || r?.team || r?.id);
+          const team_id = safeStr(r?.team_id || r?.team || r?.team_uuid || r?.teamid || r?.id);
           if (!team_id) return null;
 
           const team_name = teamNameMap.get(team_id) || `Equipo ${team_id.slice(0, 6)}`;
@@ -343,7 +374,7 @@ export async function GET(req: Request) {
       normalized.sort((a, b) => toNum(b.team_score) - toNum(a.team_score));
       teamsRanking = normalized.slice(0, 10);
 
-      // d) members para top 2 (team_members + workers)
+      // members para top2
       try {
         const showIds = teamsRanking.slice(0, 2).map((t) => t.team_id);
         if (showIds.length) {
@@ -370,12 +401,14 @@ export async function GET(req: Request) {
               return { ...t, members: ms, member_count: ms.length || t.member_count || 0 };
             });
           }
-        }
-      } catch {
-        // ignore
-      }
 
-      // e) mi equipo (central) — intentamos resolver sin romper si no existe columna
+          if (debugTeams) {
+            debugTeams.team_members_keys_sample = memRows?.[0] ? Object.keys(memRows[0]) : [];
+          }
+        }
+      } catch {}
+
+      // mi equipo (best effort)
       const myTeamRow =
         (await safeEqFirst(adb, "teams", "id, team_id, name, team_name, central_user_id, central_worker_id, user_id, worker_id", [
           { col: "central_user_id", val: uid },
@@ -388,11 +421,9 @@ export async function GET(req: Request) {
       if (myTeamId) {
         const idx = teamsRanking.findIndex((t) => t.team_id === myTeamId);
         myTeamRank = idx === -1 ? null : idx + 1;
-      } else {
-        myTeamRank = null;
       }
 
-      // f) winnerTeam (top 1)
+      // winner
       const win = teamsRanking[0] || null;
       winnerTeam = win
         ? {
@@ -407,21 +438,13 @@ export async function GET(req: Request) {
           }
         : null;
 
-      // g) bono potencial ganador
-      const ruleWinner = (bonusRules || []).find(
-        (x: any) =>
-          String(x?.ranking_type || "").toLowerCase() === "team_winner" &&
-          Number(x?.position) === 1 &&
-          String(x?.role || "").toLowerCase() === "central" &&
-          (x?.is_active === undefined ? true : !!x?.is_active)
-      );
-
-      const bonusTeamWinner = ruleWinner ? toNum(ruleWinner.amount_eur) : 0;
-
-      // h) myEarnings central: por ahora solo bono si su equipo va #1
-      const centralBonus = myTeamRank === 1 ? bonusTeamWinner : 0;
-      myEarnings.amount_bonus_eur = centralBonus;
-      myEarnings.amount_total_eur = centralBonus;
+      if (debugTeams) {
+        debugTeams.normalized_count = normalized.length;
+        debugTeams.teamsRanking_count = teamsRanking.length;
+        debugTeams.winnerTeam = winnerTeam;
+        debugTeams.myTeamId = myTeamId || null;
+        debugTeams.myTeamRank = myTeamRank;
+      }
     }
 
     return NextResponse.json({
@@ -446,6 +469,8 @@ export async function GET(req: Request) {
       myTeamRank,
       winnerTeam,
       bonusRules,
+
+      ...(debug ? { debugTeams } : {}),
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
