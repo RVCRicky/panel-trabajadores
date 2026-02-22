@@ -39,6 +39,11 @@ function calcTeamScore(clientePct: number, repitePct: number) {
   return Number((c + r).toFixed(2));
 }
 
+function looksLikeUuid(x: any) {
+  const s = String(x || "").trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+}
+
 type RankRow = {
   worker_id: string;
   name: string;
@@ -71,10 +76,45 @@ async function safeEqFirst(adb: any, table: string, selectCols: string, candidat
     try {
       const { data, error } = await adb.from(table).select(selectCols).eq(c.col, c.val).limit(1);
       if (!error && Array.isArray(data) && data[0]) return data[0];
-    } catch {
-      // seguimos probando columnas
-    }
+    } catch {}
   }
+  return null;
+}
+
+function extractWorkerIdFromTeamMemberRow(row: any): string | null {
+  if (!row || typeof row !== "object") return null;
+
+  // candidatos típicos
+  const candidates = [
+    "worker_id",
+    "member_worker_id",
+    "tarotist_worker_id",
+    "tarotista_worker_id",
+    "worker",
+    "workerid",
+    "member_id",
+    "member",
+    "user_worker_id",
+    "profile_worker_id",
+  ];
+
+  for (const k of candidates) {
+    const v = row[k];
+    if (looksLikeUuid(v)) return String(v);
+  }
+
+  // heurística: cualquier columna que contenga "worker" y sea uuid
+  for (const [k, v] of Object.entries(row)) {
+    if (String(k).toLowerCase().includes("worker") && looksLikeUuid(v)) return String(v);
+  }
+
+  // último intento: primera uuid que no sea team_id/id
+  for (const [k, v] of Object.entries(row)) {
+    const kk = String(k).toLowerCase();
+    if (kk === "id" || kk === "team_id" || kk === "team") continue;
+    if (looksLikeUuid(v)) return String(v);
+  }
+
   return null;
 }
 
@@ -90,6 +130,7 @@ export async function GET(req: Request) {
     // auth user
     const { data: u, error: eu } = await db.auth.getUser(token);
     if (eu || !u?.user) return NextResponse.json({ ok: false, error: "BAD_TOKEN" }, { status: 401 });
+
     const uid = u.user.id;
 
     // worker
@@ -278,17 +319,16 @@ export async function GET(req: Request) {
     }
 
     // ===============================
-    // 6) CENTRAL: EQUIPOS (REAL, opción B)
+    // 6) CENTRAL: EQUIPOS (REAL: team_members + monthly_rankings + invoices)
     // ===============================
     let teamsRanking: TeamRow[] = [];
     let myTeamRank: number | null = null;
     let winnerTeam: any = null;
 
     if (myRole === "central") {
-      // cast para evitar TS deep instantiation
       const adb: any = db as any;
 
-      // 6.1) equipos (nombre)
+      // 6.1) leer teams (nombres)
       let teamsRows: any[] = [];
       try {
         const { data, error } = await adb.from("teams").select("*").limit(5000);
@@ -305,184 +345,153 @@ export async function GET(req: Request) {
         teamNameMap.set(id, name);
       }
 
-      // 6.2) miembros equipo (team_members)
-      let memRows: any[] = [];
+      // 6.2) leer team_members (sin asumir columnas)
+      let memberRows: any[] = [];
       try {
-        const { data, error } = await adb
-          .from("team_members")
-          .select("team_id, worker_id, workers:workers(id, display_name, role)")
-          .limit(20000);
-        if (!error && Array.isArray(data)) memRows = data;
+        const { data, error } = await adb.from("team_members").select("*").limit(10000);
+        if (!error && Array.isArray(data)) memberRows = data;
       } catch {
-        memRows = [];
+        memberRows = [];
       }
 
-      // mapa team -> members
-      const membersByTeam = new Map<string, TeamMember[]>();
-      const workerTeamIds = new Map<string, string[]>(); // worker_id -> [team_id...]
-      for (const r of memRows) {
-        const tid = safeStr(r?.team_id);
-        const wid = safeStr(r?.worker_id);
-        if (!tid || !wid) continue;
+      const teamToWorkerIds = new Map<string, string[]>();
+      for (const r of memberRows || []) {
+        const tid = safeStr((r as any)?.team_id || (r as any)?.team || (r as any)?.teamid);
+        if (!tid) continue;
 
-        const nm = safeStr(r?.workers?.display_name) || wid.slice(0, 8);
-        const arr = membersByTeam.get(tid) || [];
-        arr.push({ worker_id: wid, name: nm });
-        membersByTeam.set(tid, arr);
+        const wid = extractWorkerIdFromTeamMemberRow(r);
+        if (!wid) continue;
 
-        const wArr = workerTeamIds.get(wid) || [];
-        wArr.push(tid);
-        workerTeamIds.set(wid, wArr);
+        const arr = teamToWorkerIds.get(tid) || [];
+        arr.push(wid);
+        teamToWorkerIds.set(tid, arr);
       }
 
-      // 6.3) si existe team_monthly_results con filas, úsalo; si no, calcular (opción B)
-      let tmrRows: any[] = [];
-      try {
-        const { data, error } = await adb.from("team_monthly_results").select("*").eq("month_date", month_date).limit(2000);
-        if (!error && Array.isArray(data)) tmrRows = data;
-      } catch {
-        tmrRows = [];
+      // 6.3) ranking por equipo desde monthly_rankings del mes
+      // (ponderamos % por minutos para que sea “real”)
+      const mrByWorker = new Map<string, any>();
+      for (const r of mr || []) {
+        const wid = String((r as any).worker_id || "");
+        if (wid) mrByWorker.set(wid, r);
       }
 
-      const hasTmr = Array.isArray(tmrRows) && tmrRows.length > 0;
+      const invByWorker = invoiceMap; // ya lo tenemos (worker_invoices del mes)
 
-      if (hasTmr) {
-        // (mantengo tu lógica anterior, pero aquí ya tendrás filas)
-        const normalized: TeamRow[] = (tmrRows || [])
-          .map((r: any) => {
-            const team_id = safeStr(r?.team_id || r?.team || r?.id);
-            if (!team_id) return null;
+      const computedTeams: TeamRow[] = [];
+      for (const [team_id, rawWids] of teamToWorkerIds.entries()) {
+        const wids = uniq(rawWids).filter(Boolean);
 
-            const team_name = teamNameMap.get(team_id) || `Equipo ${team_id.slice(0, 6)}`;
+        let total_minutes = 0;
+        let total_captadas = 0;
+        let total_eur_month = 0;
 
-            const total_minutes = toNum(r?.total_minutes ?? r?.minutes_total ?? r?.minutes);
-            const total_captadas = toNum(r?.total_captadas ?? r?.captadas_total ?? r?.captadas);
-            const total_eur_month = toNum(r?.total_eur_month ?? r?.eur_total ?? r?.total_eur);
+        let sumCli = 0;
+        let sumRep = 0;
+        let wCli = 0;
+        let wRep = 0;
 
-            const team_cliente_pct = toNum(r?.team_cliente_pct ?? r?.cliente_pct ?? r?.clientes_pct);
-            const team_repite_pct = toNum(r?.team_repite_pct ?? r?.repite_pct ?? r?.repite_percent);
-            const team_score = calcTeamScore(team_cliente_pct, team_repite_pct);
+        for (const wid of wids) {
+          const rr: any = mrByWorker.get(wid);
+          const minutes = toNum(rr?.minutes_total);
+          const capt = toNum(rr?.captadas_total);
+          const cli = toNum(rr?.cliente_pct);
+          const rep = toNum(rr?.repite_pct);
 
-            const ms = membersByTeam.get(team_id) || [];
+          total_minutes += minutes;
+          total_captadas += capt;
 
-            return {
-              team_id,
-              team_name,
-              total_eur_month,
-              total_minutes,
-              total_captadas,
-              member_count: ms.length,
-              team_cliente_pct,
-              team_repite_pct,
-              team_score,
-              members: ms,
-            } as TeamRow;
-          })
-          .filter(Boolean) as TeamRow[];
+          // ponderación por minutos (si no hay minutos, peso 1)
+          const w = minutes > 0 ? minutes : 1;
+          sumCli += cli * w;
+          sumRep += rep * w;
+          wCli += w;
+          wRep += w;
 
-        normalized.sort((a, b) => toNum(b.team_score) - toNum(a.team_score));
-        teamsRanking = normalized.slice(0, 10);
-      } else {
-        // ✅ OPCIÓN B REAL: calcular desde monthly_rankings + team_members + invoices
-        // solo tarotistas para métricas de rendimiento de equipo
-        const tarotistRankMap = new Map<string, RankRow>();
-        for (const r of rows) {
-          if (normRole(r.role) === "tarotista") tarotistRankMap.set(r.worker_id, r);
+          total_eur_month += toNum(invByWorker.get(wid)?.total_eur);
         }
 
-        // team -> acumuladores
-        type Agg = {
-          team_id: string;
-          team_name: string;
-          total_minutes: number;
-          total_captadas: number;
-          total_eur_month: number;
+        const team_cliente_pct = wCli > 0 ? Number((sumCli / wCli).toFixed(2)) : 0;
+        const team_repite_pct = wRep > 0 ? Number((sumRep / wRep).toFixed(2)) : 0;
 
-          // medias ponderadas por minutos (si no hay minutos, ponderación 1)
-          w_cliente_sum: number;
-          w_repite_sum: number;
-          w_sum: number;
+        const team_score = calcTeamScore(team_cliente_pct, team_repite_pct);
 
-          members: TeamMember[];
-        };
+        const team_name = teamNameMap.get(team_id) || `Equipo ${team_id.slice(0, 6)}`;
 
-        const aggMap = new Map<string, Agg>();
+        computedTeams.push({
+          team_id,
+          team_name,
+          total_eur_month: Number(total_eur_month.toFixed(2)),
+          total_minutes: Number(total_minutes.toFixed(0)),
+          total_captadas: Number(total_captadas.toFixed(0)),
+          member_count: wids.length,
+          team_cliente_pct,
+          team_repite_pct,
+          team_score,
+          members: [], // rellenamos luego top 2
+        });
+      }
 
-        // recorremos todos los teams conocidos por membersByTeam (si hay team vacío, no aparece, ok)
-        for (const [tid, ms] of membersByTeam.entries()) {
-          const team_name = teamNameMap.get(tid) || `Equipo ${tid.slice(0, 6)}`;
-          aggMap.set(tid, {
-            team_id: tid,
-            team_name,
-            total_minutes: 0,
-            total_captadas: 0,
-            total_eur_month: 0,
-            w_cliente_sum: 0,
-            w_repite_sum: 0,
-            w_sum: 0,
-            members: ms,
+      computedTeams.sort((a, b) => toNum(b.team_score) - toNum(a.team_score));
+      teamsRanking = computedTeams.slice(0, 10);
+
+      // 6.4) miembros para top 2 (sacamos nombres desde workers)
+      try {
+        const topIds = teamsRanking.slice(0, 2).map((t) => t.team_id);
+        if (topIds.length) {
+          const neededWids = uniq(
+            topIds.flatMap((tid) => teamToWorkerIds.get(tid) || [])
+          ).filter(Boolean);
+
+          let workersRows: any[] = [];
+          if (neededWids.length) {
+            const { data, error } = await adb
+              .from("workers")
+              .select("id, display_name")
+              .in("id", neededWids)
+              .limit(10000);
+
+            if (!error && Array.isArray(data)) workersRows = data;
+          }
+
+          const widToName = new Map<string, string>();
+          for (const w of workersRows) {
+            widToName.set(String(w?.id), String(w?.display_name || "").trim() || String(w?.id).slice(0, 8));
+          }
+
+          teamsRanking = teamsRanking.map((t) => {
+            if (!topIds.includes(t.team_id)) return t;
+            const wids = uniq(teamToWorkerIds.get(t.team_id) || []).filter(Boolean);
+            const members: TeamMember[] = wids.map((wid) => ({ worker_id: wid, name: widToName.get(wid) || wid.slice(0, 8) }));
+            return { ...t, members, member_count: members.length };
           });
         }
-
-        // sumar métricas por cada miembro tarotista
-        for (const [tid, ag] of aggMap.entries()) {
-          for (const m of ag.members) {
-            const rr = tarotistRankMap.get(m.worker_id);
-            if (!rr) continue;
-
-            const w = rr.minutes > 0 ? rr.minutes : 1; // ponderación realista
-            ag.total_minutes += rr.minutes;
-            ag.total_captadas += rr.captadas;
-            ag.w_cliente_sum += rr.cliente_pct * w;
-            ag.w_repite_sum += rr.repite_pct * w;
-            ag.w_sum += w;
-
-            // €: suma de invoices del mes
-            ag.total_eur_month += toNum(invoiceMap.get(m.worker_id)?.total_eur);
-          }
-        }
-
-        const computed: TeamRow[] = Array.from(aggMap.values()).map((ag) => {
-          const team_cliente_pct = ag.w_sum > 0 ? ag.w_cliente_sum / ag.w_sum : 0;
-          const team_repite_pct = ag.w_sum > 0 ? ag.w_repite_sum / ag.w_sum : 0;
-          const team_score = calcTeamScore(team_cliente_pct, team_repite_pct);
-
-          return {
-            team_id: ag.team_id,
-            team_name: ag.team_name,
-            total_minutes: Number(ag.total_minutes.toFixed(0)),
-            total_captadas: Number(ag.total_captadas.toFixed(0)),
-            total_eur_month: Number(ag.total_eur_month.toFixed(2)),
-            member_count: ag.members.length,
-            team_cliente_pct: Number(team_cliente_pct.toFixed(2)),
-            team_repite_pct: Number(team_repite_pct.toFixed(2)),
-            team_score,
-            members: ag.members,
-          };
-        });
-
-        computed.sort((a, b) => toNum(b.team_score) - toNum(a.team_score));
-        teamsRanking = computed.slice(0, 10);
-      }
-
-      // 6.4) mi equipo: primero por team_members (lo más fiable)
-      let myTeamId: string | null = null;
-      try {
-        const { data, error } = await adb.from("team_members").select("team_id").eq("worker_id", myWorkerId).limit(1);
-        if (!error && Array.isArray(data) && data[0]?.team_id) myTeamId = safeStr(data[0].team_id);
       } catch {}
 
-      // fallback: por teams.central_user_id etc (por si lo usas)
-      if (!myTeamId) {
-        const myTeamRow =
-          (await safeEqFirst(adb, "teams", "id, team_id, name, team_name, central_user_id, central_worker_id, user_id, worker_id", [
-            { col: "central_user_id", val: uid },
-            { col: "central_worker_id", val: myWorkerId },
-            { col: "user_id", val: uid },
-            { col: "worker_id", val: myWorkerId },
-          ])) || null;
+      // 6.5) mi equipo (central): intentamos teams.central_* o si el central está en team_members
+      let myTeamId: string | null = null;
 
-        myTeamId = safeStr(myTeamRow?.id || myTeamRow?.team_id) || null;
+      // a) por columnas en teams
+      const myTeamRow =
+        (await safeEqFirst(adb, "teams", "*", [
+          { col: "central_user_id", val: uid },
+          { col: "central_worker_id", val: myWorkerId },
+          { col: "user_id", val: uid },
+          { col: "worker_id", val: myWorkerId },
+        ])) || null;
+
+      myTeamId = safeStr(myTeamRow?.id || myTeamRow?.team_id) || null;
+
+      // b) si no existe, buscamos si el central aparece en team_members (según columna real)
+      if (!myTeamId) {
+        for (const r of memberRows || []) {
+          const tid = safeStr((r as any)?.team_id || (r as any)?.team || (r as any)?.teamid);
+          if (!tid) continue;
+          const wid = extractWorkerIdFromTeamMemberRow(r);
+          if (wid && wid === myWorkerId) {
+            myTeamId = tid;
+            break;
+          }
+        }
       }
 
       if (myTeamId) {
@@ -492,14 +501,12 @@ export async function GET(req: Request) {
         myTeamRank = null;
       }
 
-      // 6.5) winnerTeam (top 1)
+      // 6.6) winnerTeam
       const win = teamsRanking[0] || null;
       winnerTeam = win
         ? {
             team_id: win.team_id,
             team_name: win.team_name,
-            central_user_id: null,
-            central_name: null,
             total_minutes: win.total_minutes,
             total_captadas: win.total_captadas,
             total_eur_month: win.total_eur_month,
@@ -507,7 +514,7 @@ export async function GET(req: Request) {
           }
         : null;
 
-      // 6.6) bono ganador (team_winner)
+      // 6.7) bono team_winner (central)
       const ruleWinner = (bonusRules || []).find(
         (x: any) =>
           String(x?.ranking_type || "").toLowerCase() === "team_winner" &&
@@ -515,9 +522,10 @@ export async function GET(req: Request) {
           String(x?.role || "").toLowerCase() === "central" &&
           (x?.is_active === undefined ? true : !!x?.is_active)
       );
+
       const bonusTeamWinner = ruleWinner ? toNum(ruleWinner.amount_eur) : 0;
 
-      // 6.7) myEarnings central: solo bono si su equipo va #1
+      // 6.8) myEarnings central: solo bono si su equipo va #1
       const centralBonus = myTeamRank === 1 ? bonusTeamWinner : 0;
       (myEarnings as any).amount_bonus_eur = centralBonus;
       (myEarnings as any).amount_total_eur = centralBonus;
