@@ -42,7 +42,13 @@ type DashboardResp = {
   bonusRules?: any[];
 };
 
-type PresenceMeResp = { ok: boolean; state: PresenceState; session_id: string | null; started_at: string | null; error?: string };
+type PresenceMeResp = {
+  ok: boolean;
+  state: PresenceState;
+  session_id: string | null;
+  started_at: string | null;
+  error?: string;
+};
 
 function useIsMobile(bp = 900) {
   const [isMobile, setIsMobile] = useState(false);
@@ -74,13 +80,35 @@ function formatHMS(sec: number) {
   return `${pad(hh)}:${pad(mm)}:${pad(ss)}`;
 }
 
+// ✅ Reset diario a las 05:00 (hora local del navegador)
+function dailyKeyAt5(prefix: string) {
+  const now = new Date();
+  const d = new Date(now);
+  const h = d.getHours();
+  if (h < 5) d.setDate(d.getDate() - 1);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${prefix}:${y}-${m}-${day}`;
+}
+
+type ChecklistItem = { id: string; label: string; hint?: string };
+
+const CHECKLIST: ChecklistItem[] = [
+  { id: "login", label: "Loguearse y abrir panel", hint: "Entrar (presencia) y comprobar que todo carga." },
+  { id: "greet", label: "Saludar a las tarotistas", hint: "Mensaje breve de inicio de turno." },
+  { id: "check_logins", label: "Comprobar logueos", hint: "Ver quién está online / quién falta." },
+  { id: "ask_clients", label: "Pedir lista de clientes", hint: "Asegurar captación/colas preparadas." },
+  { id: "check_incidents", label: "Comprobar incidencias", hint: "Revisar ausencias/retrasos y registrar." },
+];
+
 type Recommendation = { tone: "ok" | "warn"; title: string; body: string };
 
 export default function CentralPanelPage() {
   const router = useRouter();
   const isMobile = useIsMobile();
 
-  // ✅ APAGA el header duplicado aquí
+  // ✅ usa el header global del layout, NO duplicamos aquí
   const SHOW_LOCAL_HEADER = false;
 
   const [loading, setLoading] = useState(false);
@@ -96,6 +124,17 @@ export default function CentralPanelPage() {
 
   const isLogged = pState !== "offline";
 
+  // ✅ Checklist
+  const checklistKey = useMemo(() => dailyKeyAt5("tc_central_checklist"), []);
+  const [checkState, setCheckState] = useState<Record<string, boolean>>({});
+
+  function persistChecklist(next: Record<string, boolean>) {
+    setCheckState(next);
+    try {
+      localStorage.setItem(checklistKey, JSON.stringify(next));
+    } catch {}
+  }
+
   async function getToken() {
     const { data } = await supabase.auth.getSession();
     return data.session?.access_token || null;
@@ -108,7 +147,7 @@ export default function CentralPanelPage() {
       const token = await getToken();
       if (!token) return router.replace("/login");
 
-      // usa month_date desde la URL si existe (lo cambia el layout)
+      // month_date lo maneja el layout por querystring
       const u = new URL(window.location.href);
       const month = u.searchParams.get("month_date");
       const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
@@ -220,6 +259,15 @@ export default function CentralPanelPage() {
   useEffect(() => {
     loadDashboard();
     loadPresence();
+
+    // checklist storage
+    try {
+      const raw = localStorage.getItem(checklistKey);
+      if (raw) setCheckState(JSON.parse(raw));
+      else setCheckState({});
+    } catch {
+      setCheckState({});
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -265,6 +313,20 @@ export default function CentralPanelPage() {
   const teams = Array.isArray(data?.teamsRanking) ? (data?.teamsRanking as any[]) : [];
   const hasTeams = teams.length > 0;
 
+  const bonusRules = Array.isArray(data?.bonusRules) ? data!.bonusRules! : [];
+  const teamWinnerRule = bonusRules.find(
+    (x: any) =>
+      String(x?.ranking_type || "").toLowerCase() === "team_winner" &&
+      Number(x?.position) === 1 &&
+      String(x?.role || "").toLowerCase() === "central" &&
+      (x?.is_active === undefined ? true : !!x?.is_active)
+  );
+  const bonusTeamWinner = teamWinnerRule ? eur(teamWinnerRule.amount_eur) : eur(0);
+
+  const myTeamRank = data?.myTeamRank ?? null;
+  const winnerTeam = data?.winnerTeam ?? null;
+
+  // recomendaciones
   const recommendations: Recommendation[] = useMemo(() => {
     const out: Recommendation[] = [];
     const cap = (data?.rankings?.captadas || []) as any[];
@@ -287,13 +349,6 @@ export default function CentralPanelPage() {
     return [...out].sort(() => Math.random() - 0.5).slice(0, 4);
   }, [data?.rankings?.captadas, data?.rankings?.cliente_pct, data?.rankings?.repite_pct]);
 
-  const bonusRules = Array.isArray(data?.bonusRules) ? data!.bonusRules! : [];
-  const teamWinnerRule = bonusRules.find((x: any) => String(x?.ranking_type || "").toLowerCase() === "team_winner" && Number(x?.position) === 1 && String(x?.role || "").toLowerCase() === "central");
-  const bonusTeamWinner = teamWinnerRule ? eur(teamWinnerRule.amount_eur) : eur(0);
-
-  const myTeamRank = data?.myTeamRank ?? null;
-  const winnerTeam = data?.winnerTeam ?? null;
-
   const incCount = data?.myIncidentsMonth?.count ?? null;
   const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
 
@@ -314,12 +369,6 @@ export default function CentralPanelPage() {
               {loading ? "Actualizando…" : "Actualizar"}
             </button>
           </div>
-
-          {err ? (
-            <div style={{ marginTop: 12, padding: 12, borderRadius: 14, border: "1px solid #ffcccc", background: "#fff3f3", fontWeight: 900 }}>
-              {err}
-            </div>
-          ) : null}
         </div>
       ) : err ? (
         <div style={{ ...shellCard, padding: 14, border: "1px solid #ffcccc", background: "#fff3f3", fontWeight: 900 }}>{err}</div>
@@ -350,11 +399,21 @@ export default function CentralPanelPage() {
                   <div style={{ fontWeight: 1200 }}>Score: {fmt(t.team_score ?? 0)}</div>
                 </div>
                 <div style={{ marginTop: 6, display: "flex", gap: 14, flexWrap: "wrap", color: "#6b7280", fontWeight: 1000 }}>
-                  <span>Minutos: <b style={{ color: "#111" }}>{fmt(t.total_minutes ?? 0)}</b></span>
-                  <span>Captadas: <b style={{ color: "#111" }}>{fmt(t.total_captadas ?? 0)}</b></span>
-                  <span>%Clientes: <b style={{ color: "#111" }}>{fmt(t.team_cliente_pct ?? 0)}</b></span>
-                  <span>%Repite: <b style={{ color: "#111" }}>{fmt(t.team_repite_pct ?? 0)}</b></span>
-                  <span>€ mes: <b style={{ color: "#111" }}>{eur(t.total_eur_month ?? 0)}</b></span>
+                  <span>
+                    Minutos: <b style={{ color: "#111" }}>{fmt(t.total_minutes ?? 0)}</b>
+                  </span>
+                  <span>
+                    Captadas: <b style={{ color: "#111" }}>{fmt(t.total_captadas ?? 0)}</b>
+                  </span>
+                  <span>
+                    %Clientes: <b style={{ color: "#111" }}>{fmt(t.team_cliente_pct ?? 0)}</b>
+                  </span>
+                  <span>
+                    %Repite: <b style={{ color: "#111" }}>{fmt(t.team_repite_pct ?? 0)}</b>
+                  </span>
+                  <span>
+                    € mes: <b style={{ color: "#111" }}>{eur(t.total_eur_month ?? 0)}</b>
+                  </span>
                 </div>
               </div>
             ))}
@@ -369,7 +428,9 @@ export default function CentralPanelPage() {
               <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
                 <div style={{ fontWeight: 1200 }}>Equipo ganador</div>
                 <div style={{ marginTop: 6, fontWeight: 1300 }}>{winnerTeam?.team_name || "—"}</div>
-                <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>Score: <b style={{ color: "#111" }}>{fmt(winnerTeam?.team_score ?? 0)}</b></div>
+                <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>
+                  Score: <b style={{ color: "#111" }}>{fmt(winnerTeam?.team_score ?? 0)}</b>
+                </div>
               </div>
 
               <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
@@ -464,6 +525,52 @@ export default function CentralPanelPage() {
               </button>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* ✅ Checklist diario (VUELVE) */}
+      <div style={{ ...shellCard, padding: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+          <div style={{ fontWeight: 1400, fontSize: 18 }}>✅ Checklist diario</div>
+          <div style={{ color: "#6b7280", fontWeight: 1000 }}>
+            Se reinicia a las <b>05:00</b> (hora España).
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+          {CHECKLIST.map((it) => {
+            const on = !!checkState[it.id];
+            return (
+              <div
+                key={it.id}
+                style={{
+                  border: on ? "2px solid #111" : "1px solid #e5e7eb",
+                  borderRadius: 16,
+                  padding: 12,
+                  background: "#fff",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  alignItems: "flex-start",
+                }}
+              >
+                <div style={{ display: "grid", gap: 6 }}>
+                  <div style={{ fontWeight: 1200 }}>{it.label}</div>
+                  {it.hint ? <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>{it.hint}</div> : null}
+                </div>
+
+                <button
+                  onClick={() => {
+                    const next = { ...checkState, [it.id]: !on };
+                    persistChecklist(next);
+                  }}
+                  style={on ? btnPrimary : btnGhost}
+                >
+                  {on ? "Hecho" : "Marcar"}
+                </button>
+              </div>
+            );
+          })}
         </div>
       </div>
 
