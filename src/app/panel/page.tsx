@@ -1,7 +1,7 @@
 // src/app/panel/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
@@ -140,21 +140,67 @@ export default function PanelPage() {
   const qs = useSearchParams();
   const isMobile = useIsMobile();
 
-  const monthParam = qs.get("month_date") || "";
-  const monthQ = monthParam ? `?month_date=${encodeURIComponent(monthParam)}` : "";
-
   const [rankType, setRankType] = useState<RankKey>("minutes");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const [data, setData] = useState<DashboardResp | null>(null);
 
-  async function getToken() {
+  const monthParam = useMemo(() => qs.get("month_date") || "", [qs]);
+
+  const monthQuery = useMemo(() => {
+    return monthParam ? `?month_date=${encodeURIComponent(monthParam)}` : "";
+  }, [monthParam]);
+
+  const getToken = useCallback(async () => {
     const { data } = await supabase.auth.getSession();
     return data.session?.access_token || null;
-  }
+  }, []);
 
-  async function load() {
+  // ✅ REDIRECCIÓN INMEDIATA POR ROL (lint-safe)
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      try {
+        const token = await getToken();
+        if (!token) {
+          router.replace("/login");
+          return;
+        }
+
+        const meRes = await fetch("/api/me", {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+
+        const mj = await meRes.json().catch(() => null);
+        if (!alive) return;
+
+        const role = String(mj?.worker?.role || "").toLowerCase();
+
+        if (role === "central") {
+          router.replace(`/panel/central${monthQuery}`);
+          return;
+        }
+
+        if (role === "admin") {
+          router.replace(`/panel/admin${monthQuery}`);
+          return;
+        }
+
+        // tarotista -> se queda en /panel
+      } catch {
+        // si falla, no hacemos nada; load() manejará lo demás
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [getToken, monthQuery, router]);
+
+  const load = useCallback(async () => {
     setErr(null);
     setLoading(true);
 
@@ -165,7 +211,7 @@ export default function PanelPage() {
         return;
       }
 
-      const res = await fetch(`/api/dashboard/full${monthQ}`, {
+      const res = await fetch(`/api/dashboard/full${monthQuery}`, {
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
       });
@@ -182,17 +228,12 @@ export default function PanelPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [getToken, monthQuery, router]);
 
+  // primera carga
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [monthParam]);
+  }, [load]);
 
   const me = data?.user?.worker || null;
   const myRole = String(me?.role || "").toLowerCase();
@@ -200,22 +241,10 @@ export default function PanelPage() {
   const isCentral = myRole === "central";
   const isAdmin = myRole === "admin";
 
-  // ✅ REDIRECT: si eres central y has entrado en /panel, te mandamos a /panel/central
-  useEffect(() => {
-    if (!me?.role) return;
-    if (String(me.role).toLowerCase() !== "central") return;
-
-    // Si ya estás en /panel/central no hace falta (esto es /panel/page.tsx)
-    router.replace(`/panel/central${monthQ}`);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [me?.role, monthParam]);
-
-  // Tarotistas: no permitir rankType eur_*
   useEffect(() => {
     if (!isTarot) return;
     if (rankType === "eur_total" || rankType === "eur_bonus") setRankType("minutes");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTarot]);
+  }, [isTarot, rankType]);
 
   const ranks = (data?.rankings as any)?.[rankType] || [];
 
@@ -461,15 +490,18 @@ export default function PanelPage() {
   const totalEur = data?.myEarnings?.amount_total_eur ?? null;
   const bonusEur = data?.myEarnings?.amount_bonus_eur ?? null;
 
-  // Nota: si eres central, este page redirige rápido; esto queda para tarot/admin
   return (
     <div style={{ display: "grid", gap: 14, width: "100%" }}>
       {err ? (
-        <div style={{ ...shellCard, padding: 14, border: "1px solid #ffcccc", background: "#fff3f3", fontWeight: 1100 }}>{err}</div>
+        <div style={{ ...shellCard, padding: 14, border: "1px solid #ffcccc", background: "#fff3f3", fontWeight: 1100 }}>
+          {err}
+        </div>
       ) : null}
 
+      {/* CENTRAL */}
       {isCentral ? <CentralTeams /> : null}
 
+      {/* TAROTISTA / ADMIN */}
       {!isCentral ? (
         <>
           <div
@@ -559,6 +591,7 @@ export default function PanelPage() {
                 <option value="captadas">Captadas</option>
                 <option value="repite_pct">Repite %</option>
                 <option value="cliente_pct">Clientes %</option>
+
                 {isAdmin ? <option value="eur_total">€ Total</option> : null}
                 {isAdmin ? <option value="eur_bonus">€ Bonus</option> : null}
               </select>
@@ -588,7 +621,9 @@ export default function PanelPage() {
                             {medal(pos)} {pos}
                           </td>
                           <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>{r.name}</td>
-                          <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", textAlign: "right", fontWeight: 1300 }}>{valueOf(rankType, r)}</td>
+                          <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", textAlign: "right", fontWeight: 1300 }}>
+                            {valueOf(rankType, r)}
+                          </td>
                         </tr>
                       );
                     })}
