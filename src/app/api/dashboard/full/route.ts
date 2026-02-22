@@ -39,11 +39,6 @@ function calcTeamScore(clientePct: number, repitePct: number) {
   return Number((c + r).toFixed(2));
 }
 
-function looksLikeUuid(x: any) {
-  const s = String(x || "").trim();
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
-}
-
 type RankRow = {
   worker_id: string;
   name: string;
@@ -71,57 +66,80 @@ type TeamRow = {
   members?: TeamMember[];
 };
 
-async function safeEqFirst(adb: any, table: string, selectCols: string, candidates: Array<{ col: string; val: any }>) {
+async function safeEqFirst(
+  adb: any,
+  table: string,
+  selectCols: string,
+  candidates: Array<{ col: string; val: any }>
+) {
   for (const c of candidates) {
     try {
-      const { data, error } = await adb.from(table).select(selectCols).eq(c.col, c.val).limit(1);
+      const { data, error } = await adb
+        .from(table)
+        .select(selectCols)
+        .eq(c.col, c.val)
+        .limit(1);
       if (!error && Array.isArray(data) && data[0]) return data[0];
-    } catch {}
+    } catch (e) {
+      // si la columna no existe, supabase devuelve error -> seguimos probando
+    }
   }
   return null;
 }
 
-function extractWorkerIdFromTeamMemberRow(row: any): string | null {
-  if (!row || typeof row !== "object") return null;
+// ✅ intenta extraer el worker_id o user_id real desde una fila de team_members
+function extractMemberIds(row: any): { worker_id?: string; user_id?: string } {
+  const keys = Object.keys(row || {});
+  const pick = (cands: string[]) => {
+    for (const k of cands) {
+      if (k in (row || {})) {
+        const v = safeStr((row as any)[k]);
+        if (v) return v;
+      }
+    }
+    // prueba "fuzzy" (por si el campo se llama raro)
+    for (const k of keys) {
+      const lk = k.toLowerCase();
+      if (cands.some((c) => lk === c.toLowerCase())) {
+        const v = safeStr((row as any)[k]);
+        if (v) return v;
+      }
+    }
+    return "";
+  };
 
-  // candidatos típicos
-  const candidates = [
+  // worker id candidates
+  const wid = pick([
     "worker_id",
     "member_worker_id",
-    "tarotist_worker_id",
-    "tarotista_worker_id",
-    "worker",
     "workerid",
+    "worker",
     "member_id",
-    "member",
-    "user_worker_id",
-    "profile_worker_id",
-  ];
+    "member_worker",
+    "tarotist_worker_id",
+  ]);
 
-  for (const k of candidates) {
-    const v = row[k];
-    if (looksLikeUuid(v)) return String(v);
-  }
+  // user id candidates (si en team_members guardas user_id en lugar de worker_id)
+  const uid = pick([
+    "user_id",
+    "member_user_id",
+    "userid",
+    "user",
+    "member_user",
+    "auth_user_id",
+  ]);
 
-  // heurística: cualquier columna que contenga "worker" y sea uuid
-  for (const [k, v] of Object.entries(row)) {
-    if (String(k).toLowerCase().includes("worker") && looksLikeUuid(v)) return String(v);
-  }
-
-  // último intento: primera uuid que no sea team_id/id
-  for (const [k, v] of Object.entries(row)) {
-    const kk = String(k).toLowerCase();
-    if (kk === "id" || kk === "team_id" || kk === "team") continue;
-    if (looksLikeUuid(v)) return String(v);
-  }
-
-  return null;
+  const out: any = {};
+  if (wid) out.worker_id = wid;
+  if (uid) out.user_id = uid;
+  return out;
 }
 
 export async function GET(req: Request) {
   try {
     const token = bearer(req);
-    if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
+    if (!token)
+      return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
 
     const url = getEnv("NEXT_PUBLIC_SUPABASE_URL");
     const service = getEnv("SUPABASE_SERVICE_ROLE_KEY");
@@ -129,7 +147,8 @@ export async function GET(req: Request) {
 
     // auth user
     const { data: u, error: eu } = await db.auth.getUser(token);
-    if (eu || !u?.user) return NextResponse.json({ ok: false, error: "BAD_TOKEN" }, { status: 401 });
+    if (eu || !u?.user)
+      return NextResponse.json({ ok: false, error: "BAD_TOKEN" }, { status: 401 });
 
     const uid = u.user.id;
 
@@ -140,8 +159,10 @@ export async function GET(req: Request) {
       .eq("user_id", uid)
       .maybeSingle();
 
-    if (!me) return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
-    if (!(me as any).is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
+    if (!me)
+      return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
+    if (!(me as any).is_active)
+      return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
 
     const myWorkerId = String((me as any).id);
     const myRole = normRole((me as any).role);
@@ -157,7 +178,10 @@ export async function GET(req: Request) {
       .order("month_date", { ascending: false })
       .limit(36);
 
-    const months = uniq((invoiceRows || []).map((r: any) => r.month_date).filter(Boolean)) as string[];
+    const months = uniq(
+      (invoiceRows || []).map((r: any) => r.month_date).filter(Boolean)
+    ) as string[];
+
     const month_date = monthParam || months[0] || null;
 
     if (!month_date) {
@@ -178,6 +202,7 @@ export async function GET(req: Request) {
         myIncidentsMonth: { count: 0, penalty_eur: 0, grave: false },
         teamsRanking: [],
         myTeamRank: null,
+        myTeam: null,
         winnerTeam: null,
         bonusRules: [],
       });
@@ -233,7 +258,8 @@ export async function GET(req: Request) {
       .eq("month_date", month_date);
 
     const invoiceMap = new Map<string, any>();
-    for (const inv of invoices || []) invoiceMap.set(String((inv as any).worker_id), inv);
+    for (const inv of invoices || [])
+      invoiceMap.set(String((inv as any).worker_id), inv);
 
     const rankEurTotal = [...tarotistas]
       .map((t) => ({
@@ -290,8 +316,13 @@ export async function GET(req: Request) {
 
       if (Array.isArray(incs)) {
         const count = incs.length;
-        const penalty = incs.reduce((sum, x: any) => sum + toNum(x?.penalty_eur), 0);
-        const hasAbsence = incs.some((x: any) => String(x?.kind || "").toLowerCase() === "absence");
+        const penalty = incs.reduce(
+          (sum, x: any) => sum + toNum(x?.penalty_eur),
+          0
+        );
+        const hasAbsence = incs.some(
+          (x: any) => String(x?.kind || "").toLowerCase() === "absence"
+        );
         const grave = count >= 5 || hasAbsence;
 
         myIncidentsMonth = {
@@ -300,7 +331,7 @@ export async function GET(req: Request) {
           grave,
         };
       }
-    } catch {}
+    } catch (e) {}
 
     // ===============================
     // 5) BONUS RULES
@@ -314,199 +345,198 @@ export async function GET(req: Request) {
         .limit(5000);
 
       if (Array.isArray(br)) bonusRules = br;
-    } catch {
+    } catch (e) {
       bonusRules = [];
     }
 
     // ===============================
-    // 6) CENTRAL: EQUIPOS (REAL: team_members + monthly_rankings + invoices)
+    // 6) CENTRAL: EQUIPOS (teams + team_monthly_results + team_members)
     // ===============================
     let teamsRanking: TeamRow[] = [];
     let myTeamRank: number | null = null;
     let winnerTeam: any = null;
 
-    if (myRole === "central") {
-      const adb: any = db as any;
+    // ✅ MI EQUIPO (para todos los roles)
+    let myTeam: { team_id: string; team_name: string } | null = null;
 
-      // 6.1) leer teams (nombres)
-      let teamsRows: any[] = [];
-      try {
-        const { data, error } = await adb.from("teams").select("*").limit(5000);
-        if (!error && Array.isArray(data)) teamsRows = data;
-      } catch {
-        teamsRows = [];
-      }
+    // ⚠️ Evita el bug TS (instantiation deep)
+    const adb: any = db as any;
 
-      const teamNameMap = new Map<string, string>();
-      for (const t of teamsRows) {
-        const id = safeStr(t?.id || t?.team_id || t?.uuid);
-        if (!id) continue;
-        const name = safeStr(t?.team_name || t?.name || t?.display_name || t?.title) || `Equipo ${id.slice(0, 6)}`;
-        teamNameMap.set(id, name);
-      }
+    // --- (A) construir mapa de nombres de equipos (lo usamos tanto para ranking como para myTeam)
+    let teamsRows: any[] = [];
+    try {
+      const { data, error } = await adb.from("teams").select("*").limit(5000);
+      if (!error && Array.isArray(data)) teamsRows = data;
+    } catch (e) {
+      teamsRows = [];
+    }
 
-      // 6.2) leer team_members (sin asumir columnas)
-      let memberRows: any[] = [];
-      try {
-        const { data, error } = await adb.from("team_members").select("*").limit(10000);
-        if (!error && Array.isArray(data)) memberRows = data;
-      } catch {
-        memberRows = [];
-      }
+    const teamNameMap = new Map<string, string>();
+    for (const t of teamsRows || []) {
+      const id = safeStr(t?.id || t?.team_id || t?.uuid);
+      if (!id) continue;
+      const name =
+        safeStr(t?.team_name || t?.name || t?.display_name || t?.title) ||
+        `Equipo ${id.slice(0, 6)}`;
+      teamNameMap.set(id, name);
+    }
 
-      const teamToWorkerIds = new Map<string, string[]>();
-      for (const r of memberRows || []) {
-        const tid = safeStr((r as any)?.team_id || (r as any)?.team || (r as any)?.teamid);
-        if (!tid) continue;
+    // --- (B) detectar mi equipo por team_members (soporta worker_id o user_id)
+    try {
+      const { data: memAll, error } = await adb.from("team_members").select("*").limit(20000);
+      if (!error && Array.isArray(memAll)) {
+        let foundTeamId: string | null = null;
 
-        const wid = extractWorkerIdFromTeamMemberRow(r);
-        if (!wid) continue;
-
-        const arr = teamToWorkerIds.get(tid) || [];
-        arr.push(wid);
-        teamToWorkerIds.set(tid, arr);
-      }
-
-      // 6.3) ranking por equipo desde monthly_rankings del mes
-      // (ponderamos % por minutos para que sea “real”)
-      const mrByWorker = new Map<string, any>();
-      for (const r of mr || []) {
-        const wid = String((r as any).worker_id || "");
-        if (wid) mrByWorker.set(wid, r);
-      }
-
-      const invByWorker = invoiceMap; // ya lo tenemos (worker_invoices del mes)
-
-      const computedTeams: TeamRow[] = [];
-      for (const [team_id, rawWids] of teamToWorkerIds.entries()) {
-        const wids = uniq(rawWids).filter(Boolean);
-
-        let total_minutes = 0;
-        let total_captadas = 0;
-        let total_eur_month = 0;
-
-        let sumCli = 0;
-        let sumRep = 0;
-        let wCli = 0;
-        let wRep = 0;
-
-        for (const wid of wids) {
-          const rr: any = mrByWorker.get(wid);
-          const minutes = toNum(rr?.minutes_total);
-          const capt = toNum(rr?.captadas_total);
-          const cli = toNum(rr?.cliente_pct);
-          const rep = toNum(rr?.repite_pct);
-
-          total_minutes += minutes;
-          total_captadas += capt;
-
-          // ponderación por minutos (si no hay minutos, peso 1)
-          const w = minutes > 0 ? minutes : 1;
-          sumCli += cli * w;
-          sumRep += rep * w;
-          wCli += w;
-          wRep += w;
-
-          total_eur_month += toNum(invByWorker.get(wid)?.total_eur);
-        }
-
-        const team_cliente_pct = wCli > 0 ? Number((sumCli / wCli).toFixed(2)) : 0;
-        const team_repite_pct = wRep > 0 ? Number((sumRep / wRep).toFixed(2)) : 0;
-
-        const team_score = calcTeamScore(team_cliente_pct, team_repite_pct);
-
-        const team_name = teamNameMap.get(team_id) || `Equipo ${team_id.slice(0, 6)}`;
-
-        computedTeams.push({
-          team_id,
-          team_name,
-          total_eur_month: Number(total_eur_month.toFixed(2)),
-          total_minutes: Number(total_minutes.toFixed(0)),
-          total_captadas: Number(total_captadas.toFixed(0)),
-          member_count: wids.length,
-          team_cliente_pct,
-          team_repite_pct,
-          team_score,
-          members: [], // rellenamos luego top 2
-        });
-      }
-
-      computedTeams.sort((a, b) => toNum(b.team_score) - toNum(a.team_score));
-      teamsRanking = computedTeams.slice(0, 10);
-
-      // 6.4) miembros para top 2 (sacamos nombres desde workers)
-      try {
-        const topIds = teamsRanking.slice(0, 2).map((t) => t.team_id);
-        if (topIds.length) {
-          const neededWids = uniq(
-            topIds.flatMap((tid) => teamToWorkerIds.get(tid) || [])
-          ).filter(Boolean);
-
-          let workersRows: any[] = [];
-          if (neededWids.length) {
-            const { data, error } = await adb
-              .from("workers")
-              .select("id, display_name")
-              .in("id", neededWids)
-              .limit(10000);
-
-            if (!error && Array.isArray(data)) workersRows = data;
-          }
-
-          const widToName = new Map<string, string>();
-          for (const w of workersRows) {
-            widToName.set(String(w?.id), String(w?.display_name || "").trim() || String(w?.id).slice(0, 8));
-          }
-
-          teamsRanking = teamsRanking.map((t) => {
-            if (!topIds.includes(t.team_id)) return t;
-            const wids = uniq(teamToWorkerIds.get(t.team_id) || []).filter(Boolean);
-            const members: TeamMember[] = wids.map((wid) => ({ worker_id: wid, name: widToName.get(wid) || wid.slice(0, 8) }));
-            return { ...t, members, member_count: members.length };
-          });
-        }
-      } catch {}
-
-      // 6.5) mi equipo (central): intentamos teams.central_* o si el central está en team_members
-      let myTeamId: string | null = null;
-
-      // a) por columnas en teams
-      const myTeamRow =
-        (await safeEqFirst(adb, "teams", "*", [
-          { col: "central_user_id", val: uid },
-          { col: "central_worker_id", val: myWorkerId },
-          { col: "user_id", val: uid },
-          { col: "worker_id", val: myWorkerId },
-        ])) || null;
-
-      myTeamId = safeStr(myTeamRow?.id || myTeamRow?.team_id) || null;
-
-      // b) si no existe, buscamos si el central aparece en team_members (según columna real)
-      if (!myTeamId) {
-        for (const r of memberRows || []) {
-          const tid = safeStr((r as any)?.team_id || (r as any)?.team || (r as any)?.teamid);
+        for (const r of memAll) {
+          const tid = safeStr(r?.team_id || r?.team || r?.id_team);
           if (!tid) continue;
-          const wid = extractWorkerIdFromTeamMemberRow(r);
-          if (wid && wid === myWorkerId) {
-            myTeamId = tid;
+
+          const ids = extractMemberIds(r);
+          if (ids.worker_id && String(ids.worker_id) === String(myWorkerId)) {
+            foundTeamId = tid;
+            break;
+          }
+          if (ids.user_id && String(ids.user_id) === String(uid)) {
+            foundTeamId = tid;
             break;
           }
         }
+
+        if (foundTeamId) {
+          myTeam = {
+            team_id: foundTeamId,
+            team_name: teamNameMap.get(foundTeamId) || `Equipo ${foundTeamId.slice(0, 6)}`,
+          };
+        }
+      }
+    } catch (e) {
+      myTeam = null;
+    }
+
+    // --- (C) ranking de equipos SOLO para central (como ya lo tenías)
+    if (myRole === "central") {
+      // a) resultados mensuales por equipo
+      let tmrRows: any[] = [];
+      try {
+        const { data, error } = await adb
+          .from("team_monthly_results")
+          .select("*")
+          .eq("month_date", month_date)
+          .limit(2000);
+
+        if (!error && Array.isArray(data)) tmrRows = data;
+      } catch (e) {
+        tmrRows = [];
       }
 
-      if (myTeamId) {
-        const idx = teamsRanking.findIndex((t) => t.team_id === myTeamId);
+      // c) normalizar team_monthly_results
+      const normalized: TeamRow[] = (tmrRows || [])
+        .map((r: any) => {
+          const team_id = safeStr(r?.team_id || r?.team || r?.id);
+          if (!team_id) return null;
+
+          const team_name =
+            teamNameMap.get(team_id) || `Equipo ${team_id.slice(0, 6)}`;
+
+          const total_minutes = toNum(r?.total_minutes ?? r?.minutes_total ?? r?.minutes);
+          const total_captadas = toNum(r?.total_captadas ?? r?.captadas_total ?? r?.captadas);
+          const total_eur_month = toNum(r?.total_eur_month ?? r?.eur_total ?? r?.total_eur);
+
+          const team_cliente_pct = toNum(r?.team_cliente_pct ?? r?.cliente_pct ?? r?.clientes_pct);
+          const team_repite_pct = toNum(r?.team_repite_pct ?? r?.repite_pct ?? r?.repite_percent);
+
+          const team_score = calcTeamScore(team_cliente_pct, team_repite_pct);
+
+          return {
+            team_id,
+            team_name,
+            total_eur_month,
+            total_minutes,
+            total_captadas,
+            member_count: 0,
+            team_cliente_pct,
+            team_repite_pct,
+            team_score,
+            members: [],
+          } as TeamRow;
+        })
+        .filter(Boolean) as TeamRow[];
+
+      normalized.sort((a, b) => toNum(b.team_score) - toNum(a.team_score));
+      teamsRanking = normalized.slice(0, 10);
+
+      // d) members para top 2 (team_members + workers)
+      try {
+        const showIds = teamsRanking.slice(0, 2).map((t) => t.team_id);
+        if (showIds.length) {
+          const { data: memRows, error } = await adb
+            .from("team_members")
+            .select("team_id, worker_id, workers:workers(id, display_name)")
+            .in("team_id", showIds)
+            .limit(5000);
+
+          if (!error && Array.isArray(memRows)) {
+            const map = new Map<string, TeamMember[]>();
+            for (const r of memRows) {
+              const tid = safeStr(r?.team_id);
+              const wid = safeStr(r?.worker_id);
+              if (!tid || !wid) continue;
+              const name = r?.workers?.display_name || wid.slice(0, 8);
+              const arr = map.get(tid) || [];
+              arr.push({ worker_id: wid, name });
+              map.set(tid, arr);
+            }
+
+            teamsRanking = teamsRanking.map((t) => {
+              const ms = map.get(t.team_id) || [];
+              return { ...t, members: ms, member_count: ms.length || t.member_count || 0 };
+            });
+          }
+        }
+      } catch (e) {}
+
+      // e) mi equipo (central): si ya tenemos myTeam, usamos su id para rank
+      if (myTeam?.team_id) {
+        const idx = teamsRanking.findIndex((t) => t.team_id === myTeam!.team_id);
         myTeamRank = idx === -1 ? null : idx + 1;
       } else {
-        myTeamRank = null;
+        // fallback: intentar sacar team desde teams (central_user_id/central_worker_id etc)
+        const myTeamRow =
+          (await safeEqFirst(
+            adb,
+            "teams",
+            "id, team_id, name, team_name, central_user_id, central_worker_id, user_id, worker_id",
+            [
+              { col: "central_user_id", val: uid },
+              { col: "central_worker_id", val: myWorkerId },
+              { col: "user_id", val: uid },
+              { col: "worker_id", val: myWorkerId },
+            ]
+          )) || null;
+
+        const myTeamId = safeStr(myTeamRow?.id || myTeamRow?.team_id);
+        if (myTeamId) {
+          const idx = teamsRanking.findIndex((t) => t.team_id === myTeamId);
+          myTeamRank = idx === -1 ? null : idx + 1;
+          if (!myTeam) {
+            myTeam = {
+              team_id: myTeamId,
+              team_name: teamNameMap.get(myTeamId) || `Equipo ${myTeamId.slice(0, 6)}`,
+            };
+          }
+        } else {
+          myTeamRank = null;
+        }
       }
 
-      // 6.6) winnerTeam
+      // f) winnerTeam (top 1)
       const win = teamsRanking[0] || null;
       winnerTeam = win
         ? {
             team_id: win.team_id,
             team_name: win.team_name,
+            central_user_id: null,
+            central_name: null,
             total_minutes: win.total_minutes,
             total_captadas: win.total_captadas,
             total_eur_month: win.total_eur_month,
@@ -514,7 +544,7 @@ export async function GET(req: Request) {
           }
         : null;
 
-      // 6.7) bono team_winner (central)
+      // g) bono potencial ganador
       const ruleWinner = (bonusRules || []).find(
         (x: any) =>
           String(x?.ranking_type || "").toLowerCase() === "team_winner" &&
@@ -525,7 +555,7 @@ export async function GET(req: Request) {
 
       const bonusTeamWinner = ruleWinner ? toNum(ruleWinner.amount_eur) : 0;
 
-      // 6.8) myEarnings central: solo bono si su equipo va #1
+      // h) myEarnings central: por ahora solo bono si su equipo va #1
       const centralBonus = myTeamRank === 1 ? bonusTeamWinner : 0;
       (myEarnings as any).amount_bonus_eur = centralBonus;
       (myEarnings as any).amount_total_eur = centralBonus;
@@ -551,10 +581,14 @@ export async function GET(req: Request) {
 
       teamsRanking,
       myTeamRank,
+      myTeam,
       winnerTeam,
       bonusRules,
     });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e?.message || "SERVER_ERROR" },
+      { status: 500 }
+    );
   }
 }
