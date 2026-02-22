@@ -157,7 +157,6 @@ export default function PanelPage() {
   const router = useRouter();
   const isMobile = useIsMobile();
 
-  // ✅ Por defecto ya NO arrancamos con eur_total para tarotistas
   const [rankType, setRankType] = useState<RankKey>("minutes");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -174,7 +173,6 @@ export default function PanelPage() {
 
   const isLogged = pState !== "offline";
 
-  // ✅ Panel-me (bonos/total oficial)
   const [panelMe, setPanelMe] = useState<PanelMeResp | null>(null);
 
   async function getToken() {
@@ -204,12 +202,15 @@ export default function PanelPage() {
     } catch {}
   }
 
-  async function loadPanelMe() {
+  async function loadPanelMe(monthOverride?: string | null) {
     try {
       const token = await getToken();
       if (!token) return;
 
-      const res = await fetch("/api/panel/me", {
+      const m = monthOverride ?? selectedMonth ?? null;
+      const qs = m ? `?month_date=${encodeURIComponent(m)}` : "";
+
+      const res = await fetch(`/api/panel/me${qs}`, {
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
       });
@@ -255,10 +256,8 @@ export default function PanelPage() {
       const role = j?.user?.worker?.role || null;
       if (role === "tarotista" || role === "central") {
         await loadPresence();
-        await loadPanelMe(); // ✅ bonos/total oficial
+        await loadPanelMe(month ?? j.month_date ?? null);
       }
-
-      // ✅ Eliminado: auto-cambiar a eur_total (ya no queremos € ranking en tarotistas)
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
     } finally {
@@ -342,9 +341,8 @@ export default function PanelPage() {
 
   useEffect(() => {
     if (!selectedMonth) return;
-    if (!data) return;
-    if (data.month_date === selectedMonth) return;
     load(selectedMonth);
+    loadPanelMe(selectedMonth);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedMonth]);
 
@@ -369,7 +367,7 @@ export default function PanelPage() {
   const isCentral = myRole === "central";
   const isTarot = myRole === "tarotista";
 
-  // ✅ En tarotistas, si por algún motivo rankType quedó en eur_* lo corregimos
+  // ✅ Tarotistas: nunca mostrar ranking € en selector
   useEffect(() => {
     if (!isTarot) return;
     if (rankType === "eur_total" || rankType === "eur_bonus") setRankType("minutes");
@@ -408,7 +406,7 @@ export default function PanelPage() {
   const minutesTotal = data?.myEarnings?.minutes_total ?? null;
   const captadasTotal = data?.myEarnings?.captadas ?? null;
 
-  // ✅ Totales oficiales
+  // ✅ Totales oficiales (panel-me)
   const totalEurOfficial = panelMe?.invoice?.total_eur ?? null;
   const bonusOfficial = panelMe?.bonuses_month_eur ?? null;
 
@@ -471,40 +469,9 @@ export default function PanelPage() {
   const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
   const incGrave = !!data?.myIncidentsMonth?.grave;
 
-  // ✅ NAV (botones juntos)
-  const navWrap: React.CSSProperties = {
-    display: "grid",
-    gap: 10,
-    gridTemplateColumns: isMobile ? "1fr" : "1fr auto",
-    alignItems: "center",
-  };
-
-  const segmented: React.CSSProperties = {
-    display: "grid",
-    gridTemplateColumns: isMobile ? "1fr" : "repeat(3, auto)",
-    gap: 10,
-    alignItems: "center",
-    justifyContent: isMobile ? "stretch" : "start",
-  };
-
-  const navBtn = (active: boolean): React.CSSProperties => ({
-    ...btnBase,
-    padding: "10px 14px",
-    borderRadius: 999,
-    border: active ? "1px solid #111" : "1px solid #e5e7eb",
-    background: active ? "#111" : "#fff",
-    color: active ? "#fff" : "#111",
-    textDecoration: "none",
-    display: "inline-flex",
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 8,
-    whiteSpace: "nowrap",
-  });
-
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: "100%" }}>
-      {/* ===== Header / NAV ===== */}
+      {/* ===== Header ===== */}
       <div
         style={{
           border: "2px solid #111",
@@ -513,8 +480,8 @@ export default function PanelPage() {
           background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
         }}
       >
-        <div style={navWrap}>
-          <div style={{ display: "grid", gap: 6 }}>
+        <div style={{ display: "grid", gap: 12, gridTemplateColumns: isMobile ? "1fr" : "1fr auto", alignItems: "start" }}>
+          <div style={{ display: "grid", gap: 8 }}>
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
               <h1 style={{ margin: 0, lineHeight: 1.1, fontSize: 22, fontWeight: 1200 }}>Panel</h1>
               <div style={{ color: "#6b7280", textTransform: "capitalize", fontWeight: 1000 }}>{monthLabel}</div>
@@ -529,10 +496,34 @@ export default function PanelPage() {
                 </div>
               ) : null}
             </div>
+
+            <div style={{ display: "grid", gap: 8, width: "100%" }}>
+              <div style={{ color: "#6b7280", fontWeight: 1000 }}>Mes</div>
+              <select
+                value={selectedMonth || data?.month_date || ""}
+                onChange={(e) => setSelectedMonth(e.target.value || null)}
+                style={{ padding: 12, borderRadius: 12, border: "1px solid #e5e7eb", width: "100%", maxWidth: "100%" }}
+                disabled={loading || months.length === 0}
+              >
+                {months.length === 0 ? (
+                  <option value="">{data?.month_date || "—"}</option>
+                ) : (
+                  months.map((m) => (
+                    <option key={m} value={m}>
+                      {formatMonthLabel(m)}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
           </div>
 
           <div style={{ display: "grid", gap: 10, justifyItems: isMobile ? "stretch" : "end" }}>
-            <button onClick={() => load(selectedMonth)} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}>
+            <button
+              onClick={() => load(selectedMonth)}
+              disabled={loading}
+              style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}
+            >
               {loading ? "Actualizando..." : "Actualizar"}
             </button>
 
@@ -541,28 +532,8 @@ export default function PanelPage() {
             </button>
           </div>
         </div>
-
-          <div style={{ display: "grid", gap: 8, width: "100%" }}>
-            <div style={{ color: "#6b7280", fontWeight: 1000 }}>Mes</div>
-            <select
-              value={selectedMonth || data?.month_date || ""}
-              onChange={(e) => setSelectedMonth(e.target.value || null)}
-              style={{ padding: 12, borderRadius: 12, border: "1px solid #e5e7eb", width: "100%", maxWidth: "100%" }}
-              disabled={loading || months.length === 0}
-            >
-              {months.length === 0 ? (
-                <option value="">{data?.month_date || "—"}</option>
-              ) : (
-                months.map((m) => (
-                  <option key={m} value={m}>
-                    {formatMonthLabel(m)}
-                  </option>
-                ))
-              )}
-            </select>
-          </div>
-        </div>
       </div>
+
       {err ? (
         <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>
           {err}
@@ -591,7 +562,15 @@ export default function PanelPage() {
               const isMine = (data?.myTeamRank || 0) === pos;
 
               return (
-                <div key={pos} style={{ border: isMine ? "2px solid #111" : "1px solid #eaeaea", borderRadius: 16, padding: 12, background: isMine ? "#fff" : "#fcfcfc" }}>
+                <div
+                  key={pos}
+                  style={{
+                    border: isMine ? "2px solid #111" : "1px solid #eaeaea",
+                    borderRadius: 16,
+                    padding: 12,
+                    background: isMine ? "#fff" : "#fcfcfc",
+                  }}
+                >
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                     <div style={{ fontWeight: 1100, fontSize: 16 }}>{t ? `${medal(pos)} #${pos} ${t.team_name}` : "—"}</div>
                     {isMine ? <span style={{ border: "1px solid #111", borderRadius: 999, padding: "4px 10px", fontWeight: 1000 }}>Tu equipo</span> : null}
@@ -665,7 +644,7 @@ export default function PanelPage() {
             <Card>
               <CardTitle>Bonos ganados (mes)</CardTitle>
               <CardValue>{bonusOfficial === null ? "—" : eur(bonusOfficial)}</CardValue>
-              <CardHint>Calculado desde líneas de factura (fuente oficial).</CardHint>
+              <CardHint>Fuente oficial: worker_invoices / líneas.</CardHint>
             </Card>
           </>
         ) : isCentral ? (
@@ -764,7 +743,7 @@ export default function PanelPage() {
           {(isCentral
             ? (["minutes", "captadas"] as RankKey[])
             : isTarot
-            ? (["minutes", "captadas", "repite_pct", "cliente_pct"] as RankKey[]) // ✅ Tarotistas sin €
+            ? (["minutes", "captadas", "repite_pct", "cliente_pct"] as RankKey[])
             : (["minutes", "repite_pct", "cliente_pct", "captadas"] as RankKey[])
           ).map((k) => (
             <div key={k} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
@@ -848,14 +827,12 @@ export default function PanelPage() {
                 const pos = idx + 1;
                 const isMe = me?.display_name === r.name;
                 return (
-                  <tr key={r.worker_id} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 900 : 400 }}>
+                  <tr key={r.worker_id || `${pos}-${r.name}`} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 900 : 400 }}>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
                       {medal(pos)} {pos}
                     </td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>
-                      {valueOf(rankType, r)}
-                    </td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{valueOf(rankType, r)}</td>
                   </tr>
                 );
               })}
