@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import { useRouter, usePathname } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -28,12 +29,11 @@ function roleLabel(role: WorkerRole | null) {
   return "—";
 }
 
-function roleTone(role: WorkerRole | null) {
-  // solo visual
+function rolePill(role: WorkerRole | null) {
   if (role === "admin") return { bg: "#111", fg: "#fff", bd: "#111" };
-  if (role === "central") return { bg: "#fff", fg: "#111", bd: "#111" };
-  if (role === "tarotista") return { bg: "#fff", fg: "#111", bd: "#e5e7eb" };
-  return { bg: "#fff", fg: "#111", bd: "#e5e7eb" };
+  if (role === "central") return { bg: "rgba(255,255,255,0.9)", fg: "#111", bd: "rgba(17,17,17,0.25)" };
+  if (role === "tarotista") return { bg: "rgba(255,255,255,0.9)", fg: "#111", bd: "rgba(17,17,17,0.10)" };
+  return { bg: "rgba(255,255,255,0.9)", fg: "#111", bd: "rgba(17,17,17,0.10)" };
 }
 
 function initials(name: string) {
@@ -79,7 +79,6 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
         if (!alive) return;
 
         if (!j?.ok || !j?.worker) {
-          // ✅ cortamos loops: cerramos sesión si el worker no se puede validar
           await supabase.auth.signOut();
           router.replace("/login");
           return;
@@ -112,72 +111,75 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
   }
 
   const nav = useMemo(() => {
-    // ✅ Siempre 2 botones base (los 3 los ponemos cuando exista /panel/incidents)
-    // Si ya tienes /panel/incidents, lo puedes activar abajo (ya lo dejo incluido).
-    const items = [
+    return [
       { href: "/panel", label: "Dashboard", icon: "📊" },
       { href: "/panel/invoices", label: "Facturas", icon: "🧾" },
       { href: "/panel/incidents", label: "Mis incidencias", icon: "⚠️" },
     ];
-    return items;
   }, []);
 
-  const tone = roleTone(role);
+  const pillTone = rolePill(role);
 
-  const pill = (active: boolean): React.CSSProperties => ({
+  const navPill = (active: boolean): React.CSSProperties => ({
     display: "inline-flex",
     alignItems: "center",
-    gap: 8,
-    padding: "10px 14px",
+    gap: 10,
+    padding: isMobile ? "10px 14px" : "10px 16px",
     borderRadius: 999,
-    border: active ? "1px solid #111" : "1px solid #e5e7eb",
+    border: active ? "1px solid #111" : "1px solid rgba(17,17,17,0.12)",
     background: active ? "#111" : "rgba(255,255,255,0.92)",
     color: active ? "#fff" : "#111",
     textDecoration: "none",
-    fontWeight: 1000,
+    fontWeight: 1100,
     whiteSpace: "nowrap",
-    boxShadow: active ? "0 10px 24px rgba(0,0,0,0.18)" : "0 6px 16px rgba(0,0,0,0.06)",
+    boxShadow: active ? "0 14px 30px rgba(0,0,0,0.16)" : "0 10px 22px rgba(0,0,0,0.07)",
     transform: active ? "translateY(-1px)" : "translateY(0px)",
     transition: "transform 140ms ease, box-shadow 140ms ease, background 140ms ease",
   });
 
+  const bg: React.CSSProperties = {
+    minHeight: "100vh",
+    background:
+      "radial-gradient(900px 500px at 10% 0%, rgba(17,17,17,0.12) 0%, rgba(255,255,255,0) 62%), radial-gradient(900px 500px at 90% 10%, rgba(17,17,17,0.06) 0%, rgba(255,255,255,0) 55%), linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%)",
+  };
+
   if (loading) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "grid",
-          placeItems: "center",
-          padding: 16,
-          background:
-            "radial-gradient(900px 500px at 20% 20%, rgba(17,17,17,0.10) 0%, rgba(255,255,255,0) 60%), linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%)",
-          color: "#111",
-        }}
-      >
+      <div style={{ ...bg, display: "grid", placeItems: "center", padding: 16 }}>
         <div
           style={{
             width: "100%",
-            maxWidth: 520,
-            border: "2px solid #111",
-            borderRadius: 20,
+            maxWidth: 540,
+            borderRadius: 24,
+            border: "1px solid rgba(17,17,17,0.12)",
+            background: "rgba(255,255,255,0.82)",
+            boxShadow: "0 22px 60px rgba(0,0,0,0.12)",
             padding: 16,
-            background: "rgba(255,255,255,0.86)",
-            boxShadow: "0 18px 40px rgba(0,0,0,0.08)",
           }}
         >
-          <div style={{ fontWeight: 1200, fontSize: 18 }}>Tarot Celestial</div>
-          <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 900 }}>
-            Cargando tu sesión…
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <div
+              style={{
+                width: 46,
+                height: 46,
+                borderRadius: 16,
+                border: "1px solid rgba(17,17,17,0.12)",
+                background: "rgba(255,255,255,0.9)",
+                display: "grid",
+                placeItems: "center",
+                overflow: "hidden",
+              }}
+            >
+              <Image src="/publi/logo.png" alt="Tarot Celestial" width={40} height={40} />
+            </div>
+
+            <div style={{ display: "grid", gap: 2 }}>
+              <div style={{ fontWeight: 1300, letterSpacing: -0.2, fontSize: 18 }}>Tarot Celestial</div>
+              <div style={{ color: "#6b7280", fontWeight: 900, fontSize: 13 }}>Cargando tu sesión…</div>
+            </div>
           </div>
-          <div
-            style={{
-              marginTop: 14,
-              height: 10,
-              borderRadius: 999,
-              background: "#eee",
-              overflow: "hidden",
-            }}
-          >
+
+          <div style={{ marginTop: 14, height: 10, borderRadius: 999, background: "#eee", overflow: "hidden" }}>
             <div
               style={{
                 width: "45%",
@@ -202,83 +204,68 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
 
   if (fatal) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "grid",
-          placeItems: "center",
-          padding: 16,
-          background:
-            "radial-gradient(900px 500px at 20% 20%, rgba(185,28,28,0.10) 0%, rgba(255,255,255,0) 60%), linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%)",
-        }}
-      >
+      <div style={{ ...bg, display: "grid", placeItems: "center", padding: 16 }}>
         <div
           style={{
             width: "100%",
             maxWidth: 560,
-            border: "2px solid #111",
-            borderRadius: 20,
-            padding: 16,
+            borderRadius: 24,
+            border: "1px solid rgba(17,17,17,0.14)",
             background: "rgba(255,255,255,0.92)",
-            boxShadow: "0 18px 40px rgba(0,0,0,0.10)",
+            boxShadow: "0 22px 60px rgba(0,0,0,0.12)",
+            padding: 16,
           }}
         >
-          <div style={{ fontWeight: 1200, fontSize: 18 }}>⚠️ No se pudo abrir el panel</div>
+          <div style={{ fontWeight: 1300, fontSize: 18 }}>⚠️ No se pudo abrir el panel</div>
           <div style={{ marginTop: 8, color: "#6b7280", fontWeight: 900, whiteSpace: "pre-wrap" }}>{fatal}</div>
 
-          <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
-            <button
-              onClick={logout}
-              style={{
-                padding: 12,
-                borderRadius: 14,
-                border: "1px solid #111",
-                background: "#111",
-                color: "#fff",
-                fontWeight: 1100,
-                cursor: "pointer",
-                boxShadow: "0 14px 30px rgba(0,0,0,0.18)",
-              }}
-            >
-              Volver a login
-            </button>
-          </div>
+          <button
+            onClick={logout}
+            style={{
+              marginTop: 14,
+              width: "100%",
+              padding: 12,
+              borderRadius: 14,
+              border: "1px solid #111",
+              background: "#111",
+              color: "#fff",
+              fontWeight: 1200,
+              cursor: "pointer",
+              boxShadow: "0 14px 30px rgba(0,0,0,0.16)",
+            }}
+          >
+            Volver a login
+          </button>
         </div>
       </div>
     );
   }
 
-  const brandBar: React.CSSProperties = {
-    position: "sticky",
-    top: 0,
-    zIndex: 50,
-    backdropFilter: "blur(12px)",
-    WebkitBackdropFilter: "blur(12px)",
-    background: "rgba(255,255,255,0.78)",
-    borderBottom: "1px solid rgba(17,17,17,0.08)",
-  };
-
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background:
-          "radial-gradient(900px 500px at 10% 0%, rgba(17,17,17,0.10) 0%, rgba(255,255,255,0) 60%), linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%)",
-      }}
-    >
-      {/* ===== HEADER WOW ===== */}
-      <div style={brandBar}>
-        <div style={{ maxWidth: 1120, margin: "0 auto", padding: isMobile ? "12px 12px" : "16px 16px" }}>
+    <div style={bg}>
+      {/* HEADER GLASS */}
+      <div
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 50,
+          backdropFilter: "blur(14px)",
+          WebkitBackdropFilter: "blur(14px)",
+          background: "rgba(255,255,255,0.72)",
+          borderBottom: "1px solid rgba(17,17,17,0.08)",
+        }}
+      >
+        <div style={{ maxWidth: 1120, margin: "0 auto", padding: isMobile ? 12 : 16 }}>
           <div
             style={{
+              borderRadius: 26,
               border: "1px solid rgba(17,17,17,0.10)",
-              borderRadius: 22,
+              background: "rgba(255,255,255,0.74)",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.10)",
               padding: isMobile ? 12 : 14,
-              background: "rgba(255,255,255,0.72)",
-              boxShadow: "0 16px 34px rgba(0,0,0,0.08)",
             }}
           >
-            {/* Top row */}
+            {/* TOP ROW */}
             <div
               style={{
                 display: "grid",
@@ -287,28 +274,28 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                 alignItems: "center",
               }}
             >
-              {/* Brand */}
+              {/* BRAND */}
               <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
                 <div
                   style={{
-                    width: 44,
-                    height: 44,
-                    borderRadius: 14,
-                    border: "1px solid rgba(17,17,17,0.15)",
-                    background: "linear-gradient(180deg, rgba(17,17,17,0.08) 0%, rgba(17,17,17,0.02) 100%)",
+                    width: 46,
+                    height: 46,
+                    borderRadius: 16,
+                    border: "1px solid rgba(17,17,17,0.12)",
+                    background: "rgba(255,255,255,0.92)",
                     display: "grid",
                     placeItems: "center",
                     boxShadow: "0 14px 26px rgba(0,0,0,0.10)",
-                    fontWeight: 1200,
+                    overflow: "hidden",
                   }}
                   title="Tarot Celestial"
                 >
-                  ✨
+                  <Image src="/publi/logo.png" alt="Tarot Celestial" width={40} height={40} />
                 </div>
 
                 <div style={{ display: "grid", gap: 2 }}>
                   <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 1300, letterSpacing: -0.2, fontSize: 18 }}>
+                    <div style={{ fontWeight: 1400, letterSpacing: -0.2, fontSize: 18 }}>
                       Tarot Celestial
                     </div>
 
@@ -316,10 +303,10 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                       style={{
                         padding: "4px 10px",
                         borderRadius: 999,
-                        border: `1px solid ${tone.bd}`,
-                        background: tone.bg,
-                        color: tone.fg,
-                        fontWeight: 1100,
+                        border: `1px solid ${pillTone.bd}`,
+                        background: pillTone.bg,
+                        color: pillTone.fg,
+                        fontWeight: 1200,
                         fontSize: 12,
                       }}
                     >
@@ -327,13 +314,13 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                     </span>
                   </div>
 
-                  <div style={{ color: "#6b7280", fontWeight: 900, fontSize: 13 }}>
-                    Panel Interno · Fichaje · Objetivos · Facturación
+                  <div style={{ color: "#6b7280", fontWeight: 950, fontSize: 13 }}>
+                    Panel Interno · Control horario · Facturación · Incidencias
                   </div>
                 </div>
               </div>
 
-              {/* User & actions */}
+              {/* USER + ACTIONS */}
               <div
                 style={{
                   display: "flex",
@@ -346,14 +333,14 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                   <div
                     style={{
-                      width: 40,
-                      height: 40,
+                      width: 42,
+                      height: 42,
                       borderRadius: 999,
-                      border: "1px solid rgba(17,17,17,0.15)",
-                      background: "rgba(255,255,255,0.9)",
+                      border: "1px solid rgba(17,17,17,0.14)",
+                      background: "rgba(255,255,255,0.92)",
                       display: "grid",
                       placeItems: "center",
-                      fontWeight: 1200,
+                      fontWeight: 1300,
                       boxShadow: "0 12px 22px rgba(0,0,0,0.08)",
                     }}
                     title={name || "Usuario"}
@@ -362,10 +349,10 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                   </div>
 
                   <div style={{ display: "grid", gap: 2 }}>
-                    <div style={{ fontWeight: 1200, fontSize: 14, lineHeight: 1.1 }}>
+                    <div style={{ fontWeight: 1300, fontSize: 14, lineHeight: 1.1 }}>
                       {name || "—"}
                     </div>
-                    <div style={{ color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
+                    <div style={{ color: "#6b7280", fontWeight: 950, fontSize: 12 }}>
                       Sesión activa
                     </div>
                   </div>
@@ -381,7 +368,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                       background: "rgba(255,255,255,0.92)",
                       color: "#111",
                       textDecoration: "none",
-                      fontWeight: 1100,
+                      fontWeight: 1200,
                       boxShadow: "0 12px 22px rgba(0,0,0,0.08)",
                       whiteSpace: "nowrap",
                     }}
@@ -398,7 +385,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                     border: "1px solid #111",
                     background: "#111",
                     color: "#fff",
-                    fontWeight: 1100,
+                    fontWeight: 1200,
                     cursor: "pointer",
                     boxShadow: "0 14px 30px rgba(0,0,0,0.16)",
                     whiteSpace: "nowrap",
@@ -409,12 +396,12 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
               </div>
             </div>
 
-            {/* Nav row */}
+            {/* NAV ROW */}
             <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
               {nav.map((it) => {
                 const active = pathname === it.href || pathname.startsWith(it.href + "/");
                 return (
-                  <a key={it.href} href={it.href} style={pill(active)} aria-current={active ? "page" : undefined}>
+                  <a key={it.href} href={it.href} style={navPill(active)} aria-current={active ? "page" : undefined}>
                     <span style={{ fontSize: 16 }}>{it.icon}</span>
                     <span>{it.label}</span>
                   </a>
@@ -425,10 +412,8 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
         </div>
       </div>
 
-      {/* ===== CONTENT ===== */}
-      <div style={{ maxWidth: 1120, margin: "0 auto", padding: isMobile ? 12 : 16, width: "100%" }}>
-        {children}
-      </div>
+      {/* CONTENT */}
+      <div style={{ maxWidth: 1120, margin: "0 auto", padding: isMobile ? 12 : 16, width: "100%" }}>{children}</div>
     </div>
   );
 }
