@@ -547,7 +547,7 @@ export default function PanelPage() {
             <a href="/panel" style={navBtn(true)}>📊 Dashboard</a>
 
             {/* ⚠️ Ajusta esta ruta si tu página real de facturas es otra */}
-            <a href="/panel/facturas" style={navBtn(false)}>🧾 Facturas</a>
+            <a href="/panel/invoices" style={navBtn(false)}>🧾 Facturas</a>
 
             {(isTarot || isCentral) ? (
               <a href="/panel/incidents" style={navBtn(false)}>⚠️ Mis incidencias</a>
