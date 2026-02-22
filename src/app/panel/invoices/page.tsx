@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
-import { Badge } from "@/components/ui/Badge";
 
 type Invoice = {
   id: string;
@@ -29,7 +28,6 @@ type StatusChoice = "accepted" | "rejected" | "review";
 
 function useIsMobile(bp = 900) {
   const [isMobile, setIsMobile] = useState(false);
-
   useEffect(() => {
     const mq = window.matchMedia(`(max-width: ${bp}px)`);
     const onChange = () => setIsMobile(mq.matches);
@@ -37,7 +35,6 @@ function useIsMobile(bp = 900) {
     mq.addEventListener?.("change", onChange);
     return () => mq.removeEventListener?.("change", onChange);
   }, [bp]);
-
   return isMobile;
 }
 
@@ -55,16 +52,12 @@ function monthLabel(isoDate: string) {
   }
 }
 
-function statusPill(statusRaw: any) {
-  const s = String(statusRaw || "").toLowerCase();
-
-  // tonos aproximados (Badge ya maneja estilos por tone)
-  if (s === "accepted") return { text: "ACEPTADA", tone: "ok" as any };
-  if (s === "rejected") return { text: "RECHAZADA", tone: "bad" as any };
-  if (s === "review" || s === "in_review") return { text: "EN REVISIÓN", tone: "warn" as any };
-
-  if (!s) return { text: "—", tone: "neutral" as any };
-  return { text: s.toUpperCase(), tone: "neutral" as any };
+function statusPill(s: string) {
+  const up = String(s || "").toUpperCase();
+  if (up === "ACCEPTED") return { text: "ACEPTADA", bg: "#ecfdf5", bd: "#a7f3d0", fg: "#065f46" };
+  if (up === "REJECTED") return { text: "RECHAZADA", bg: "#fff1f2", bd: "#fecdd3", fg: "#9f1239" };
+  if (up === "REVIEW") return { text: "EN REVISIÓN", bg: "#fffbeb", bd: "#fde68a", fg: "#92400e" };
+  return { text: up || "—", bg: "#f3f4f6", bd: "#e5e7eb", fg: "#111827" };
 }
 
 export default function MyInvoicesPage() {
@@ -72,7 +65,6 @@ export default function MyInvoicesPage() {
   const isMobile = useIsMobile();
 
   const [loading, setLoading] = useState(false);
-  const [loadingLines, setLoadingLines] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -85,19 +77,14 @@ export default function MyInvoicesPage() {
     return data.session?.access_token || null;
   }
 
-  async function loadMyInvoices(keepSelectedId?: string | null) {
+  async function loadMyInvoices(preserveSelectedId?: string | null) {
     setErr(null);
     setLoading(true);
-
     try {
       const token = await getToken();
       if (!token) return router.replace("/login");
 
-      const r = await fetch("/api/invoices/my", {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-
+      const r = await fetch("/api/invoices/my", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
       const raw = await r.text();
       let j: any = null;
       try {
@@ -111,14 +98,12 @@ export default function MyInvoicesPage() {
         return;
       }
 
-      const list: Invoice[] = Array.isArray(j.invoices) ? j.invoices : [];
+      const list: Invoice[] = j.invoices || [];
       setInvoices(list);
 
-      const targetId = keepSelectedId ?? selected?.id ?? null;
-      const nextSelected =
-        (targetId ? list.find((x) => x.id === targetId) : null) || (list.length ? list[0] : null);
-
-      setSelected(nextSelected);
+      const keepId = preserveSelectedId || selected?.id || null;
+      const keep = keepId ? list.find((x) => x.id === keepId) || null : null;
+      setSelected(keep || (list.length ? list[0] : null));
     } finally {
       setLoading(false);
     }
@@ -126,35 +111,30 @@ export default function MyInvoicesPage() {
 
   async function loadLines(invoiceId: string) {
     setErr(null);
-    setLoadingLines(true);
     setLines([]);
 
+    const token = await getToken();
+    if (!token) return router.replace("/login");
+
+    const r = await fetch(`/api/invoices/lines?invoiceId=${encodeURIComponent(invoiceId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+
+    const raw = await r.text();
+    let j: any = null;
     try {
-      const token = await getToken();
-      if (!token) return router.replace("/login");
-
-      const r = await fetch(`/api/invoices/lines?invoiceId=${encodeURIComponent(invoiceId)}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-
-      const raw = await r.text();
-      let j: any = null;
-      try {
-        j = raw ? JSON.parse(raw) : null;
-      } catch {
-        j = null;
-      }
-
-      if (!r.ok || !j?.ok) {
-        setErr(`Error HTTP ${r.status}. ${j?.error || raw || "(vacío)"}`);
-        return;
-      }
-
-      setLines(Array.isArray(j.lines) ? j.lines : []);
-    } finally {
-      setLoadingLines(false);
+      j = raw ? JSON.parse(raw) : null;
+    } catch {
+      j = null;
     }
+
+    if (!r.ok || !j?.ok) {
+      setErr(`Error HTTP ${r.status}. ${j?.error || raw || "(vacío)"}`);
+      return;
+    }
+
+    setLines(j.lines || []);
   }
 
   useEffect(() => {
@@ -180,15 +160,8 @@ export default function MyInvoicesPage() {
 
       const r = await fetch("/api/invoices/respond", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          invoiceId: selected.id,
-          status: nextStatus,
-          workerNote: note.trim() || null,
-        }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ invoiceId: selected.id, status: nextStatus, workerNote: note.trim() || null }),
       });
 
       const raw = await r.text();
@@ -204,7 +177,6 @@ export default function MyInvoicesPage() {
         return;
       }
 
-      // ✅ recarga y mantiene seleccionada esta misma
       await loadMyInvoices(selected.id);
     } finally {
       setLoading(false);
@@ -219,49 +191,50 @@ export default function MyInvoicesPage() {
     if (!token) return router.replace("/login");
 
     const url = `/api/invoices/pdf?invoiceId=${encodeURIComponent(selected.id)}`;
-
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (!r.ok) {
       const t = await r.text().catch(() => "");
       setErr(`PDF error HTTP ${r.status}. ${t || "(vacío)"}`);
       return;
     }
-
     const blob = await r.blob();
     const blobUrl = URL.createObjectURL(blob);
     window.open(blobUrl, "_blank");
     setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
   }
 
-  const selectedMeta = useMemo(() => {
+  const head = useMemo(() => {
     if (!selected) return null;
-    const st = statusPill(selected.status);
+    const pill = statusPill(selected.status);
     return {
       month: monthLabel(selected.month_date),
       total: euro(selected.total_eur),
-      statusText: st.text,
-      statusTone: st.tone,
-      locked: !!selected.locked_at,
+      state: selected.locked_at ? "CERRADA" : "ABIERTA",
+      status: pill,
     };
   }, [selected]);
 
-  const totals = useMemo(() => {
-    const total = (invoices || []).reduce((acc, x) => acc + (Number(x.total_eur) || 0), 0);
-    const closed = (invoices || []).filter((x) => !!x.locked_at).length;
-    const open = (invoices || []).length - closed;
-    return { total, closed, open, count: (invoices || []).length };
-  }, [invoices]);
-
-  const card: React.CSSProperties = {
+  const shell: React.CSSProperties = {
     borderRadius: 18,
     border: "1px solid #e5e7eb",
     background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
-    boxShadow: "0 12px 45px rgba(0,0,0,0.08)",
+    boxShadow: "0 10px 35px rgba(0,0,0,0.06)",
   };
 
-  const btnBase: React.CSSProperties = {
+  const btnPrimary: React.CSSProperties = {
     padding: "11px 14px",
-    borderRadius: 12,
+    borderRadius: 14,
+    border: "1px solid #111",
+    background: "#111",
+    color: "#fff",
+    fontWeight: 1100,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  };
+
+  const btnGhost: React.CSSProperties = {
+    padding: "11px 14px",
+    borderRadius: 14,
     border: "1px solid #e5e7eb",
     background: "#fff",
     color: "#111",
@@ -270,45 +243,32 @@ export default function MyInvoicesPage() {
     whiteSpace: "nowrap",
   };
 
-  const btnPrimary: React.CSSProperties = {
-    ...btnBase,
+  const btnDanger: React.CSSProperties = {
+    padding: "11px 14px",
+    borderRadius: 14,
     border: "1px solid #111",
-    background: "#111",
-    color: "#fff",
+    background: "#fff",
+    color: "#111",
+    fontWeight: 1100,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
   };
-
-  const btnGhost: React.CSSProperties = {
-    ...btnBase,
-  };
-
-  const splitCols = isMobile ? "1fr" : "380px 1fr";
 
   return (
-    <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: 1160 }}>
+    <div style={{ display: "grid", gap: 14, maxWidth: 1100 }}>
       {/* Header */}
-      <div style={{ ...card, padding: 14 }}>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: isMobile ? "1fr" : "1fr auto",
-            gap: 12,
-            alignItems: "center",
-          }}
-        >
-          <div style={{ display: "grid", gap: 6 }}>
-            <div style={{ fontWeight: 1300, fontSize: 20, lineHeight: 1.1 }}>🧾 Mis facturas</div>
+      <div style={{ ...shell, padding: 14 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "grid", gap: 4 }}>
+            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 1300, lineHeight: 1.1 }}>🧾 Mis facturas</h1>
             <div style={{ color: "#6b7280", fontWeight: 900 }}>
-              Aquí ves tus facturas mensuales, sus líneas y puedes responder al admin.
+              Revisa tus líneas, descarga PDF y responde si estás de acuerdo.
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: isMobile ? "flex-start" : "flex-end" }}>
-            <button onClick={() => loadMyInvoices(selected?.id || null)} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}>
-              {loading ? "Actualizando…" : "Actualizar"}
-            </button>
-
-            <button onClick={openPdf} disabled={!selected || loading} style={!selected || loading ? { ...btnGhost, opacity: 0.6, cursor: "not-allowed" } : btnGhost}>
-              Ver PDF
+          <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button onClick={() => loadMyInvoices(selected?.id || null)} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7 } : btnGhost}>
+              {loading ? "Actualizando..." : "Actualizar"}
             </button>
 
             <a href="/panel" style={{ ...btnGhost, textDecoration: "none", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
@@ -316,263 +276,302 @@ export default function MyInvoicesPage() {
             </a>
           </div>
         </div>
-
-        {/* Mini resumen */}
-        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))", gap: 10 }}>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, background: "#fff" }}>
-            <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>Total facturas</div>
-            <div style={{ fontWeight: 1300, fontSize: 18, marginTop: 4 }}>{totals.count}</div>
-          </div>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, background: "#fff" }}>
-            <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>Abiertas</div>
-            <div style={{ fontWeight: 1300, fontSize: 18, marginTop: 4 }}>{totals.open}</div>
-          </div>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, background: "#fff" }}>
-            <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>Cerradas</div>
-            <div style={{ fontWeight: 1300, fontSize: 18, marginTop: 4 }}>{totals.closed}</div>
-          </div>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, background: "#fff" }}>
-            <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>Suma total</div>
-            <div style={{ fontWeight: 1300, fontSize: 18, marginTop: 4 }}>{euro(totals.total)}</div>
-          </div>
-        </div>
       </div>
 
-      {err ? (
-        <div style={{ padding: 12, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 14, fontWeight: 900 }}>
-          {err}
-        </div>
-      ) : null}
+      {err ? <div style={{ padding: 12, borderRadius: 12, border: "1px solid #fecaca", background: "#fff1f2", color: "#9f1239", fontWeight: 900 }}>{err}</div> : null}
 
-      {/* Body */}
-      <div style={{ display: "grid", gridTemplateColumns: splitCols, gap: 12, alignItems: "start" }}>
-        {/* List */}
-        <div style={{ ...card, padding: 12 }}>
-          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
-            <div style={{ fontWeight: 1200, fontSize: 14, color: "#111" }}>Facturas</div>
-            <div style={{ color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
-              {loading ? "Cargando…" : invoices.length ? `${invoices.length} meses` : "—"}
+      {/* Mobile: Selector + detalle en una columna */}
+      {isMobile ? (
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ ...shell, padding: 14 }}>
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ fontWeight: 1200 }}>Selecciona factura</div>
+              <select
+                value={selected?.id || ""}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  const next = invoices.find((x) => x.id === id) || null;
+                  setSelected(next);
+                }}
+                disabled={loading || invoices.length === 0}
+                style={{
+                  width: "100%",
+                  padding: 12,
+                  borderRadius: 12,
+                  border: "1px solid #e5e7eb",
+                  fontWeight: 1100,
+                  textTransform: "capitalize",
+                  background: "#fff",
+                }}
+              >
+                {invoices.length === 0 ? (
+                  <option value="">No hay facturas</option>
+                ) : (
+                  invoices.map((i) => (
+                    <option key={i.id} value={i.id}>
+                      {monthLabel(i.month_date)} · {euro(i.total_eur)}
+                    </option>
+                  ))
+                )}
+              </select>
+
+              {selected ? (
+                <>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 1300, fontSize: 16, textTransform: "capitalize" }}>{head?.month}</div>
+                    <span
+                      style={{
+                        padding: "6px 10px",
+                        borderRadius: 999,
+                        border: `1px solid ${head?.status.bd}`,
+                        background: head?.status.bg,
+                        color: head?.status.fg,
+                        fontWeight: 1200,
+                        fontSize: 12,
+                      }}
+                    >
+                      {head?.status.text}
+                    </span>
+                    <span style={{ marginLeft: "auto", color: "#6b7280", fontWeight: 1000 }}>
+                      {head?.state} · Total <b style={{ color: "#111" }}>{head?.total}</b>
+                    </span>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 6 }}>
+                    <button onClick={openPdf} style={btnPrimary}>
+                      Ver PDF
+                    </button>
+                    <button onClick={() => loadLines(selected.id)} style={btnGhost}>
+                      Recargar líneas
+                    </button>
+                  </div>
+
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ fontWeight: 1200, marginBottom: 8 }}>Líneas</div>
+
+                    {lines.length === 0 ? (
+                      <div style={{ color: "#6b7280", fontWeight: 900 }}>Sin líneas.</div>
+                    ) : (
+                      <div style={{ display: "grid", gap: 10 }}>
+                        {lines.map((l) => (
+                          <div key={l.id} style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, background: "#fff" }}>
+                            <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+                              <div style={{ fontWeight: 1200 }}>{l.label}</div>
+                              <div style={{ marginLeft: "auto", fontWeight: 1300 }}>{euro(l.amount_eur)}</div>
+                            </div>
+                            <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
+                              {l.is_manual ? "Manual" : "Automático"} · {String(l.kind || "").toUpperCase()}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ marginTop: 14, borderTop: "1px solid #e5e7eb", paddingTop: 12 }}>
+                    <div style={{ fontWeight: 1200, marginBottom: 8 }}>Tu respuesta</div>
+
+                    <textarea
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                      placeholder="Escribe aquí tu comentario (opcional)"
+                      style={{
+                        width: "100%",
+                        minHeight: 110,
+                        padding: 12,
+                        borderRadius: 14,
+                        border: "1px solid #e5e7eb",
+                        background: "#fff",
+                        outline: "none",
+                        fontWeight: 900,
+                      }}
+                    />
+
+                    <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+                      <button onClick={() => respond("accepted")} disabled={loading} style={loading ? { ...btnPrimary, opacity: 0.7 } : btnPrimary}>
+                        ✅ Aceptar
+                      </button>
+                      <button onClick={() => respond("review")} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7 } : btnGhost}>
+                        🟡 En revisión
+                      </button>
+                      <button onClick={() => respond("rejected")} disabled={loading} style={loading ? { ...btnDanger, opacity: 0.7 } : btnDanger}>
+                        ❌ Rechazar
+                      </button>
+                    </div>
+
+                    <div style={{ marginTop: 10, color: "#6b7280", fontWeight: 900 }}>
+                      {selected.locked_at ? "Esta factura está cerrada. Puedes responder." : "Esta factura está abierta (el admin puede ajustarla)."}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div style={{ color: "#6b7280", fontWeight: 900 }}>No hay facturas para mostrar.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* Desktop: 2 columnas pro */
+        <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 12 }}>
+          {/* Lista */}
+          <div style={{ ...shell, padding: 12 }}>
+            <div style={{ fontWeight: 1200, marginBottom: 10 }}>Facturas</div>
+
+            <div style={{ display: "grid", gap: 8, maxHeight: 560, overflow: "auto", paddingRight: 4 }}>
+              {invoices.length === 0 ? (
+                <div style={{ color: "#6b7280", fontWeight: 900 }}>No hay facturas todavía.</div>
+              ) : (
+                invoices.map((i) => {
+                  const active = selected?.id === i.id;
+                  const pill = statusPill(i.status);
+                  return (
+                    <button
+                      key={i.id}
+                      onClick={() => setSelected(i)}
+                      style={{
+                        textAlign: "left",
+                        padding: 12,
+                        borderRadius: 14,
+                        border: active ? "2px solid #111" : "1px solid #e5e7eb",
+                        background: active ? "#f8fafc" : "#fff",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                        <div style={{ fontWeight: 1200, textTransform: "capitalize" }}>{monthLabel(i.month_date)}</div>
+                        <span
+                          style={{
+                            padding: "5px 10px",
+                            borderRadius: 999,
+                            border: `1px solid ${pill.bd}`,
+                            background: pill.bg,
+                            color: pill.fg,
+                            fontWeight: 1200,
+                            fontSize: 12,
+                          }}
+                        >
+                          {pill.text}
+                        </span>
+                        <div style={{ marginLeft: "auto", fontWeight: 1300 }}>{euro(i.total_eur)}</div>
+                      </div>
+
+                      <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 900, fontSize: 13 }}>
+                        {i.locked_at ? "CERRADA" : "ABIERTA"} · {String(i.status || "").toUpperCase()}
+                      </div>
+                    </button>
+                  );
+                })
+              )}
             </div>
           </div>
 
-          <div style={{ marginTop: 10, display: "grid", gap: 10, maxHeight: isMobile ? 360 : 560, overflow: "auto", paddingRight: 4 }}>
-            {loading && invoices.length === 0 ? (
-              <div style={{ color: "#6b7280", fontWeight: 900 }}>Cargando facturas…</div>
-            ) : invoices.length === 0 ? (
-              <div style={{ color: "#6b7280", fontWeight: 900 }}>No hay facturas todavía.</div>
+          {/* Detalle */}
+          <div style={{ ...shell, padding: 14 }}>
+            {!selected ? (
+              <div style={{ color: "#6b7280", fontWeight: 900 }}>Selecciona una factura.</div>
             ) : (
-              invoices.map((i) => {
-                const active = selected?.id === i.id;
-                const pill = statusPill(i.status);
-
-                return (
-                  <button
-                    key={i.id}
-                    onClick={() => setSelected(i)}
+              <>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <div style={{ fontWeight: 1300, fontSize: 16, textTransform: "capitalize" }}>{head?.month}</div>
+                  <span
                     style={{
-                      textAlign: "left",
-                      padding: 12,
-                      borderRadius: 16,
-                      border: active ? "2px solid #111" : "1px solid #e5e7eb",
-                      background: active ? "linear-gradient(180deg, #ffffff 0%, #f7f7f7 100%)" : "#fff",
-                      cursor: "pointer",
-                      boxShadow: active ? "0 10px 35px rgba(0,0,0,0.10)" : "none",
-                      display: "grid",
-                      gap: 8,
+                      padding: "6px 10px",
+                      borderRadius: 999,
+                      border: `1px solid ${head?.status.bd}`,
+                      background: head?.status.bg,
+                      color: head?.status.fg,
+                      fontWeight: 1200,
+                      fontSize: 12,
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                      <div style={{ fontWeight: 1300, textTransform: "capitalize" }}>{monthLabel(i.month_date)}</div>
-                      <div style={{ fontWeight: 1300 }}>{euro(i.total_eur)}</div>
-                    </div>
-
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                      <Badge tone={i.locked_at ? ("neutral" as any) : ("warn" as any)}>{i.locked_at ? "CERRADA" : "ABIERTA"}</Badge>
-                      <Badge tone={pill.tone}>{pill.text}</Badge>
-                      {i.admin_note ? (
-                        <span style={{ color: "#6b7280", fontWeight: 900, fontSize: 12 }}>💬 Nota admin</span>
-                      ) : null}
-                      {i.worker_note ? (
-                        <span style={{ color: "#6b7280", fontWeight: 900, fontSize: 12 }}>📝 Tu nota</span>
-                      ) : null}
-                    </div>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </div>
-
-        {/* Detail */}
-        <div style={{ ...card, padding: 12 }}>
-          {!selected ? (
-            <div style={{ color: "#6b7280", fontWeight: 900 }}>Selecciona una factura.</div>
-          ) : (
-            <>
-              {/* Detail header */}
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: isMobile ? "1fr" : "1fr auto",
-                  gap: 10,
-                  alignItems: "center",
-                }}
-              >
-                <div style={{ display: "grid", gap: 6 }}>
-                  <div style={{ fontWeight: 1400, fontSize: 18, textTransform: "capitalize" }}>{selectedMeta?.month}</div>
-
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                    <Badge tone={selectedMeta?.locked ? ("neutral" as any) : ("warn" as any)}>{selectedMeta?.locked ? "CERRADA" : "ABIERTA"}</Badge>
-                    <Badge tone={selectedMeta?.statusTone as any}>{selectedMeta?.statusText}</Badge>
-                    <span style={{ color: "#6b7280", fontWeight: 900 }}>
-                      Total: <b style={{ color: "#111" }}>{selectedMeta?.total}</b>
-                    </span>
+                    {head?.status.text}
+                  </span>
+                  <div style={{ marginLeft: "auto", color: "#6b7280", fontWeight: 1000 }}>
+                    {head?.state} · Total <b style={{ color: "#111" }}>{head?.total}</b>
                   </div>
                 </div>
 
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: isMobile ? "flex-start" : "flex-end" }}>
-                  <button onClick={openPdf} style={btnGhost}>
+                <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button onClick={openPdf} style={btnPrimary}>
                     Ver / Descargar PDF
                   </button>
-                </div>
-              </div>
 
-              {/* Notes */}
-              {(selected.admin_note || selected.worker_note) ? (
-                <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-                  {selected.admin_note ? (
-                    <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, background: "#fff" }}>
-                      <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>Nota del admin</div>
-                      <div style={{ marginTop: 6, fontWeight: 900, whiteSpace: "pre-wrap" }}>{selected.admin_note}</div>
-                    </div>
-                  ) : null}
-
-                  {selected.worker_note ? (
-                    <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, background: "#fff" }}>
-                      <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>Tu nota actual</div>
-                      <div style={{ marginTop: 6, fontWeight: 900, whiteSpace: "pre-wrap" }}>{selected.worker_note}</div>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {/* Lines */}
-              <div style={{ marginTop: 14, borderTop: "1px solid #e5e7eb", paddingTop: 12 }}>
-                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
-                  <div style={{ fontWeight: 1200 }}>Líneas</div>
-                  <div style={{ color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
-                    {loadingLines ? "Cargando…" : lines.length ? `${lines.length} líneas` : "—"}
+                  <div style={{ color: "#6b7280", display: "flex", alignItems: "center", fontWeight: 900 }}>
+                    {selected.locked_at ? "Factura cerrada. Puedes responder." : "Factura abierta (el admin puede ajustarla)."}
                   </div>
                 </div>
 
-                <div style={{ marginTop: 10, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
-                    <thead>
-                      <tr>
-                        <th style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #e5e7eb" }}>Concepto</th>
-                        <th style={{ textAlign: "right", padding: 10, borderBottom: "1px solid #e5e7eb" }}>€</th>
-                      </tr>
-                    </thead>
+                <div style={{ marginTop: 14, borderTop: "1px solid #e5e7eb", paddingTop: 12 }}>
+                  <div style={{ fontWeight: 1200, marginBottom: 10 }}>Líneas</div>
 
-                    <tbody>
-                      {loadingLines ? (
+                  <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+                      <thead>
                         <tr>
-                          <td colSpan={2} style={{ padding: 12, color: "#6b7280", fontWeight: 900 }}>
-                            Cargando líneas…
-                          </td>
+                          <th style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #e5e7eb" }}>Concepto</th>
+                          <th style={{ textAlign: "right", padding: 10, borderBottom: "1px solid #e5e7eb" }}>€</th>
                         </tr>
-                      ) : lines.length === 0 ? (
-                        <tr>
-                          <td colSpan={2} style={{ padding: 12, color: "#6b7280", fontWeight: 900 }}>
-                            Sin líneas.
-                          </td>
-                        </tr>
-                      ) : (
-                        lines.map((l) => {
-                          const isNeg = (Number(l.amount_eur) || 0) < 0;
-                          return (
+                      </thead>
+                      <tbody>
+                        {lines.length === 0 ? (
+                          <tr>
+                            <td colSpan={2} style={{ padding: 12, color: "#6b7280", fontWeight: 900 }}>
+                              Sin líneas.
+                            </td>
+                          </tr>
+                        ) : (
+                          lines.map((l) => (
                             <tr key={l.id}>
-                              <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
-                                <div style={{ fontWeight: 1000 }}>{l.label}</div>
-                                <div style={{ color: "#6b7280", fontWeight: 900, fontSize: 12, marginTop: 4 }}>
-                                  {l.is_manual ? "Manual" : "Automático"} · {String(l.kind || "").toUpperCase()}
-                                </div>
-                              </td>
-                              <td
-                                style={{
-                                  padding: 10,
-                                  borderBottom: "1px solid #f3f4f6",
-                                  textAlign: "right",
-                                  fontWeight: 1200,
-                                  color: isNeg ? "#b91c1c" : "#111",
-                                }}
-                              >
+                              <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", fontWeight: 900 }}>{l.label}</td>
+                              <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", textAlign: "right", fontWeight: 1300 }}>
                                 {euro(l.amount_eur)}
                               </td>
                             </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-
-                    <tfoot>
-                      <tr>
-                        <td style={{ padding: 10, borderTop: "1px solid #e5e7eb", fontWeight: 1200 }}>Total</td>
-                        <td style={{ padding: 10, borderTop: "1px solid #e5e7eb", textAlign: "right", fontWeight: 1400 }}>
-                          {euro(selected.total_eur)}
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
-              </div>
-
-              {/* Reply */}
-              <div style={{ marginTop: 16, borderTop: "1px solid #e5e7eb", paddingTop: 12 }}>
-                <div style={{ fontWeight: 1200 }}>Tu respuesta</div>
-                <div style={{ color: "#6b7280", fontWeight: 900, marginTop: 4 }}>
-                  Puedes añadir una nota opcional y marcar el estado.
-                </div>
-
-                <textarea
-                  value={note}
-                  onChange={(e) => setNote(e.target.value)}
-                  placeholder="Escribe aquí tu comentario si quieres (opcional)"
-                  style={{
-                    width: "100%",
-                    minHeight: 96,
-                    marginTop: 10,
-                    padding: 12,
-                    borderRadius: 14,
-                    border: "1px solid #e5e7eb",
-                    outline: "none",
-                    fontWeight: 900,
-                    background: "#fff",
-                  }}
-                />
-
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
-                  <button onClick={() => respond("accepted")} disabled={loading} style={loading ? { ...btnPrimary, opacity: 0.7, cursor: "not-allowed" } : btnPrimary}>
-                    ✅ Aceptar
-                  </button>
-
-                  <button onClick={() => respond("review")} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}>
-                    🟡 En revisión
-                  </button>
-
-                  <button onClick={() => respond("rejected")} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}>
-                    ❌ Rechazar
-                  </button>
-
-                  <div style={{ marginLeft: "auto", color: "#6b7280", fontWeight: 900, display: "flex", alignItems: "center" }}>
-                    {selected.locked_at ? "Factura cerrada." : "Factura abierta (puede cambiar)."}
+                          ))
+                        )}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
-              </div>
-            </>
-          )}
+
+                <div style={{ marginTop: 14, borderTop: "1px solid #e5e7eb", paddingTop: 12 }}>
+                  <div style={{ fontWeight: 1200, marginBottom: 10 }}>Tu respuesta</div>
+
+                  <textarea
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    placeholder="Escribe aquí tu comentario (opcional)"
+                    style={{
+                      width: "100%",
+                      minHeight: 110,
+                      padding: 12,
+                      borderRadius: 14,
+                      border: "1px solid #e5e7eb",
+                      background: "#fff",
+                      outline: "none",
+                      fontWeight: 900,
+                    }}
+                  />
+
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
+                    <button onClick={() => respond("accepted")} disabled={loading} style={loading ? { ...btnPrimary, opacity: 0.7 } : btnPrimary}>
+                      ✅ Aceptar
+                    </button>
+
+                    <button onClick={() => respond("review")} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7 } : btnGhost}>
+                      🟡 En revisión
+                    </button>
+
+                    <button onClick={() => respond("rejected")} disabled={loading} style={loading ? { ...btnDanger, opacity: 0.7 } : btnDanger}>
+                      ❌ Rechazar
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
