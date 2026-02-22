@@ -112,7 +112,7 @@ type PanelMeResp = {
   month_date: string;
   invoice: null | { id: string; total_eur: number; status: string | null; updated_at: string | null };
   penalty_month_eur: number;
-  bonuses_month_eur: number;
+  bonuses_month_eur: number; // ✅ aquí entran bonos ya reflejados (manuales y/o ya calculados en factura)
 };
 
 function labelRanking(k: string) {
@@ -173,7 +173,7 @@ export default function PanelPage() {
 
   const isLogged = pState !== "offline";
 
-  // panel/me para total oficial de factura
+  // ✅ panel/me para totales oficiales (factura/bonos manuales/penalización)
   const [panelMe, setPanelMe] = useState<PanelMeResp | null>(null);
 
   async function getToken() {
@@ -257,7 +257,7 @@ export default function PanelPage() {
       const role = j?.user?.worker?.role || null;
       if (role === "tarotista" || role === "central") {
         await loadPresence();
-        await loadPanelMe(month); // ✅ importante: mismo mes seleccionado
+        await loadPanelMe(month); // ✅ mismo mes
       }
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
@@ -473,51 +473,88 @@ export default function PanelPage() {
     border: "1px solid #e5e7eb",
   };
 
-  // ✅ BONOS DINÁMICOS: según bonusRules + tu posición actual en cada ranking
-  const bonusNowTarot = useMemo(() => {
-    if (!isTarot) return { total: 0, breakdown: [] as Array<{ label: string; amount: number; pos: number }> };
-    if (incGrave) return { total: 0, breakdown: [] as Array<{ label: string; amount: number; pos: number }> };
+  // ✅ BONOS PROVISIONALES (por posición actual) + alias por si tu DB usa nombres distintos
+  const bonusProvisionalTarot = useMemo(() => {
+    if (!isTarot) return { total: 0, breakdown: [] as Array<{ label: string; amount: number; pos: number }>, positions: {} as any };
 
     const myName = me?.display_name;
-    if (!myName) return { total: 0, breakdown: [] as Array<{ label: string; amount: number; pos: number }> };
+    if (!myName) return { total: 0, breakdown: [], positions: {} as any };
 
-    const rules = (data?.bonusRules || []).filter((r) => (r.is_active === undefined ? true : !!r.is_active));
-    const rankings = data?.rankings || ({} as any);
+    const rankings = (data?.rankings || {}) as any;
 
-    // rankings que aplican a tarotistas (sin €)
-    const keys: Array<{ k: RankKey; rt: string; label: string }> = [
-      { k: "minutes", rt: "minutes", label: "Minutos" },
-      { k: "captadas", rt: "captadas", label: "Captadas" },
-      { k: "repite_pct", rt: "repite_pct", label: "Repite %" },
-      { k: "cliente_pct", rt: "cliente_pct", label: "Clientes %" },
-    ];
+    const getPos = (k: RankKey) => {
+      const list = rankings?.[k] || [];
+      const idx = list.findIndex((x: any) => x?.name === myName);
+      return idx === -1 ? null : idx + 1;
+    };
+
+    const positions = {
+      minutes: getPos("minutes"),
+      captadas: getPos("captadas"),
+      repite_pct: getPos("repite_pct"),
+      cliente_pct: getPos("cliente_pct"),
+    };
+
+    const rulesRaw = (data?.bonusRules || []).filter((r) => (r.is_active === undefined ? true : !!r.is_active));
+    const norm = (s: any) => String(s || "").trim().toLowerCase().replace(/\s+/g, "_");
+
+    const roleOk = (r: any) => {
+      const x = norm(r);
+      return x === "tarotista" || x === "tarotist" || x === "tarot" || x === "worker" || x === "agent";
+    };
+
+    const typeAliases: Record<string, string[]> = {
+      minutes: ["minutes", "minutos", "mins", "tarot_minutes", "tarotista_minutes", "minutes_tarot", "ranking_minutes"],
+      captadas: ["captadas", "captadas_total", "leads", "captations", "tarot_captadas", "tarotista_captadas", "captadas_tarot", "ranking_captadas"],
+      repite_pct: ["repite_pct", "repite", "repeat_pct", "repeat", "repite_porcentaje", "tarot_repite_pct", "tarotista_repite_pct", "ranking_repite_pct"],
+      cliente_pct: ["cliente_pct", "clientes_pct", "client_pct", "clientes", "cliente_porcentaje", "tarot_cliente_pct", "tarotista_cliente_pct", "ranking_cliente_pct"],
+    };
+
+    const matchRule = (rankingKey: keyof typeof typeAliases, pos: number | null) => {
+      if (!pos) return 0;
+      const aliases = typeAliases[rankingKey].map(norm);
+
+      const hit = rulesRaw.find((r) => {
+        const rt = norm(r.ranking_type);
+        const rr = norm(r.role);
+        return roleOk(rr) && aliases.includes(rt) && Number(r.position) === Number(pos);
+      });
+
+      return hit ? Number(hit.amount_eur) || 0 : 0;
+    };
 
     const breakdown: Array<{ label: string; amount: number; pos: number }> = [];
 
-    for (const it of keys) {
-      const list = (rankings as any)?.[it.k] || [];
-      const idx = list.findIndex((x: any) => x.name === myName);
-      const pos = idx === -1 ? null : idx + 1;
-      if (!pos) continue;
+    const add = (key: keyof typeof typeAliases, label: string) => {
+      const pos = (positions as any)[key] as number | null;
+      const amount = matchRule(key, pos);
+      if (pos && amount && amount > 0) breakdown.push({ label, amount, pos });
+    };
 
-      const hit = rules.find(
-        (r) =>
-          String(r.role || "").toLowerCase() === "tarotista" &&
-          String(r.ranking_type || "").toLowerCase() === it.rt &&
-          Number(r.position) === Number(pos)
-      );
-
-      const amount = hit ? Number(hit.amount_eur) || 0 : 0;
-      if (amount > 0) breakdown.push({ label: it.label, amount, pos });
-    }
+    add("minutes", "Minutos");
+    add("captadas", "Captadas");
+    add("repite_pct", "Repite %");
+    add("cliente_pct", "Clientes %");
 
     const total = breakdown.reduce((acc, x) => acc + x.amount, 0);
-    return { total, breakdown };
-  }, [isTarot, incGrave, me?.display_name, data?.bonusRules, data?.rankings]);
+    return { total, breakdown, positions };
+  }, [isTarot, me?.display_name, data?.bonusRules, data?.rankings]);
+
+  // ✅ BONOS CONFIRMADOS (manuales o ya reflejados en factura)
+  const bonusConfirmed = useMemo(() => {
+    return Number(panelMe?.bonuses_month_eur) || 0;
+  }, [panelMe?.bonuses_month_eur]);
+
+  // ✅ TOTAL MOSTRADO A LA TAROTISTA: confirmados + provisionales (si NO hay grave)
+  const bonusShown = useMemo(() => {
+    if (!isTarot) return null;
+    if (incGrave) return 0;
+    return bonusConfirmed + (bonusProvisionalTarot.total || 0);
+  }, [isTarot, incGrave, bonusConfirmed, bonusProvisionalTarot.total]);
 
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: "100%" }}>
-      {/* ===== Cabecera interna (sin botones duplicados, ya están en el layout) ===== */}
+      {/* ===== Cabecera interna (layout ya pone nav pro) ===== */}
       <div
         style={{
           border: "2px solid #111",
@@ -575,9 +612,7 @@ export default function PanelPage() {
         </div>
       </div>
 
-      {err ? (
-        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
-      ) : null}
+      {err ? <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div> : null}
 
       {/* ===== Equipos (si central) ===== */}
       {isCentral && teams.length > 0 ? (
@@ -673,17 +708,13 @@ export default function PanelPage() {
 
             <Card>
               <CardTitle>Bonos ganados (mes)</CardTitle>
-              <CardValue>{incGrave ? eur(0) : eur(bonusNowTarot.total)}</CardValue>
+              <CardValue>{bonusShown === null ? "—" : eur(bonusShown)}</CardValue>
               <CardHint>
                 {incGrave ? (
                   <b style={{ color: "#b91c1c" }}>Bloqueados por incidencia GRAVE</b>
-                ) : bonusNowTarot.total > 0 ? (
-                  <span style={{ color: "#6b7280", fontWeight: 900 }}>
-                    Provisional (según tu posición actual)
-                  </span>
                 ) : (
                   <span style={{ color: "#6b7280", fontWeight: 900 }}>
-                    Aún no estás en posiciones con bono
+                    Confirmados: <b>{eur(bonusConfirmed)}</b> · Provisionales: <b>{eur(bonusProvisionalTarot.total)}</b>
                   </span>
                 )}
               </CardHint>
@@ -720,12 +751,12 @@ export default function PanelPage() {
         ) : null}
       </div>
 
-      {/* ✅ Desglose compacto de bonos (solo si hay algo) */}
-      {isTarot && !incGrave && bonusNowTarot.breakdown.length > 0 ? (
+      {/* ✅ Detalle de bonos provisionales (si hay) */}
+      {isTarot && !incGrave && bonusProvisionalTarot.breakdown.length > 0 ? (
         <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
           <div style={{ fontWeight: 1100, marginBottom: 8 }}>Detalle de bonos provisionales</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-            {bonusNowTarot.breakdown.map((b) => (
+            {bonusProvisionalTarot.breakdown.map((b) => (
               <span
                 key={`${b.label}-${b.pos}`}
                 style={{
