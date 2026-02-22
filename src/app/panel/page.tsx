@@ -7,7 +7,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 
-function useIsMobile(bp = 720) {
+function useIsMobile(bp = 900) {
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
@@ -30,13 +30,11 @@ function eur(n: any) {
 function medal(pos: number) {
   return pos === 1 ? "🥇" : pos === 2 ? "🥈" : pos === 3 ? "🥉" : "";
 }
-function norm(s: any) {
-  return String(s || "").trim().toLowerCase();
-}
 
 type RankKey = "minutes" | "repite_pct" | "cliente_pct" | "captadas" | "eur_total" | "eur_bonus";
 
 type TeamMember = { worker_id: string; name: string };
+
 type TeamRow = {
   team_id: string;
   team_name: string;
@@ -50,15 +48,6 @@ type TeamRow = {
   team_score?: number;
 
   members?: TeamMember[];
-};
-
-type BonusRule = {
-  ranking_type: string;
-  position: number;
-  role: string;
-  amount_eur: number;
-  created_at?: string;
-  is_active?: boolean;
 };
 
 type DashboardResp = {
@@ -100,6 +89,15 @@ type DashboardResp = {
     team_score?: number;
   };
 
+  bonusRules: Array<{
+    ranking_type: string;
+    position: number;
+    role: string;
+    amount_eur: number;
+    created_at?: string;
+    is_active?: boolean;
+  }>;
+
   myIncidentsMonth?: {
     count: number;
     penalty_eur: number;
@@ -117,6 +115,14 @@ type PanelMeResp = {
   penalty_month_eur: number;
   bonuses_month_eur: number;
 };
+
+function labelRole(r: string) {
+  const key = String(r || "").toLowerCase();
+  if (key === "tarotista") return "Tarotista";
+  if (key === "central") return "Central";
+  if (key === "admin") return "Admin";
+  return r;
+}
 
 function labelRanking(k: string) {
   const key = String(k || "").toLowerCase();
@@ -138,6 +144,16 @@ function formatHMS(sec: number) {
   return `${pad(hh)}:${pad(mm)}:${pad(ss)}`;
 }
 
+function formatMonthLabel(isoMonthDate: string) {
+  const [y, m] = String(isoMonthDate || "").split("-");
+  const monthNum = Number(m);
+  const yearNum = Number(y);
+  if (!monthNum || !yearNum) return isoMonthDate;
+
+  const date = new Date(yearNum, monthNum - 1, 1);
+  return date.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
+}
+
 export default function PanelPage() {
   const router = useRouter();
   const isMobile = useIsMobile();
@@ -147,6 +163,7 @@ export default function PanelPage() {
   const [loading, setLoading] = useState(false);
 
   const [data, setData] = useState<DashboardResp | null>(null);
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   const [pState, setPState] = useState<PresenceState>("offline");
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -154,48 +171,29 @@ export default function PanelPage() {
 
   const [elapsedSec, setElapsedSec] = useState(0);
   const tickRef = useRef<any>(null);
+
   const isLogged = pState !== "offline";
 
   const [panelMe, setPanelMe] = useState<PanelMeResp | null>(null);
-  const [bonusRules, setBonusRules] = useState<BonusRule[]>([]);
 
-  async function hardLogoutToLogin() {
-    try {
-      await supabase.auth.signOut();
-    } catch {}
-    router.replace("/login");
-  }
-
-  async function getTokenOrLogout() {
+  async function getToken() {
     const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token || null;
-    if (!token) {
-      await hardLogoutToLogin();
-      return null;
-    }
-    return token;
-  }
-
-  async function authedFetch(url: string, init?: RequestInit) {
-    const token = await getTokenOrLogout();
-    if (!token) throw new Error("NO_TOKEN");
-    const headers = new Headers(init?.headers || {});
-    headers.set("Authorization", `Bearer ${token}`);
-    return fetch(url, { ...init, headers, cache: "no-store" });
-  }
-
-  function getMonthFromUrl() {
-    try {
-      const u = new URL(window.location.href);
-      return u.searchParams.get("month_date");
-    } catch {
-      return null;
-    }
+    return data.session?.access_token || null;
   }
 
   async function loadPresence() {
     try {
-      const res = await authedFetch("/api/presence/me");
+      const token = await getToken();
+      if (!token) {
+        router.replace("/login");
+        return;
+      }
+
+      const res = await fetch("/api/presence/me", {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+
       const j = await res.json().catch(() => null);
       if (!j?.ok) return;
 
@@ -205,35 +203,42 @@ export default function PanelPage() {
     } catch {}
   }
 
-  async function loadPanelMe(monthOverride?: string | null) {
+  async function loadPanelMe() {
     try {
-      const month = monthOverride ?? getMonthFromUrl();
-      const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
-      const res = await authedFetch(`/api/panel/me${qs}`);
+      const token = await getToken();
+      if (!token) return;
+
+      const res = await fetch("/api/panel/me", {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+
       const j = (await res.json().catch(() => null)) as PanelMeResp | null;
       if (!j?.ok) return;
+
       setPanelMe(j);
     } catch {}
   }
 
-  async function loadBonusRules() {
-    try {
-      const res = await authedFetch("/api/bonus/rules");
-      const j = await res.json().catch(() => null);
-      if (!j?.ok) return;
-      setBonusRules(Array.isArray(j.bonusRules) ? j.bonusRules : []);
-    } catch {}
-  }
-
-  async function load() {
+  async function load(monthOverride?: string | null) {
     setErr(null);
     setLoading(true);
 
     try {
-      const month = getMonthFromUrl();
+      const token = await getToken();
+      if (!token) {
+        router.replace("/login");
+        return;
+      }
+
+      const month = monthOverride ?? selectedMonth ?? null;
       const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
 
-      const res = await authedFetch(`/api/dashboard/full${qs}`);
+      const res = await fetch(`/api/dashboard/full${qs}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+
       const j = (await res.json().catch(() => null)) as DashboardResp | null;
       if (!j?.ok) {
         setErr(j?.error || "Error dashboard");
@@ -242,11 +247,14 @@ export default function PanelPage() {
 
       setData(j);
 
+      if (j.month_date && j.month_date !== selectedMonth) {
+        setSelectedMonth(j.month_date);
+      }
+
       const role = j?.user?.worker?.role || null;
       if (role === "tarotista" || role === "central") {
         await loadPresence();
-        await loadPanelMe(month);
-        await loadBonusRules();
+        await loadPanelMe();
       }
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
@@ -258,10 +266,18 @@ export default function PanelPage() {
   async function presenceLogin() {
     setErr(null);
     try {
+      const token = await getToken();
+      if (!token) return router.replace("/login");
       if (isLogged) return;
-      const res = await authedFetch("/api/presence/login", { method: "POST" });
+
+      const res = await fetch("/api/presence/login", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error login presencia");
+
       await loadPresence();
     } catch (e: any) {
       setErr(e?.message || "Error login presencia");
@@ -271,12 +287,15 @@ export default function PanelPage() {
   async function presenceSet(state: PresenceState) {
     setErr(null);
     try {
+      const token = await getToken();
+      if (!token) return router.replace("/login");
       if (!isLogged) return;
 
-      const res = await authedFetch("/api/presence/state", {
+      const res = await fetch("/api/presence/state", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ state }),
+        cache: "no-store",
       });
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error cambio estado");
@@ -290,20 +309,41 @@ export default function PanelPage() {
   async function presenceLogout() {
     setErr(null);
     try {
+      const token = await getToken();
+      if (!token) return router.replace("/login");
       if (!isLogged) return;
-      const res = await authedFetch("/api/presence/logout", { method: "POST" });
+
+      const res = await fetch("/api/presence/logout", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error logout presencia");
+
       await loadPresence();
     } catch (e: any) {
       setErr(e?.message || "Error logout presencia");
     }
   }
 
+  async function logout() {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  }
+
   useEffect(() => {
-    load();
+    load(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!selectedMonth) return;
+    if (!data) return;
+    if (data.month_date === selectedMonth) return;
+    load(selectedMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMonth]);
 
   useEffect(() => {
     if (tickRef.current) clearInterval(tickRef.current);
@@ -322,31 +362,25 @@ export default function PanelPage() {
   }, [startedAt, pState]);
 
   const me = data?.user?.worker || null;
-  const myRole = norm(me?.role);
+  const myRole = String(me?.role || "").toLowerCase();
   const isCentral = myRole === "central";
   const isTarot = myRole === "tarotista";
 
+  // Tarotistas: no permitir rankType eur_*
   useEffect(() => {
     if (!isTarot) return;
     if (rankType === "eur_total" || rankType === "eur_bonus") setRankType("minutes");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTarot]);
 
-  const myWorkerId = String(me?.id || me?.worker_id || "").trim();
-  const myName = String(me?.display_name || "").trim();
-
   const ranks = (data?.rankings as any)?.[rankType] || [];
 
   const myRankTarot = useMemo(() => {
-    if (!isTarot) return null;
-    const list = ranks || [];
-    if (!Array.isArray(list) || list.length === 0) return null;
-
-    let idx = -1;
-    if (myWorkerId) idx = list.findIndex((x: any) => String(x?.worker_id || x?.id || "").trim() === myWorkerId);
-    if (idx === -1 && myName) idx = list.findIndex((x: any) => String(x?.name || "").trim() === myName);
+    const myName = me?.display_name;
+    if (!myName) return null;
+    const idx = ranks.findIndex((x: any) => x.name === myName);
     return idx === -1 ? null : idx + 1;
-  }, [isTarot, ranks, myWorkerId, myName]);
+  }, [me?.display_name, ranks]);
 
   const myRank = isCentral ? (data?.myTeamRank ?? null) : myRankTarot;
 
@@ -371,90 +405,304 @@ export default function PanelPage() {
   const minutesTotal = data?.myEarnings?.minutes_total ?? null;
   const captadasTotal = data?.myEarnings?.captadas ?? null;
 
+  // Totales oficiales (factura)
   const totalEurOfficial = panelMe?.invoice?.total_eur ?? null;
+  const bonusOfficial = panelMe?.bonuses_month_eur ?? null;
 
-  const incCount = data?.myIncidentsMonth?.count ?? null;
-  const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
-  const incGrave = !!data?.myIncidentsMonth?.grave;
+  const months = data?.months || [];
+  const monthLabel = selectedMonth
+    ? formatMonthLabel(selectedMonth)
+    : data?.month_date
+    ? formatMonthLabel(data.month_date)
+    : "—";
 
-  const bonusProvisionalTarot = useMemo(() => {
-    if (!isTarot) return 0;
-    if (incGrave) return 0;
+  const teams = data?.teamsRanking || [];
+  const team1 = teams[0] || null;
+  const team2 = teams[1] || null;
 
-    const rankings = (data?.rankings || {}) as any;
-    const rules = (bonusRules || []).filter((r) => (r.is_active === undefined ? true : !!r.is_active));
+  const bonusTeamWinner = useMemo(() => {
+    const rules = data?.bonusRules || [];
+    const r = rules.find(
+      (x) =>
+        String(x.ranking_type || "").toLowerCase() === "team_winner" &&
+        Number(x.position) === 1 &&
+        String(x.role || "").toLowerCase() === "central" &&
+        (x.is_active === undefined ? true : !!x.is_active)
+    );
+    return r ? Number(r.amount_eur) || 0 : 0;
+  }, [data?.bonusRules]);
 
-    const getPos = (key: RankKey) => {
-      const list = rankings?.[key] || [];
-      if (!Array.isArray(list) || list.length === 0) return null;
+  const helpText =
+    pState === "offline"
+      ? "Pulsa “Entrar” para iniciar tu turno."
+      : pState === "online"
+      ? "Estás online. Si paras, usa Pausa o Baño."
+      : "Estás en pausa/baño. Cuando vuelvas, pulsa “Volver (Online)”.";
 
-      let idx = -1;
-      if (myWorkerId) idx = list.findIndex((x: any) => String(x?.worker_id || x?.id || "").trim() === myWorkerId);
-      if (idx === -1 && myName) idx = list.findIndex((x: any) => String(x?.name || "").trim() === myName);
-      return idx === -1 ? null : idx + 1;
-    };
+  const bigActionLabel = pState === "offline" ? "Entrar" : "Salir";
+  const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
 
-    const posMinutes = getPos("minutes");
-    const posCaptadas = getPos("captadas");
-    const posRepite = getPos("repite_pct");
-    const posCliente = getPos("cliente_pct");
-
-    const pick = (ranking_type: "minutes" | "captadas" | "repite_pct" | "cliente_pct", pos: number | null) => {
-      if (!pos) return 0;
-      const want = norm(ranking_type);
-      const hit = rules.find((x) => {
-        if (norm(x.role) !== "tarotista") return false;
-        const rt = norm(x.ranking_type);
-        if (!(rt === want || rt.includes(want))) return false;
-        return Number(x.position) === Number(pos);
-      });
-      return hit ? Number(hit.amount_eur) || 0 : 0;
-    };
-
-    return pick("minutes", posMinutes) + pick("captadas", posCaptadas) + pick("repite_pct", posRepite) + pick("cliente_pct", posCliente);
-  }, [isTarot, incGrave, data?.rankings, bonusRules, myWorkerId, myName]);
-
-  const bonusConfirmed = Number(panelMe?.bonuses_month_eur) || 0;
-  const bonusShown = isTarot ? (incGrave ? 0 : bonusConfirmed + bonusProvisionalTarot) : null;
+  // Styles
+  const shellCard: React.CSSProperties = {
+    borderRadius: 18,
+    border: "1px solid #e5e7eb",
+    background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
+    boxShadow: "0 12px 45px rgba(0,0,0,0.08)",
+  };
 
   const btnBase: React.CSSProperties = {
     padding: 12,
     borderRadius: 14,
-    border: "1px solid #111",
-    fontWeight: 1000,
+    border: "1px solid #e5e7eb",
+    fontWeight: 1100,
     cursor: "pointer",
     width: isMobile ? "100%" : "auto",
+    background: "#fff",
+    color: "#111",
   };
 
   const btnPrimary: React.CSSProperties = {
     ...btnBase,
     background: "#111",
+    border: "1px solid #111",
     color: "#fff",
   };
 
-  const btnGhost: React.CSSProperties = {
-    ...btnBase,
-    background: "#fff",
-    color: "#111",
-    border: "1px solid #e5e7eb",
+  const btnGhost: React.CSSProperties = { ...btnBase };
+
+  // Incidents summary
+  const incCount = data?.myIncidentsMonth?.count ?? null;
+  const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
+  const incGrave = !!data?.myIncidentsMonth?.grave;
+
+  // —— MOBILE: rankings as cards
+  const RankCards = ({ list, k }: { list: any[]; k: RankKey }) => {
+    return (
+      <div style={{ display: "grid", gap: 10 }}>
+        {list.length === 0 ? (
+          <div style={{ color: "#6b7280", fontWeight: 900 }}>Sin datos.</div>
+        ) : (
+          list.map((r: any, idx: number) => {
+            const pos = idx + 1;
+            const isMe = me?.display_name === r.name;
+            return (
+              <div
+                key={r.worker_id || `${k}-${idx}`}
+                style={{
+                  border: isMe ? "2px solid #111" : "1px solid #e5e7eb",
+                  borderRadius: 16,
+                  padding: 12,
+                  background: "#fff",
+                  boxShadow: "0 10px 30px rgba(0,0,0,0.06)",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                  <div style={{ fontWeight: 1300 }}>
+                    {medal(pos)} #{pos} <span style={{ fontWeight: 1200 }}>{r.name}</span>
+                  </div>
+                  <div style={{ fontWeight: 1400 }}>{valueOf(k, r)}</div>
+                </div>
+                <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
+                  {labelRanking(k)}
+                  {isMe ? " · (Tú)" : ""}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    );
   };
 
-  const helpText =
-    pState === "offline"
-      ? "Pulsa “Entrar a trabajar” para iniciar tu turno."
-      : pState === "online"
-      ? "Estás online. Si paras, usa Pausa o Baño."
-      : "Estás en pausa/baño. Cuando vuelvas, pulsa “Volver (Online)”.";
+  // —— Top3 cards (same for mobile/desktop)
+  const Top3Block = ({ k }: { k: RankKey }) => {
+    const list = top3For(k);
+    return (
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
+        <div style={{ fontWeight: 1200, marginBottom: 8 }}>{labelRanking(k)}</div>
 
-  const bigActionLabel = pState === "offline" ? "Entrar a trabajar" : "Salir del turno";
-  const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
+        {list.length === 0 ? (
+          <div style={{ color: "#6b7280", fontWeight: 900 }}>Sin datos.</div>
+        ) : (
+          <div style={{ display: "grid", gap: 8 }}>
+            {list.map((r: any, idx: number) => (
+              <div
+                key={r.worker_id || `${k}-${idx}`}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  padding: "10px 12px",
+                  borderRadius: 14,
+                  border: "1px solid #f3f4f6",
+                  background: "#fafafa",
+                }}
+              >
+                <div style={{ fontWeight: 1100 }}>
+                  {medal(idx + 1)} {idx + 1}. {r.name}
+                </div>
+                <div style={{ fontWeight: 1400 }}>{valueOf(k, r)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
-    <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: "100%" }}>
-      {err ? <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div> : null}
+    <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: 1100 }}>
+      {/* ===== HEADER compact + semáforo + mes + acciones ===== */}
+      <div style={{ ...shellCard, padding: 14 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: isMobile ? "1fr" : "1fr auto",
+            gap: 12,
+            alignItems: "center",
+          }}
+        >
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 1400, fontSize: 18, lineHeight: 1 }}>
+                Dashboard
+              </div>
 
-      {/* KPIs */}
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+              <Badge tone={stateTone as any}>{stateText}</Badge>
+              <div style={{ fontWeight: 1400 }}>{formatHMS(elapsedSec)}</div>
+
+              {me?.display_name ? (
+                <div style={{ color: "#6b7280", fontWeight: 900 }}>
+                  {me.display_name} · {labelRole(me.role || "—")}
+                </div>
+              ) : null}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "420px 1fr", gap: 10, alignItems: "end" }}>
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Mes</div>
+                <select
+                  value={selectedMonth || data?.month_date || ""}
+                  onChange={(e) => setSelectedMonth(e.target.value || null)}
+                  style={{
+                    padding: 12,
+                    borderRadius: 14,
+                    border: "1px solid #e5e7eb",
+                    background: "#fff",
+                    fontWeight: 1100,
+                    width: "100%",
+                  }}
+                  disabled={loading || months.length === 0}
+                >
+                  {months.length === 0 ? (
+                    <option value="">{data?.month_date || "—"}</option>
+                  ) : (
+                    months.map((m) => (
+                      <option key={m} value={m}>
+                        {formatMonthLabel(m)}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+
+              {/* Etiqueta mes (solo desktop, en móvil ya se ve en el select) */}
+              {!isMobile ? (
+                <div style={{ color: "#6b7280", fontWeight: 1100, textTransform: "capitalize" }}>{monthLabel}</div>
+              ) : null}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10, justifyItems: isMobile ? "stretch" : "end" }}>
+            <button
+              onClick={() => load(selectedMonth)}
+              disabled={loading}
+              style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}
+            >
+              {loading ? "Actualizando…" : "Actualizar"}
+            </button>
+
+            <button onClick={logout} style={btnPrimary}>
+              Cerrar sesión
+            </button>
+          </div>
+        </div>
+
+        {err ? (
+          <div style={{ marginTop: 12, padding: 12, borderRadius: 14, border: "1px solid #ffcccc", background: "#fff3f3", fontWeight: 900 }}>
+            {err}
+          </div>
+        ) : null}
+      </div>
+
+      {/* ===== Equipos (si central) ===== */}
+      {isCentral && teams.length > 0 ? (
+        <div style={{ ...shellCard, padding: 14, border: "1px solid #111" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontWeight: 1300, fontSize: 18 }}>🏆 Ranking por equipos (GLOBAL)</div>
+            <div style={{ color: "#6b7280", fontWeight: 1000 }}>
+              Criterio: <b>%Clientes + %Repite</b>
+              {bonusTeamWinner ? (
+                <>
+                  {" "}
+                  · Bono ganadora: <b>{eur(bonusTeamWinner)}</b>
+                </>
+              ) : null}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr auto 1fr", gap: 12, alignItems: "stretch", marginTop: 12 }}>
+            {[team1, team2].map((t, idx) => {
+              const pos = idx + 1;
+              const isMine = (data?.myTeamRank || 0) === pos;
+
+              return (
+                <div key={pos} style={{ border: isMine ? "2px solid #111" : "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 1200, fontSize: 16 }}>{t ? `${medal(pos)} #${pos} ${t.team_name}` : "—"}</div>
+                    {isMine ? <span style={{ border: "1px solid #111", borderRadius: 999, padding: "4px 10px", fontWeight: 1100 }}>Tu equipo</span> : null}
+                  </div>
+
+                  <div style={{ fontSize: 34, fontWeight: 1500, marginTop: 10 }}>
+                    {t?.team_score ?? "—"} <span style={{ fontSize: 12, fontWeight: 1100, color: "#6b7280" }}>score</span>
+                  </div>
+
+                  <div style={{ color: "#6b7280", marginTop: 6, fontWeight: 1000 }}>
+                    Clientes: <b>{t?.team_cliente_pct ?? "—"}%</b> · Repite: <b>{t?.team_repite_pct ?? "—"}%</b>
+                  </div>
+
+                  <div style={{ color: "#6b7280", marginTop: 6 }}>
+                    Minutos: <b>{t ? fmt(t.total_minutes) : "—"}</b> · Captadas: <b>{t ? fmt(t.total_captadas) : "—"}</b>
+                  </div>
+
+                  <div style={{ marginTop: 10, fontWeight: 1100 }}>Tarotistas</div>
+                  <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {(t?.members || []).map((m) => (
+                      <span key={m.worker_id} style={{ border: "1px solid #e5e7eb", borderRadius: 999, padding: "6px 10px", fontWeight: 900, background: "#fff" }}>
+                        {m.name}
+                      </span>
+                    ))}
+                    {(t?.members || []).length === 0 ? <span style={{ color: "#6b7280", fontWeight: 900 }}>Sin tarotistas asignadas.</span> : null}
+                  </div>
+                </div>
+              );
+            })}
+
+            {!isMobile ? (
+              <div style={{ display: "grid", placeItems: "center", padding: 6 }}>
+                <div style={{ fontWeight: 1200, color: "#6b7280" }}>VS</div>
+              </div>
+            ) : null}
+          </div>
+
+          <div style={{ marginTop: 10, color: "#6b7280", fontWeight: 1000 }}>
+            Tu equipo va: <b>{data?.myTeamRank ? `${medal(data.myTeamRank)} #${data.myTeamRank}` : "—"}</b>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ===== KPIs ===== */}
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
         <Card>
           <CardTitle>Estado</CardTitle>
           <CardValue>
@@ -464,7 +712,7 @@ export default function PanelPage() {
         </Card>
 
         <Card>
-          <CardTitle>Tiempo logueado</CardTitle>
+          <CardTitle>Tiempo</CardTitle>
           <CardValue>{formatHMS(elapsedSec)}</CardValue>
           <CardHint>Se actualiza en tiempo real.</CardHint>
         </Card>
@@ -480,149 +728,196 @@ export default function PanelPage() {
             </Card>
 
             <Card>
-              <CardTitle>Bonos ganados (mes)</CardTitle>
-              <CardValue>{bonusShown === null ? "—" : eur(bonusShown)}</CardValue>
-              <CardHint>
-                {incGrave ? <b style={{ color: "#b91c1c" }}>Bloqueados por incidencia GRAVE</b> : <span style={{ color: "#6b7280", fontWeight: 900 }}>Se actualiza con tu posición actual</span>}
-              </CardHint>
+              <CardTitle>Bonos ganados</CardTitle>
+              <CardValue>{bonusOfficial === null ? "—" : eur(bonusOfficial)}</CardValue>
+              <CardHint>{incGrave ? <b style={{ color: "#b91c1c" }}>GRAVE: sin bonos este mes</b> : "Según tu posición actual."}</CardHint>
             </Card>
           </>
+        ) : isCentral ? (
+          <Card>
+            <CardTitle>Bono del mes</CardTitle>
+            <CardValue>{data?.myEarnings?.amount_bonus_eur == null ? "—" : eur(data.myEarnings.amount_bonus_eur)}</CardValue>
+            <CardHint>Según posición del equipo.</CardHint>
+          </Card>
         ) : null}
 
         <Card>
-          <CardTitle>Mi posición (ranking actual)</CardTitle>
+          <CardTitle>Mi posición</CardTitle>
           <CardValue>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</CardValue>
-          <CardHint>{isCentral ? "Según ranking global de equipos." : "Según el ranking seleccionado abajo."}</CardHint>
+          <CardHint>{isCentral ? "Ranking global de equipos." : "Según el ranking seleccionado."}</CardHint>
         </Card>
 
         {(isTarot || isCentral) ? (
           <Card>
-            <CardTitle>Incidencias del mes</CardTitle>
-            <CardValue>{incCount == null ? "—" : `${fmt(incCount)} incidencias`}</CardValue>
+            <CardTitle>Incidencias</CardTitle>
+            <CardValue>{incCount == null ? "—" : `${fmt(incCount)}`}</CardValue>
             <CardHint>
               Penalización: <b>{incPenalty == null ? "—" : eur(incPenalty)}</b>
-              {incGrave ? (
-                <>
-                  {" "}
-                  · <b style={{ color: "#b91c1c" }}>GRAVE: sin bonos este mes</b>
-                </>
-              ) : null}
             </CardHint>
           </Card>
         ) : null}
       </div>
 
-      {/* Control horario */}
-      {(isTarot || isCentral) ? (
-        <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-          <div style={{ fontWeight: 1100, marginBottom: 8 }}>🕒 Control horario</div>
-          <div style={{ color: "#666", fontWeight: 900 }}>{helpText}</div>
+      {/* ===== Control horario ===== */}
+      {me?.role === "tarotista" || me?.role === "central" ? (
+        <div style={{ ...shellCard, padding: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontWeight: 1400, fontSize: 18 }}>🕒 Control horario</div>
+              <div style={{ color: "#6b7280", fontWeight: 1000, marginTop: 4 }}>{helpText}</div>
+            </div>
 
-          <div style={{ display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", marginTop: 10 }}>
-            <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
-              {bigActionLabel}
-            </button>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <Badge tone={stateTone as any}>{stateText}</Badge>
+              <div style={{ fontWeight: 1400, fontSize: 16 }}>{formatHMS(elapsedSec)}</div>
+            </div>
+          </div>
 
-            <button onClick={() => presenceSet("pause")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-              Pausa
-            </button>
+          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
+            <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
+              <div style={{ fontWeight: 1200 }}>Sesión</div>
+              <div style={{ marginTop: 6, color: "#6b7280" }}>{sessionId ? <b>{sessionId}</b> : "—"}</div>
+              <div style={{ marginTop: 6, color: "#6b7280" }}>
+                Inicio: <b>{startedAt ? new Date(startedAt).toLocaleString("es-ES") : "—"}</b>
+              </div>
+            </div>
 
-            <button onClick={() => presenceSet("online")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-              Volver (Online)
-            </button>
+            <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
+              <div style={{ fontWeight: 1200 }}>Acciones</div>
+
+              <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+                <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
+                  {bigActionLabel}
+                </button>
+
+                <button onClick={loadPresence} style={btnGhost}>
+                  Refrescar
+                </button>
+
+                <button onClick={() => presenceSet("pause")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
+                  Pausa
+                </button>
+
+                <button onClick={() => presenceSet("bathroom")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
+                  Baño
+                </button>
+
+                <button
+                  onClick={() => presenceSet("online")}
+                  disabled={!isLogged}
+                  style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
+                >
+                  Volver
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
 
-      {/* Top 3 */}
-      <Card>
-        <CardTitle>Top 3 del mes</CardTitle>
-        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginTop: 10 }}>
-          {(["minutes", "captadas", "repite_pct", "cliente_pct"] as RankKey[]).map((k) => (
-            <div key={k} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-              <div style={{ fontWeight: 1000, marginBottom: 6 }}>{labelRanking(k)}</div>
-
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <tbody>
-                  {top3For(k).map((r: any, idx: number) => (
-                    <tr key={r.worker_id || `${k}-${idx}`}>
-                      <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3", width: 54 }}>
-                        {medal(idx + 1)} {idx + 1}
-                      </td>
-                      <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                      <td style={{ padding: 6, borderBottom: "1px solid #f3f3f3", textAlign: "right", fontWeight: 900 }}>{valueOf(k, r)}</td>
-                    </tr>
-                  ))}
-                  {top3For(k).length === 0 ? (
-                    <tr>
-                      <td colSpan={3} style={{ padding: 6, color: "#666" }}>
-                        Sin datos.
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
+      {/* ===== Top 3 ===== */}
+      <div style={{ ...shellCard, padding: 14 }}>
+        <div style={{ fontWeight: 1300, fontSize: 16 }}>Top 3 del mes</div>
+        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))", gap: 12 }}>
+          {(isCentral
+            ? (["minutes", "captadas"] as RankKey[])
+            : isTarot
+            ? (["minutes", "captadas", "repite_pct", "cliente_pct"] as RankKey[])
+            : (["minutes", "repite_pct", "cliente_pct", "captadas"] as RankKey[])
+          ).map((k) => (
+            <Top3Block key={k} k={k} />
           ))}
         </div>
-      </Card>
+      </div>
 
-      {/* Ranking completo */}
-      <Card>
-        <CardTitle>Rankings (tabla completa)</CardTitle>
-
-        <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-          <select value={rankType} onChange={(e) => setRankType(e.target.value as RankKey)} style={{ padding: 12, borderRadius: 12, border: "1px solid #ddd", width: "100%", maxWidth: 520 }}>
-            <option value="minutes">Ranking por Minutos</option>
-            <option value="captadas">Ranking por Captadas</option>
-            <option value="repite_pct">Ranking por Repite %</option>
-            <option value="cliente_pct">Ranking por Clientes %</option>
-          </select>
-
-          <div style={{ color: "#666" }}>
+      {/* ===== Ranking completo ===== */}
+      <div style={{ ...shellCard, padding: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ fontWeight: 1300, fontSize: 16 }}>Ranking</div>
+          <div style={{ color: "#6b7280", fontWeight: 1000 }}>
             Mi posición: <b>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</b>
           </div>
         </div>
 
-        <div style={{ overflowX: "auto", marginTop: 10, WebkitOverflowScrolling: "touch", width: "100%" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>#</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Nombre</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Valor</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ranks.map((r: any, idx: number) => {
-                const pos = idx + 1;
-                const isMe = String(r?.worker_id || "").trim() === myWorkerId;
-                return (
-                  <tr key={r.worker_id || `${idx}`} style={{ background: isMe ? "#eef6ff" : "transparent", fontWeight: isMe ? 900 : 400 }}>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
-                      {medal(pos)} {pos}
-                    </td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{valueOf(rankType, r)}</td>
-                  </tr>
-                );
-              })}
-              {ranks.length === 0 ? (
-                <tr>
-                  <td colSpan={3} style={{ padding: 10, color: "#666" }}>
-                    Sin datos.
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
+        <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+          <select
+            value={rankType}
+            onChange={(e) => setRankType(e.target.value as RankKey)}
+            style={{
+              padding: 12,
+              borderRadius: 14,
+              border: "1px solid #e5e7eb",
+              background: "#fff",
+              width: "100%",
+              maxWidth: 520,
+              fontWeight: 1100,
+            }}
+          >
+            {isTarot ? (
+              <>
+                <option value="minutes">Minutos</option>
+                <option value="captadas">Captadas</option>
+                <option value="repite_pct">Repite %</option>
+                <option value="cliente_pct">Clientes %</option>
+              </>
+            ) : isCentral ? (
+              <>
+                <option value="minutes">Minutos</option>
+                <option value="captadas">Captadas</option>
+              </>
+            ) : (
+              <>
+                <option value="minutes">Minutos</option>
+                <option value="repite_pct">Repite %</option>
+                <option value="cliente_pct">Clientes %</option>
+                <option value="captadas">Captadas</option>
+              </>
+            )}
+          </select>
         </div>
-      </Card>
 
-      <div style={{ display: "flex", justifyContent: "flex-end" }}>
-        <button onClick={load} disabled={loading} style={{ padding: "10px 14px", borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 1000, cursor: "pointer" }}>
-          {loading ? "Actualizando..." : "Actualizar datos"}
-        </button>
+        {/* Mobile: cards. Desktop: tabla */}
+        {isMobile ? (
+          <div style={{ marginTop: 12 }}>
+            <RankCards list={ranks as any[]} k={rankType} />
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto", marginTop: 12, WebkitOverflowScrolling: "touch", width: "100%" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb", padding: 10 }}>#</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb", padding: 10 }}>Nombre</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #e5e7eb", padding: 10 }}>Valor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(ranks as any[]).map((r: any, idx: number) => {
+                  const pos = idx + 1;
+                  const isMe = me?.display_name === r.name;
+                  return (
+                    <tr key={r.worker_id} style={{ background: isMe ? "#eef6ff" : "transparent", fontWeight: isMe ? 1100 : 500 }}>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
+                        {medal(pos)} {pos}
+                      </td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>{r.name}</td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", textAlign: "right", fontWeight: 1300 }}>
+                        {valueOf(rankType, r)}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {(ranks as any[]).length === 0 ? (
+                  <tr>
+                    <td colSpan={3} style={{ padding: 12, color: "#6b7280", fontWeight: 900 }}>
+                      Sin datos.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
