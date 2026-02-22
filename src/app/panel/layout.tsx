@@ -29,36 +29,57 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
   const [name, setName] = useState("");
   const [role, setRole] = useState<WorkerRole | null>(null);
   const [loading, setLoading] = useState(true);
+  const [fatal, setFatal] = useState<string | null>(null);
 
   useEffect(() => {
+    let alive = true;
+
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data.session?.access_token;
 
-      if (!token) {
-        router.replace("/login");
-        return;
+        if (!token) {
+          if (!alive) return;
+          router.replace("/login");
+          return;
+        }
+
+        const res = await fetch("/api/me", {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+        const j = await res.json().catch(() => null);
+
+        if (!alive) return;
+
+        if (!j?.ok || !j?.worker) {
+          // ✅ Importantísimo: cerramos sesión para cortar loop con login
+          await supabase.auth.signOut();
+          router.replace("/login");
+          return;
+        }
+
+        if (!j.worker.is_active) {
+          await supabase.auth.signOut();
+          router.replace("/login");
+          return;
+        }
+
+        setName(j.worker.display_name || "");
+        setRole((j.worker.role as WorkerRole) || null);
+        setLoading(false);
+      } catch (e: any) {
+        if (!alive) return;
+        // Si algo falla, NO loop: mostramos error + botón “Volver a login”
+        setFatal(e?.message || "Error cargando tu sesión. Vuelve a iniciar sesión.");
+        setLoading(false);
       }
-
-      const res = await fetch("/api/me", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const j = await res.json().catch(() => null);
-
-      if (!j?.ok || !j?.worker) {
-        router.replace("/login");
-        return;
-      }
-
-      if (!j.worker.is_active) {
-        router.replace("/login");
-        return;
-      }
-
-      setName(j.worker.display_name || "");
-      setRole((j.worker.role as WorkerRole) || null);
-      setLoading(false);
     })();
+
+    return () => {
+      alive = false;
+    };
   }, [router]);
 
   async function logout() {
@@ -67,7 +88,38 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
   }
 
   if (loading) {
-    return <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", color: "#666" }}>Cargando…</div>;
+    return (
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", color: "#666" }}>
+        Cargando…
+      </div>
+    );
+  }
+
+  if (fatal) {
+    return (
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 16 }}>
+        <div style={{ width: "100%", maxWidth: 520, border: "2px solid #111", borderRadius: 18, padding: 16, background: "#fff" }}>
+          <div style={{ fontWeight: 1100, fontSize: 18 }}>⚠️ No se pudo abrir el panel</div>
+          <div style={{ marginTop: 8, color: "#666", fontWeight: 800 }}>{fatal}</div>
+          <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
+            <button
+              onClick={logout}
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                border: "1px solid #111",
+                background: "#111",
+                color: "#fff",
+                fontWeight: 1000,
+                cursor: "pointer",
+              }}
+            >
+              Volver a login
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   const linkStyle = (href: string) => {
