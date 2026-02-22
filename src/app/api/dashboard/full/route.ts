@@ -329,8 +329,7 @@ export async function GET(req: Request) {
           }
         }
       } catch {}
-    }
-
+    
     // c) mi team (por membresía)
     for (const [tid, members] of teamMembersMap.entries()) {
       if (members.some((m) => String(m.worker_id) === String(myWorkerId))) {
