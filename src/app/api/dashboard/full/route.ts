@@ -59,9 +59,7 @@ export async function GET(req: Request) {
       .order("month_date", { ascending: false })
       .limit(36);
 
-    const months = Array.from(
-      new Set((invoiceRows || []).map((r: any) => r.month_date).filter(Boolean))
-    );
+    const months = Array.from(new Set((invoiceRows || []).map((r: any) => r.month_date).filter(Boolean)));
 
     const month_date = monthParam || months[0] || null;
 
@@ -73,6 +71,7 @@ export async function GET(req: Request) {
         user: { isAdmin: myRole === "admin", worker: me },
         rankings: {},
         myEarnings: null,
+        myIncidentsMonth: { count: 0, penalty_eur: 0, grave: false },
       });
     }
 
@@ -153,7 +152,6 @@ export async function GET(req: Request) {
     // ===============================
 
     const myInvoice = invoiceMap.get(myWorkerId);
-
     const myRankRow = rows.find((r) => r.worker_id === myWorkerId);
 
     const myEarnings = {
@@ -163,6 +161,38 @@ export async function GET(req: Request) {
       amount_bonus_eur: toNum(myInvoice?.bonuses_eur),
       amount_total_eur: toNum(myInvoice?.total_eur),
     };
+
+    // ===============================
+    // 4️⃣ INCIDENCIAS DEL MES (NUEVO)
+    //   - solo cuentan las UNJUSTIFIED
+    //   - suma penalty_eur
+    //   - grave si: count >= 5 OR existe absence unjustified
+    // ===============================
+
+    let myIncidentsMonth = { count: 0, penalty_eur: 0, grave: false };
+
+    try {
+      const { data: incs, error: eInc } = await db
+        .from("shift_incidents")
+        .select("id, kind, status, penalty_eur")
+        .eq("worker_id", myWorkerId)
+        .eq("month_date", month_date)
+        .eq("status", "unjustified")
+        .limit(5000);
+
+      if (!eInc && Array.isArray(incs)) {
+        const count = incs.length;
+        const penalty = incs.reduce((sum, x: any) => sum + toNum(x?.penalty_eur), 0);
+        const hasAbsence = incs.some((x: any) => String(x?.kind || "").toLowerCase() === "absence");
+        const grave = count >= 5 || hasAbsence;
+
+        myIncidentsMonth = {
+          count,
+          penalty_eur: Number(penalty.toFixed(2)),
+          grave,
+        };
+      }
+    } catch {}
 
     return NextResponse.json({
       ok: true,
@@ -178,11 +208,9 @@ export async function GET(req: Request) {
         eur_bonus: rankEurBonus,
       },
       myEarnings,
+      myIncidentsMonth,
     });
   } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || "SERVER_ERROR" },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
   }
 }
