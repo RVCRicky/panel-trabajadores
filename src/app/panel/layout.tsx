@@ -41,6 +41,13 @@ function formatHMS(sec: number) {
   return `${pad(hh)}:${pad(mm)}:${pad(ss)}`;
 }
 
+// ✅ home según rol (central -> /panel/central, admin -> /panel/admin, tarotista -> /panel)
+function homeByRole(r: WorkerRole | null) {
+  if (r === "central") return "/panel/central";
+  if (r === "admin") return "/panel/admin";
+  return "/panel";
+}
+
 export default function PanelLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -105,6 +112,18 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
         setName(meJson.worker.display_name || "");
         setRole(r);
 
+        // ✅ REDIRECCIÓN AUTOMÁTICA si el rol no corresponde con /panel
+        // Evita el “se ve 2 segundos y cambia” y evita quedarse en la página equivocada.
+        try {
+          const target = homeByRole(r);
+          if (pathname === "/panel" && target !== "/panel") {
+            const u = new URL(window.location.href);
+            const qs = u.searchParams.toString();
+            router.replace(qs ? `${target}?${qs}` : target);
+            return; // IMPORTANTÍSIMO: paramos aquí
+          }
+        } catch {}
+
         const dashRes = await fetch("/api/dashboard/full", {
           headers: { Authorization: `Bearer ${token}` },
           cache: "no-store",
@@ -139,7 +158,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     return () => {
       alive = false;
     };
-  }, [router]);
+  }, [router, pathname]);
 
   // Tick timer
   useEffect(() => {
@@ -185,12 +204,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     role === "tarotista" || role === "central" || role === "admin";
 
   // ✅ DASHBOARD dinámico según rol
-  const dashHref =
-    role === "central"
-      ? "/panel/central"
-      : role === "admin"
-      ? "/panel/admin"
-      : "/panel";
+  const dashHref = homeByRole(role);
 
   function refreshAll() {
     window.location.reload();
@@ -212,8 +226,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
   );
 
   const pill = (href: string, emoji: string, text: string) => {
-    const active =
-      pathname === href || pathname.startsWith(href + "/");
+    const active = pathname === href || pathname.startsWith(href + "/");
     return (
       <a
         href={href}
@@ -277,8 +290,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
             <div style={{ display: "flex", gap: 10 }}>
               {pill(dashHref, "📊", "Dashboard")}
               {pill("/panel/invoices", "🧾", "Facturas")}
-              {canSeeIncidents &&
-                pill("/panel/incidents", "⚠️", "Incidencias")}
+              {canSeeIncidents && pill("/panel/incidents", "⚠️", "Incidencias")}
             </div>
           </div>
         </div>
