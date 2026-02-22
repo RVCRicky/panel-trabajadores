@@ -145,6 +145,7 @@ export default function PanelPage() {
   const [loading, setLoading] = useState(false);
 
   const [data, setData] = useState<DashboardResp | null>(null);
+  const [didRedirect, setDidRedirect] = useState(false);
 
   async function getToken() {
     const { data } = await supabase.auth.getSession();
@@ -201,12 +202,42 @@ export default function PanelPage() {
   const isCentral = myRole === "central";
   const isAdmin = myRole === "admin";
 
+  // ✅ REDIRECT: central/admin no deben quedarse en /panel
+  useEffect(() => {
+    if (!data?.ok) return;
+    if (didRedirect) return;
+
+    const month = qs.get("month_date");
+    const q = month ? `?month_date=${encodeURIComponent(month)}` : "";
+
+    if (isCentral) {
+      setDidRedirect(true);
+      router.replace(`/panel/central${q}`);
+      return;
+    }
+
+    if (isAdmin) {
+      setDidRedirect(true);
+      router.replace(`/panel/admin${q}`);
+      return;
+    }
+  }, [data?.ok, didRedirect, isCentral, isAdmin, qs, router]);
+
   // Tarotistas: no permitir rankType eur_*
   useEffect(() => {
     if (!isTarot) return;
     if (rankType === "eur_total" || rankType === "eur_bonus") setRankType("minutes");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTarot]);
+
+  // mientras redirige, no pintes nada (evita “parpadeo”)
+  if ((isCentral || isAdmin) && !didRedirect) {
+    return (
+      <div style={{ minHeight: "60vh", display: "grid", placeItems: "center" }}>
+        <div style={{ fontWeight: 1200, color: "#6b7280" }}>Abriendo tu panel…</div>
+      </div>
+    );
+  }
 
   const ranks = (data?.rankings as any)?.[rankType] || [];
 
@@ -322,130 +353,7 @@ export default function PanelPage() {
     );
   };
 
-  // ===== CENTRAL BLOCKS =====
-  const teams = (data?.teamsRanking || []) as TeamRow[];
-  const myTeamRank = data?.myTeamRank ?? null;
-  const winner = data?.winnerTeam || null;
-  const teamWinnerBonus = pickRuleAmount(data?.bonusRules || [], "team_winner", "central", 1);
-
-  const CentralTeams = () => {
-    const top2 = teams.slice(0, 2);
-
-    return (
-      <div style={{ ...shellCard, padding: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontWeight: 1400, fontSize: 16 }}>🏆 Equipos (GLOBAL)</div>
-            <div style={{ color: "#6b7280", fontWeight: 1000, marginTop: 4 }}>Score basado en %Clientes + %Repite</div>
-          </div>
-          <button onClick={load} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.6, cursor: "not-allowed" } : btnGhost}>
-            {loading ? "Actualizando…" : "Actualizar"}
-          </button>
-        </div>
-
-        <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
-          {top2.length === 0 ? (
-            <div style={{ color: "#6b7280", fontWeight: 900 }}>Sin datos de equipos para este mes.</div>
-          ) : (
-            top2.map((t, idx) => (
-              <div
-                key={t.team_id}
-                style={{
-                  borderRadius: 18,
-                  border: idx === 0 ? "2px solid #111" : "1px solid #e5e7eb",
-                  background: "#fff",
-                  padding: 14,
-                  boxShadow: "0 10px 30px rgba(0,0,0,0.06)",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                  <div style={{ fontWeight: 1500, fontSize: 16 }}>
-                    {idx === 0 ? "🥇" : "🥈"} {t.team_name}
-                  </div>
-                  <Badge tone={idx === 0 ? ("ok" as any) : ("neutral" as any)}>{`Score ${Number(t.team_score || 0).toFixed(2)}`}</Badge>
-                </div>
-
-                <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
-                  <div style={{ border: "1px solid #f3f4f6", borderRadius: 14, padding: 10, background: "#fafafa" }}>
-                    <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Minutos</div>
-                    <div style={{ fontWeight: 1500, marginTop: 4 }}>{fmt(t.total_minutes)}</div>
-                  </div>
-                  <div style={{ border: "1px solid #f3f4f6", borderRadius: 14, padding: 10, background: "#fafafa" }}>
-                    <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Captadas</div>
-                    <div style={{ fontWeight: 1500, marginTop: 4 }}>{fmt(t.total_captadas)}</div>
-                  </div>
-                  <div style={{ border: "1px solid #f3f4f6", borderRadius: 14, padding: 10, background: "#fafafa" }}>
-                    <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>€ mes</div>
-                    <div style={{ fontWeight: 1500, marginTop: 4 }}>{eur(t.total_eur_month || 0)}</div>
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", color: "#6b7280", fontWeight: 1000 }}>
-                  <span>
-                    Clientes %: <b style={{ color: "#111" }}>{Number(t.team_cliente_pct || 0).toFixed(2)}%</b>
-                  </span>
-                  <span>
-                    Repite %: <b style={{ color: "#111" }}>{Number(t.team_repite_pct || 0).toFixed(2)}%</b>
-                  </span>
-                  <span>
-                    Miembros: <b style={{ color: "#111" }}>{fmt(t.member_count || (t.members?.length || 0))}</b>
-                  </span>
-                </div>
-
-                {Array.isArray(t.members) && t.members.length > 0 ? (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Miembros</div>
-                    <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 8 }}>
-                      {t.members.slice(0, 10).map((m) => (
-                        <span
-                          key={m.worker_id}
-                          style={{
-                            padding: "7px 10px",
-                            borderRadius: 999,
-                            border: "1px solid #e5e7eb",
-                            background: "#fff",
-                            fontWeight: 1100,
-                            color: "#111",
-                          }}
-                        >
-                          {m.name}
-                        </span>
-                      ))}
-                      {t.members.length > 10 ? (
-                        <span style={{ color: "#6b7280", fontWeight: 1000 }}>+{t.members.length - 10}</span>
-                      ) : null}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            ))
-          )}
-        </div>
-
-        <div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))" }}>
-          <Card>
-            <CardTitle>Mi equipo</CardTitle>
-            <CardValue>{myTeamRank ? `#${myTeamRank}` : "—"}</CardValue>
-            <CardHint>Posición de tu equipo este mes.</CardHint>
-          </Card>
-
-          <Card>
-            <CardTitle>Equipo ganador</CardTitle>
-            <CardValue>{winner ? winner.team_name : "—"}</CardValue>
-            <CardHint>{winner ? `Score: ${Number(winner.team_score || 0).toFixed(2)}` : "—"}</CardHint>
-          </Card>
-
-          <Card>
-            <CardTitle>Bono ganador</CardTitle>
-            <CardValue>{teamWinnerBonus ? eur(teamWinnerBonus) : "—"}</CardValue>
-            <CardHint>Solo si tu equipo va #1.</CardHint>
-          </Card>
-        </div>
-      </div>
-    );
-  };
-
-  // ===== TAROTISTA BLOCKS =====
+  // ===== TAROTISTA / ADMIN (en /panel no debería entrar central ya)
   const incCount = data?.myIncidentsMonth?.count ?? null;
   const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
   const incGrave = !!data?.myIncidentsMonth?.grave;
@@ -463,155 +371,145 @@ export default function PanelPage() {
         </div>
       ) : null}
 
-      {/* CENTRAL */}
-      {isCentral ? (
-        <CentralTeams />
-      ) : null}
+      {/* KPIs */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(240px, 1fr))",
+          gap: 12,
+        }}
+      >
+        <Card>
+          <CardTitle>Mi rol</CardTitle>
+          <CardValue>{labelRole(me?.role || "—")}</CardValue>
+          <CardHint>{me?.display_name ? <>{me.display_name}</> : "—"}</CardHint>
+        </Card>
 
-      {/* TAROTISTA / ADMIN */}
-      {!isCentral ? (
-        <>
-          {/* KPIs */}
-          <div
+        <Card>
+          <CardTitle>Minutos</CardTitle>
+          <CardValue>{minutesTotal === null ? "—" : fmt(minutesTotal)}</CardValue>
+          <CardHint>Acumulados del mes.</CardHint>
+        </Card>
+
+        <Card>
+          <CardTitle>Captadas</CardTitle>
+          <CardValue>{captadasTotal === null ? "—" : fmt(captadasTotal)}</CardValue>
+          <CardHint>Acumuladas del mes.</CardHint>
+        </Card>
+
+        <Card>
+          <CardTitle>Total € (oficial)</CardTitle>
+          <CardValue>{totalEur === null ? "—" : eur(totalEur)}</CardValue>
+          <CardHint>Sale de la factura del mes.</CardHint>
+        </Card>
+
+        <Card>
+          <CardTitle>Bonos</CardTitle>
+          <CardValue>{bonusEur === null ? "—" : eur(bonusEur)}</CardValue>
+          <CardHint>{incGrave ? <b style={{ color: "#b91c1c" }}>GRAVE: sin bonos</b> : "Según reglas."}</CardHint>
+        </Card>
+
+        <Card>
+          <CardTitle>Incidencias</CardTitle>
+          <CardValue>{incCount == null ? "—" : fmt(incCount)}</CardValue>
+          <CardHint>
+            Penalización: <b>{incPenalty == null ? "—" : eur(incPenalty)}</b>
+          </CardHint>
+        </Card>
+
+        <Card>
+          <CardTitle>Mi posición</CardTitle>
+          <CardValue>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</CardValue>
+          <CardHint>Según el ranking seleccionado.</CardHint>
+        </Card>
+      </div>
+
+      {/* Top 3 */}
+      <div style={{ ...shellCard, padding: 14 }}>
+        <div style={{ fontWeight: 1300, fontSize: 16 }}>Top 3 del mes</div>
+        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))", gap: 12 }}>
+          {(["minutes", "captadas", "repite_pct", "cliente_pct"] as RankKey[]).map((k) => (
+            <Top3Block key={k} k={k} />
+          ))}
+        </div>
+      </div>
+
+      {/* Ranking */}
+      <div style={{ ...shellCard, padding: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ fontWeight: 1300, fontSize: 16 }}>Ranking</div>
+          <div style={{ color: "#6b7280", fontWeight: 1000 }}>
+            Mi posición: <b>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</b>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+          <select
+            value={rankType}
+            onChange={(e) => setRankType(e.target.value as RankKey)}
             style={{
-              display: "grid",
-              gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(240px, 1fr))",
-              gap: 12,
+              padding: 12,
+              borderRadius: 14,
+              border: "1px solid #e5e7eb",
+              background: "#fff",
+              width: "100%",
+              maxWidth: 520,
+              fontWeight: 1100,
             }}
           >
-            <Card>
-              <CardTitle>Mi rol</CardTitle>
-              <CardValue>{labelRole(me?.role || "—")}</CardValue>
-              <CardHint>{me?.display_name ? <>{me.display_name}</> : "—"}</CardHint>
-            </Card>
+            <option value="minutes">Minutos</option>
+            <option value="captadas">Captadas</option>
+            <option value="repite_pct">Repite %</option>
+            <option value="cliente_pct">Clientes %</option>
 
-            <Card>
-              <CardTitle>Minutos</CardTitle>
-              <CardValue>{minutesTotal === null ? "—" : fmt(minutesTotal)}</CardValue>
-              <CardHint>Acumulados del mes.</CardHint>
-            </Card>
+            {/* admin puede mirar € si quiere */}
+            {isAdmin ? <option value="eur_total">€ Total</option> : null}
+            {isAdmin ? <option value="eur_bonus">€ Bonus</option> : null}
+          </select>
+        </div>
 
-            <Card>
-              <CardTitle>Captadas</CardTitle>
-              <CardValue>{captadasTotal === null ? "—" : fmt(captadasTotal)}</CardValue>
-              <CardHint>Acumuladas del mes.</CardHint>
-            </Card>
-
-            <Card>
-              <CardTitle>Total € (oficial)</CardTitle>
-              <CardValue>{totalEur === null ? "—" : eur(totalEur)}</CardValue>
-              <CardHint>Sale de la factura del mes.</CardHint>
-            </Card>
-
-            <Card>
-              <CardTitle>Bonos</CardTitle>
-              <CardValue>{bonusEur === null ? "—" : eur(bonusEur)}</CardValue>
-              <CardHint>{incGrave ? <b style={{ color: "#b91c1c" }}>GRAVE: sin bonos</b> : "Según reglas."}</CardHint>
-            </Card>
-
-            <Card>
-              <CardTitle>Incidencias</CardTitle>
-              <CardValue>{incCount == null ? "—" : fmt(incCount)}</CardValue>
-              <CardHint>
-                Penalización: <b>{incPenalty == null ? "—" : eur(incPenalty)}</b>
-              </CardHint>
-            </Card>
-
-            <Card>
-              <CardTitle>Mi posición</CardTitle>
-              <CardValue>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</CardValue>
-              <CardHint>Según el ranking seleccionado.</CardHint>
-            </Card>
+        {isMobile ? (
+          <div style={{ marginTop: 12 }}>
+            <RankCards list={ranks as any[]} k={rankType} />
           </div>
-
-          {/* Top 3 */}
-          <div style={{ ...shellCard, padding: 14 }}>
-            <div style={{ fontWeight: 1300, fontSize: 16 }}>Top 3 del mes</div>
-            <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))", gap: 12 }}>
-              {(["minutes", "captadas", "repite_pct", "cliente_pct"] as RankKey[]).map((k) => (
-                <Top3Block key={k} k={k} />
-              ))}
-            </div>
-          </div>
-
-          {/* Ranking */}
-          <div style={{ ...shellCard, padding: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <div style={{ fontWeight: 1300, fontSize: 16 }}>Ranking</div>
-              <div style={{ color: "#6b7280", fontWeight: 1000 }}>
-                Mi posición: <b>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</b>
-              </div>
-            </div>
-
-            <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-              <select
-                value={rankType}
-                onChange={(e) => setRankType(e.target.value as RankKey)}
-                style={{
-                  padding: 12,
-                  borderRadius: 14,
-                  border: "1px solid #e5e7eb",
-                  background: "#fff",
-                  width: "100%",
-                  maxWidth: 520,
-                  fontWeight: 1100,
-                }}
-              >
-                <option value="minutes">Minutos</option>
-                <option value="captadas">Captadas</option>
-                <option value="repite_pct">Repite %</option>
-                <option value="cliente_pct">Clientes %</option>
-
-                {/* admin puede mirar € si quiere */}
-                {isAdmin ? <option value="eur_total">€ Total</option> : null}
-                {isAdmin ? <option value="eur_bonus">€ Bonus</option> : null}
-              </select>
-            </div>
-
-            {isMobile ? (
-              <div style={{ marginTop: 12 }}>
-                <RankCards list={ranks as any[]} k={rankType} />
-              </div>
-            ) : (
-              <div style={{ overflowX: "auto", marginTop: 12, WebkitOverflowScrolling: "touch", width: "100%" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb", padding: 10 }}>#</th>
-                      <th style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb", padding: 10 }}>Nombre</th>
-                      <th style={{ textAlign: "right", borderBottom: "1px solid #e5e7eb", padding: 10 }}>Valor</th>
+        ) : (
+          <div style={{ overflowX: "auto", marginTop: 12, WebkitOverflowScrolling: "touch", width: "100%" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb", padding: 10 }}>#</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb", padding: 10 }}>Nombre</th>
+                  <th style={{ textAlign: "right", borderBottom: "1px solid #e5e7eb", padding: 10 }}>Valor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(ranks as any[]).map((r: any, idx: number) => {
+                  const pos = idx + 1;
+                  const isMe = me?.display_name === r.name;
+                  return (
+                    <tr key={r.worker_id || `${idx}`} style={{ background: isMe ? "#eef6ff" : "transparent", fontWeight: isMe ? 1100 : 500 }}>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
+                        {medal(pos)} {pos}
+                      </td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>{r.name}</td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", textAlign: "right", fontWeight: 1300 }}>
+                        {valueOf(rankType, r)}
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {(ranks as any[]).map((r: any, idx: number) => {
-                      const pos = idx + 1;
-                      const isMe = me?.display_name === r.name;
-                      return (
-                        <tr key={r.worker_id || `${idx}`} style={{ background: isMe ? "#eef6ff" : "transparent", fontWeight: isMe ? 1100 : 500 }}>
-                          <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
-                            {medal(pos)} {pos}
-                          </td>
-                          <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>{r.name}</td>
-                          <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", textAlign: "right", fontWeight: 1300 }}>
-                            {valueOf(rankType, r)}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {(ranks as any[]).length === 0 ? (
-                      <tr>
-                        <td colSpan={3} style={{ padding: 12, color: "#6b7280", fontWeight: 900 }}>
-                          Sin datos.
-                        </td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                  );
+                })}
+                {(ranks as any[]).length === 0 ? (
+                  <tr>
+                    <td colSpan={3} style={{ padding: 12, color: "#6b7280", fontWeight: 900 }}>
+                      Sin datos.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
           </div>
-        </>
-      ) : null}
+        )}
+      </div>
     </div>
   );
 }
