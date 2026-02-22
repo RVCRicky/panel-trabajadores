@@ -144,6 +144,22 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
+  // ✅ Redirección por rol si cae en /panel “genérico”
+  useEffect(() => {
+    if (loading) return;
+    if (!role) return;
+
+    // preserva querystring (month_date etc.)
+    const qs = typeof window !== "undefined" ? window.location.search || "" : "";
+
+    if (pathname === "/panel") {
+      if (role === "central") router.replace(`/panel/central${qs}`);
+      else if (role === "admin") router.replace(`/panel/admin${qs}`);
+      // tarotista se queda en /panel
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, role, pathname]);
+
   // Tick
   useEffect(() => {
     let timer: any = null;
@@ -167,7 +183,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
   const titleRole = role === "admin" ? "Admin" : role === "central" ? "Central" : "Tarotista";
   const canSeeIncidents = role === "tarotista" || role === "central" || role === "admin";
 
-  // ✅ Dashboard correcto según rol (evita el “salto raro”)
+  // ✅ Dashboard dinámico según rol
   const dashHref = role === "central" ? "/panel/central" : role === "admin" ? "/panel/admin" : "/panel";
 
   async function logout() {
@@ -181,7 +197,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
   function changeMonth(next: string) {
     setMonth(next || null);
 
-    const base = pathname || dashHref;
+    const base = pathname || "/panel";
     const url = new URL(window.location.href);
     if (next) url.searchParams.set("month_date", next);
     else url.searchParams.delete("month_date");
@@ -189,6 +205,16 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     const qs = url.searchParams.toString();
     router.replace(qs ? `${base}?${qs}` : base);
   }
+
+  // Si URL trae month_date, reflejarlo
+  useEffect(() => {
+    try {
+      const u = new URL(window.location.href);
+      const q = u.searchParams.get("month_date");
+      if (q && q !== month) setMonth(q);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
 
   const monthLabel = useMemo(() => (month ? formatMonthLabel(month) : "—"), [month]);
 
@@ -298,6 +324,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
       >
         <div style={{ maxWidth: 1160, margin: "0 auto", padding: isMobile ? "10px 10px" : "14px 14px" }}>
           <div style={{ ...shellCard, padding: isMobile ? 12 : 14, display: "grid", gap: 12 }}>
+            {/* Row A */}
             <div
               style={{
                 display: "grid",
@@ -388,17 +415,8 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
               </div>
             </div>
 
-            {/* Nav */}
-            <div
-              style={{
-                display: "flex",
-                gap: 10,
-                flexWrap: "nowrap",
-                overflowX: "auto",
-                WebkitOverflowScrolling: "touch",
-                paddingBottom: 2,
-              }}
-            >
+            {/* Row B: Nav pills */}
+            <div style={{ display: "flex", gap: 10, flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch", paddingBottom: 2 }}>
               {pill(dashHref, "📊", "Dashboard")}
               {pill("/panel/invoices", "🧾", "Facturas")}
               {canSeeIncidents ? (
