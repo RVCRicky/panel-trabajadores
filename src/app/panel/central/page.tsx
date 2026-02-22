@@ -9,6 +9,20 @@ import { Badge } from "@/components/ui/Badge";
 
 type PresenceState = "offline" | "online" | "pause" | "bathroom";
 
+type TeamMember = { worker_id: string; name: string; role: string };
+type TeamRow = {
+  team_id: string;
+  team_name: string;
+  total_eur_month: number;
+  total_minutes: number;
+  total_captadas: number;
+  member_count: number;
+  team_cliente_pct?: number;
+  team_repite_pct?: number;
+  team_score?: number;
+  members?: TeamMember[];
+};
+
 type DashboardResp = {
   ok: boolean;
   error?: string;
@@ -36,19 +50,18 @@ type DashboardResp = {
 
   myIncidentsMonth?: { count: number; penalty_eur: number; grave: boolean };
 
-  teamsRanking?: any[];
+  teamsRanking?: TeamRow[];
   myTeamRank?: number | null;
+  myTeam?: { team_id: string; team_name: string } | null;
   winnerTeam?: any;
   bonusRules?: any[];
+
+  // ✅ nuevos
+  teamYami?: TeamRow | null;
+  teamMaria?: TeamRow | null;
 };
 
-type PresenceMeResp = {
-  ok: boolean;
-  state: PresenceState;
-  session_id: string | null;
-  started_at: string | null;
-  error?: string;
-};
+type PresenceMeResp = { ok: boolean; state: PresenceState; session_id: string | null; started_at: string | null; error?: string };
 
 function useIsMobile(bp = 900) {
   const [isMobile, setIsMobile] = useState(false);
@@ -79,8 +92,16 @@ function formatHMS(sec: number) {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${pad(hh)}:${pad(mm)}:${pad(ss)}`;
 }
+function formatMonthLabel(isoMonthDate: string) {
+  const [y, m] = String(isoMonthDate || "").split("-");
+  const monthNum = Number(m);
+  const yearNum = Number(y);
+  if (!monthNum || !yearNum) return isoMonthDate;
+  const date = new Date(yearNum, monthNum - 1, 1);
+  return date.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
+}
 
-// ✅ Reset diario a las 05:00 (hora local del navegador)
+// ✅ Reset diario a las 05:00 (Europe/Madrid) en localStorage
 function dailyKeyAt5(prefix: string) {
   const now = new Date();
   const d = new Date(now);
@@ -92,7 +113,11 @@ function dailyKeyAt5(prefix: string) {
   return `${prefix}:${y}-${m}-${day}`;
 }
 
-type ChecklistItem = { id: string; label: string; hint?: string };
+type ChecklistItem = {
+  id: string;
+  label: string;
+  hint?: string;
+};
 
 const CHECKLIST: ChecklistItem[] = [
   { id: "login", label: "Loguearse y abrir panel", hint: "Entrar (presencia) y comprobar que todo carga." },
@@ -108,13 +133,11 @@ export default function CentralPanelPage() {
   const router = useRouter();
   const isMobile = useIsMobile();
 
-  // ✅ usa el header global del layout, NO duplicamos aquí
-  const SHOW_LOCAL_HEADER = false;
-
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const [data, setData] = useState<DashboardResp | null>(null);
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   const [pState, setPState] = useState<PresenceState>("offline");
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -122,41 +145,35 @@ export default function CentralPanelPage() {
   const [elapsedSec, setElapsedSec] = useState(0);
   const tickRef = useRef<any>(null);
 
-  const isLogged = pState !== "offline";
-
-  // ✅ Checklist
-  const checklistKey = useMemo(() => dailyKeyAt5("tc_central_checklist"), []);
   const [checkState, setCheckState] = useState<Record<string, boolean>>({});
+  const checklistKey = useMemo(() => dailyKeyAt5("tc_central_checklist"), []);
 
-  function persistChecklist(next: Record<string, boolean>) {
-    setCheckState(next);
-    try {
-      localStorage.setItem(checklistKey, JSON.stringify(next));
-    } catch {}
-  }
+  const isLogged = pState !== "offline";
 
   async function getToken() {
     const { data } = await supabase.auth.getSession();
     return data.session?.access_token || null;
   }
 
-  async function loadDashboard() {
+  async function logout() {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  }
+
+  async function loadDashboard(monthOverride?: string | null) {
     setErr(null);
     setLoading(true);
     try {
       const token = await getToken();
       if (!token) return router.replace("/login");
 
-      // month_date lo maneja el layout por querystring
-      const u = new URL(window.location.href);
-      const month = u.searchParams.get("month_date");
+      const month = monthOverride ?? selectedMonth ?? null;
       const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
 
       const res = await fetch(`/api/dashboard/full${qs}`, {
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
       });
-
       const j = (await res.json().catch(() => null)) as DashboardResp | null;
       if (!j?.ok) {
         setErr(j?.error || "Error dashboard");
@@ -170,6 +187,7 @@ export default function CentralPanelPage() {
       }
 
       setData(j);
+      if (j.month_date && j.month_date !== selectedMonth) setSelectedMonth(j.month_date);
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
     } finally {
@@ -257,10 +275,9 @@ export default function CentralPanelPage() {
   }
 
   useEffect(() => {
-    loadDashboard();
+    loadDashboard(null);
     loadPresence();
 
-    // checklist storage
     try {
       const raw = localStorage.getItem(checklistKey);
       if (raw) setCheckState(JSON.parse(raw));
@@ -270,6 +287,14 @@ export default function CentralPanelPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!selectedMonth) return;
+    if (!data) return;
+    if (data.month_date === selectedMonth) return;
+    loadDashboard(selectedMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMonth]);
 
   useEffect(() => {
     if (tickRef.current) clearInterval(tickRef.current);
@@ -286,6 +311,17 @@ export default function CentralPanelPage() {
     tickRef.current = setInterval(update, 1000);
     return () => tickRef.current && clearInterval(tickRef.current);
   }, [startedAt, pState]);
+
+  function persistChecklist(next: Record<string, boolean>) {
+    setCheckState(next);
+    try {
+      localStorage.setItem(checklistKey, JSON.stringify(next));
+    } catch {}
+  }
+
+  const me = data?.user?.worker || null;
+  const months = data?.months || [];
+  const monthLabel = selectedMonth ? formatMonthLabel(selectedMonth) : data?.month_date ? formatMonthLabel(data.month_date) : "—";
 
   const stateTone = pState === "online" ? "ok" : pState === "pause" || pState === "bathroom" ? "warn" : "neutral";
   const stateText = pState === "online" ? "ONLINE" : pState === "pause" ? "PAUSA" : pState === "bathroom" ? "BAÑO" : "OFFLINE";
@@ -310,23 +346,60 @@ export default function CentralPanelPage() {
     boxShadow: "0 12px 45px rgba(0,0,0,0.08)",
   };
 
-  const teams = Array.isArray(data?.teamsRanking) ? (data?.teamsRanking as any[]) : [];
-  const hasTeams = teams.length > 0;
+  const teams = (data?.teamsRanking || []) as TeamRow[];
+  const hasTeams = Array.isArray(teams) && teams.length >= 1;
 
-  const bonusRules = Array.isArray(data?.bonusRules) ? data!.bonusRules! : [];
-  const teamWinnerRule = bonusRules.find(
-    (x: any) =>
-      String(x?.ranking_type || "").toLowerCase() === "team_winner" &&
-      Number(x?.position) === 1 &&
-      String(x?.role || "").toLowerCase() === "central" &&
-      (x?.is_active === undefined ? true : !!x?.is_active)
-  );
-  const bonusTeamWinner = teamWinnerRule ? eur(teamWinnerRule.amount_eur) : eur(0);
+  const teamBox = (t: TeamRow | null | undefined, fallbackTitle: string) => {
+    const tarotists = (t?.members || []).filter((m) => String(m.role || "").toLowerCase() === "tarotista");
+    return (
+      <div style={{ ...shellCard, padding: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontWeight: 1400, fontSize: 16 }}>{t?.team_name || fallbackTitle}</div>
+          <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>{t?.team_id ? t.team_id : "—"}</div>
+        </div>
 
-  const myTeamRank = data?.myTeamRank ?? null;
-  const winnerTeam = data?.winnerTeam ?? null;
+        <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+          <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 10, background: "#fff" }}>
+            <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Score</div>
+            <div style={{ fontWeight: 1500, fontSize: 18 }}>{t?.team_score ?? "—"}</div>
+          </div>
+          <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 10, background: "#fff" }}>
+            <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Tarotistas</div>
+            <div style={{ fontWeight: 1500, fontSize: 18 }}>{tarotists.length}</div>
+          </div>
+        </div>
 
-  // recomendaciones
+        <div style={{ marginTop: 12 }}>
+          <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12, marginBottom: 6 }}>Lista tarotistas</div>
+          {tarotists.length === 0 ? (
+            <div style={{ padding: 10, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", fontWeight: 1000 }}>
+              No hay tarotistas en este equipo (o faltan members).
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {tarotists.map((m) => (
+                <span
+                  key={m.worker_id}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 999,
+                    border: "1px solid #e5e7eb",
+                    background: "#fff",
+                    fontWeight: 1100,
+                  }}
+                  title={m.worker_id}
+                >
+                  {m.name}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // recomendaciones (igual que antes)
   const recommendations: Recommendation[] = useMemo(() => {
     const out: Recommendation[] = [];
     const cap = (data?.rankings?.captadas || []) as any[];
@@ -340,14 +413,19 @@ export default function CentralPanelPage() {
     const lowCli = [...cli].reverse()[0];
     const lowRep = [...rep].reverse()[0];
 
-    if (topCap?.name) out.push({ tone: "ok", title: "Captación fuerte", body: `${topCap.name} está captando mucho últimamente.` });
-    if (topCli?.name) out.push({ tone: "ok", title: "Clientes nuevos", body: `${topCli.name} tiene un %Clientes muy alto.` });
-    if (topRep?.name) out.push({ tone: "ok", title: "Fidelización", body: `${topRep.name} está fidelizando muy bien (%Repite).` });
-    if (lowCli?.name) out.push({ tone: "warn", title: "Ojo con %Clientes", body: `${lowCli.name} está baja en %Clientes.` });
-    if (lowRep?.name) out.push({ tone: "warn", title: "Ojo con %Repite", body: `${lowRep.name} está baja en %Repite.` });
+    if (topCap?.name) out.push({ tone: "ok", title: "Captación fuerte", body: `${topCap.name} está captando mucho últimamente. Si está disponible, pásale más llamadas para aprovechar el momento.` });
+    if (topCli?.name) out.push({ tone: "ok", title: "Clientes nuevos (muy bien)", body: `${topCli.name} tiene un %Clientes muy alto. Ideal para primeras consultas y picos de demanda.` });
+    if (topRep?.name) out.push({ tone: "ok", title: "Fidelización excelente", body: `${topRep.name} está fidelizando muy bien (%Repite). Si quieres mejorar repetición, priorízale llamadas de seguimiento.` });
+    if (lowCli?.name) out.push({ tone: "warn", title: "Ojo con %Clientes", body: `${lowCli.name} está baja en %Clientes. Revisa si necesita más llamadas de primera consulta o ajustar el enfoque.` });
+    if (lowRep?.name) out.push({ tone: "warn", title: "Ojo con %Repite", body: `${lowRep.name} está baja en %Repite. Quizá conviene reforzar cierres y seguimiento.` });
 
-    return [...out].sort(() => Math.random() - 0.5).slice(0, 4);
+    return out.sort(() => Math.random() - 0.5).slice(0, 4);
   }, [data?.rankings?.captadas, data?.rankings?.cliente_pct, data?.rankings?.repite_pct]);
+
+  const bonusEstimate = useMemo(() => {
+    const v = data?.myEarnings?.amount_bonus_eur;
+    return typeof v === "number" ? v : 0;
+  }, [data?.myEarnings?.amount_bonus_eur]);
 
   const incCount = data?.myIncidentsMonth?.count ?? null;
   const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
@@ -355,248 +433,329 @@ export default function CentralPanelPage() {
   const bigActionLabel = pState === "offline" ? "Entrar" : "Salir";
   const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
 
+  // Tabs
+  const tabBar: React.CSSProperties = { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" };
+  const tabBtn = (active: boolean): React.CSSProperties => ({
+    padding: "10px 12px",
+    borderRadius: 999,
+    border: active ? "1px solid #111" : "1px solid #e5e7eb",
+    background: active ? "#111" : "#fff",
+    color: active ? "#fff" : "#111",
+    fontWeight: 1100,
+    cursor: "pointer",
+  });
+  const [tab, setTab] = useState<"dashboard" | "incidents">("dashboard");
+
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: 1100 }}>
-      {SHOW_LOCAL_HEADER ? (
-        <div style={{ ...shellCard, padding: 14 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+      {/* Header */}
+      <div style={{ ...shellCard, padding: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr auto", gap: 12, alignItems: "center" }}>
+          <div style={{ display: "grid", gap: 8 }}>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <div style={{ fontWeight: 1400, fontSize: 18 }}>Central</div>
+              <div style={{ fontWeight: 1400, fontSize: 18, lineHeight: 1 }}>Central</div>
               <Badge tone={stateTone as any}>{stateText}</Badge>
               <div style={{ fontWeight: 1400 }}>{formatHMS(elapsedSec)}</div>
+
+              {me?.display_name ? (
+                <div style={{ color: "#6b7280", fontWeight: 900 }}>
+                  {me.display_name} · Central
+                </div>
+              ) : null}
             </div>
-            <button onClick={loadDashboard} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}>
+
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "420px 1fr", gap: 10, alignItems: "end" }}>
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Mes</div>
+                <select
+                  value={selectedMonth || data?.month_date || ""}
+                  onChange={(e) => setSelectedMonth(e.target.value || null)}
+                  style={{ padding: 12, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 1100, width: "100%" }}
+                  disabled={loading || months.length === 0}
+                >
+                  {months.length === 0 ? (
+                    <option value="">{data?.month_date || "—"}</option>
+                  ) : (
+                    months.map((m) => (
+                      <option key={m} value={m}>
+                        {formatMonthLabel(m)}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+
+              {!isMobile ? <div style={{ color: "#6b7280", fontWeight: 1100, textTransform: "capitalize" }}>{monthLabel}</div> : null}
+            </div>
+
+            <div style={tabBar}>
+              <button onClick={() => setTab("dashboard")} style={tabBtn(tab === "dashboard")}>
+                Dashboard
+              </button>
+              <button onClick={() => setTab("incidents")} style={tabBtn(tab === "incidents")}>
+                Incidencias
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10, justifyItems: isMobile ? "stretch" : "end" }}>
+            <button onClick={() => loadDashboard(selectedMonth)} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}>
               {loading ? "Actualizando…" : "Actualizar"}
+            </button>
+            <button onClick={logout} style={btnPrimary}>
+              Cerrar sesión
             </button>
           </div>
         </div>
-      ) : err ? (
-        <div style={{ ...shellCard, padding: 14, border: "1px solid #ffcccc", background: "#fff3f3", fontWeight: 900 }}>{err}</div>
-      ) : null}
 
-      {/* Equipos */}
-      <div style={{ ...shellCard, padding: 14, border: "1px solid #111" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ fontWeight: 1300, fontSize: 18 }}>🏆 Equipos (GLOBAL)</div>
-          <button onClick={loadDashboard} style={btnGhost}>
-            Actualizar
-          </button>
-        </div>
-        <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>
-          Score basado en <b>%Clientes + %Repite</b>
-        </div>
+        {err ? (
+          <div style={{ marginTop: 12, padding: 12, borderRadius: 14, border: "1px solid #ffcccc", background: "#fff3f3", fontWeight: 900 }}>
+            {err}
+          </div>
+        ) : null}
+      </div>
 
-        {!hasTeams ? (
-          <div style={{ marginTop: 12, color: "#6b7280", fontWeight: 1000 }}>Sin datos de equipos para este mes.</div>
-        ) : (
-          <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-            {teams.slice(0, 5).map((t: any, idx: number) => (
-              <div key={t.team_id || idx} style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
-                  <div style={{ fontWeight: 1300 }}>
-                    {medal(idx + 1)} {idx + 1}. {t.team_name || "Equipo"}
-                  </div>
-                  <div style={{ fontWeight: 1200 }}>Score: {fmt(t.team_score ?? 0)}</div>
-                </div>
-                <div style={{ marginTop: 6, display: "flex", gap: 14, flexWrap: "wrap", color: "#6b7280", fontWeight: 1000 }}>
-                  <span>
-                    Minutos: <b style={{ color: "#111" }}>{fmt(t.total_minutes ?? 0)}</b>
-                  </span>
-                  <span>
-                    Captadas: <b style={{ color: "#111" }}>{fmt(t.total_captadas ?? 0)}</b>
-                  </span>
-                  <span>
-                    %Clientes: <b style={{ color: "#111" }}>{fmt(t.team_cliente_pct ?? 0)}</b>
-                  </span>
-                  <span>
-                    %Repite: <b style={{ color: "#111" }}>{fmt(t.team_repite_pct ?? 0)}</b>
-                  </span>
-                  <span>
-                    € mes: <b style={{ color: "#111" }}>{eur(t.total_eur_month ?? 0)}</b>
-                  </span>
-                </div>
+      {tab === "dashboard" ? (
+        <>
+          {/* ✅ Equipos global (YA con stats reales) */}
+          <div style={{ ...shellCard, padding: 14, border: "1px solid #111" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 1300, fontSize: 18 }}>🏆 Equipos (GLOBAL)</div>
+              <div style={{ color: "#6b7280", fontWeight: 1000 }}>
+                Score = <b>%Clientes + %Repite</b>
+                {data?.myTeamRank ? (
+                  <>
+                    {" "}
+                    · Tu equipo: <b>#{data.myTeamRank}</b>
+                  </>
+                ) : null}
               </div>
-            ))}
+            </div>
 
-            <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", gap: 10 }}>
-              <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-                <div style={{ fontWeight: 1200 }}>Mi equipo</div>
-                <div style={{ marginTop: 6, fontWeight: 1400, fontSize: 22 }}>{myTeamRank ? `#${myTeamRank}` : "—"}</div>
-                <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>Posición de tu equipo este mes.</div>
-              </div>
-
-              <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-                <div style={{ fontWeight: 1200 }}>Equipo ganador</div>
-                <div style={{ marginTop: 6, fontWeight: 1300 }}>{winnerTeam?.team_name || "—"}</div>
+            {!hasTeams ? (
+              <div style={{ marginTop: 12, padding: 12, borderRadius: 16, border: "1px solid #e5e7eb", background: "#fff" }}>
+                <div style={{ fontWeight: 1200 }}>Sin datos de equipos para este mes</div>
                 <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>
-                  Score: <b style={{ color: "#111" }}>{fmt(winnerTeam?.team_score ?? 0)}</b>
+                  Ahora el backend calcula desde <b>team_members + monthly_rankings + worker_invoices</b>. Si sigue vacío, es que faltan miembros en <b>team_members</b> o el mes no tiene datos en rankings.
+                </div>
+              </div>
+            ) : (
+              <div style={{ marginTop: 12, overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #e5e7eb" }}>#</th>
+                      <th style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #e5e7eb" }}>Equipo</th>
+                      <th style={{ textAlign: "right", padding: 10, borderBottom: "1px solid #e5e7eb" }}>Score</th>
+                      <th style={{ textAlign: "right", padding: 10, borderBottom: "1px solid #e5e7eb" }}>Minutos</th>
+                      <th style={{ textAlign: "right", padding: 10, borderBottom: "1px solid #e5e7eb" }}>Captadas</th>
+                      <th style={{ textAlign: "right", padding: 10, borderBottom: "1px solid #e5e7eb" }}>€ Mes</th>
+                      <th style={{ textAlign: "right", padding: 10, borderBottom: "1px solid #e5e7eb" }}>Miembros</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {teams.map((t, idx) => (
+                      <tr key={t.team_id}>
+                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", fontWeight: 1200 }}>{medal(idx + 1) || idx + 1}</td>
+                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", fontWeight: 1200 }}>{t.team_name}</td>
+                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", textAlign: "right", fontWeight: 1200 }}>{t.team_score ?? 0}</td>
+                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", textAlign: "right" }}>{fmt(t.total_minutes)}</td>
+                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", textAlign: "right" }}>{fmt(t.total_captadas)}</td>
+                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", textAlign: "right" }}>{eur(t.total_eur_month)}</td>
+                        <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9", textAlign: "right" }}>{fmt(t.member_count)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                {data?.winnerTeam ? (
+                  <div style={{ marginTop: 12, padding: 12, borderRadius: 16, border: "1px solid #d1fae5", background: "#fff" }}>
+                    <div style={{ fontWeight: 1300 }}>🏅 Ganador del mes: {data.winnerTeam.team_name}</div>
+                    <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>
+                      Score: <b>{data.winnerTeam.team_score}</b> · Minutos: <b>{fmt(data.winnerTeam.total_minutes)}</b> · Captadas: <b>{fmt(data.winnerTeam.total_captadas)}</b>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+
+          {/* ✅ Equipo Yami + Maria con lista */}
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
+            {teamBox(data?.teamYami || null, "Equipo Yami")}
+            {teamBox(data?.teamMaria || null, "Equipo Maria")}
+          </div>
+
+          {/* KPIs */}
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+            <Card>
+              <CardTitle>Estado</CardTitle>
+              <CardValue>
+                <Badge tone={stateTone as any}>{stateText}</Badge>
+              </CardValue>
+              <CardHint>{sessionId ? <>Sesión: <b>{sessionId.slice(0, 8)}…</b></> : "—"}</CardHint>
+            </Card>
+
+            <Card>
+              <CardTitle>Tiempo logueado</CardTitle>
+              <CardValue>{formatHMS(elapsedSec)}</CardValue>
+              <CardHint>Se actualiza en tiempo real.</CardHint>
+            </Card>
+
+            <Card>
+              <CardTitle>Bono estimado</CardTitle>
+              <CardValue>{eur(bonusEstimate)}</CardValue>
+              <CardHint>Por ahora: bono de equipo (team_winner).</CardHint>
+            </Card>
+
+            <Card>
+              <CardTitle>Incidencias (mes)</CardTitle>
+              <CardValue>{incCount == null ? "—" : fmt(incCount)}</CardValue>
+              <CardHint>
+                Penalización: <b>{incPenalty == null ? "—" : eur(incPenalty)}</b>
+              </CardHint>
+            </Card>
+          </div>
+
+          {/* Control horario */}
+          <div style={{ ...shellCard, padding: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontWeight: 1400, fontSize: 18 }}>🕒 Control horario</div>
+                <div style={{ color: "#6b7280", fontWeight: 1000, marginTop: 4 }}>
+                  {pState === "offline" ? "Pulsa “Entrar” para iniciar tu turno." : "Gestiona tu estado durante el turno."}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <Badge tone={stateTone as any}>{stateText}</Badge>
+                <div style={{ fontWeight: 1400, fontSize: 16 }}>{formatHMS(elapsedSec)}</div>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
+              <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
+                <div style={{ fontWeight: 1200 }}>Sesión</div>
+                <div style={{ marginTop: 6, color: "#6b7280" }}>{sessionId ? <b>{sessionId}</b> : "—"}</div>
+                <div style={{ marginTop: 6, color: "#6b7280" }}>
+                  Inicio: <b>{startedAt ? new Date(startedAt).toLocaleString("es-ES") : "—"}</b>
                 </div>
               </div>
 
               <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-                <div style={{ fontWeight: 1200 }}>Bono ganador</div>
-                <div style={{ marginTop: 6, fontWeight: 1400, fontSize: 22 }}>{bonusTeamWinner}</div>
-                <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>Solo si tu equipo va #1.</div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+                <div style={{ fontWeight: 1200 }}>Acciones</div>
 
-      {/* KPIs */}
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
-        <Card>
-          <CardTitle>Estado</CardTitle>
-          <CardValue>
-            <Badge tone={stateTone as any}>{stateText}</Badge>
-          </CardValue>
-          <CardHint>{sessionId ? <>Sesión: <b>{sessionId.slice(0, 8)}…</b></> : "—"}</CardHint>
-        </Card>
+                <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+                  <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
+                    {bigActionLabel}
+                  </button>
 
-        <Card>
-          <CardTitle>Tiempo logueado</CardTitle>
-          <CardValue>{formatHMS(elapsedSec)}</CardValue>
-          <CardHint>Se actualiza en tiempo real.</CardHint>
-        </Card>
+                  <button onClick={loadPresence} style={btnGhost}>
+                    Refrescar
+                  </button>
 
-        <Card>
-          <CardTitle>Bono (backend)</CardTitle>
-          <CardValue>{eur(data?.myEarnings?.amount_bonus_eur ?? 0)}</CardValue>
-          <CardHint>Calculado por el endpoint.</CardHint>
-        </Card>
+                  <button onClick={() => presenceSet("pause")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
+                    Pausa
+                  </button>
 
-        <Card>
-          <CardTitle>Incidencias (mes)</CardTitle>
-          <CardValue>{incCount == null ? "—" : fmt(incCount)}</CardValue>
-          <CardHint>
-            Penalización: <b>{incPenalty == null ? "—" : eur(incPenalty)}</b>
-          </CardHint>
-        </Card>
-      </div>
+                  <button onClick={() => presenceSet("bathroom")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
+                    Baño
+                  </button>
 
-      {/* Control horario */}
-      <div style={{ ...shellCard, padding: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontWeight: 1400, fontSize: 18 }}>🕒 Control horario</div>
-            <div style={{ color: "#6b7280", fontWeight: 1000, marginTop: 4 }}>{pState === "offline" ? "Pulsa “Entrar” para iniciar tu turno." : "Gestiona tu estado durante el turno."}</div>
-          </div>
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <Badge tone={stateTone as any}>{stateText}</Badge>
-            <div style={{ fontWeight: 1400, fontSize: 16 }}>{formatHMS(elapsedSec)}</div>
-          </div>
-        </div>
-
-        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-            <div style={{ fontWeight: 1200 }}>Sesión</div>
-            <div style={{ marginTop: 6, color: "#6b7280" }}>{sessionId ? <b>{sessionId}</b> : "—"}</div>
-            <div style={{ marginTop: 6, color: "#6b7280" }}>
-              Inicio: <b>{startedAt ? new Date(startedAt).toLocaleString("es-ES") : "—"}</b>
-            </div>
-          </div>
-
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-            <div style={{ fontWeight: 1200 }}>Acciones</div>
-
-            <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-              <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
-                {bigActionLabel}
-              </button>
-
-              <button onClick={loadPresence} style={btnGhost}>
-                Refrescar
-              </button>
-
-              <button onClick={() => presenceSet("pause")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-                Pausa
-              </button>
-
-              <button onClick={() => presenceSet("bathroom")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-                Baño
-              </button>
-
-              <button onClick={() => presenceSet("online")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-                Volver
-              </button>
-
-              <button onClick={loadDashboard} style={btnGhost}>
-                Refrescar datos
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ✅ Checklist diario (VUELVE) */}
-      <div style={{ ...shellCard, padding: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
-          <div style={{ fontWeight: 1400, fontSize: 18 }}>✅ Checklist diario</div>
-          <div style={{ color: "#6b7280", fontWeight: 1000 }}>
-            Se reinicia a las <b>05:00</b> (hora España).
-          </div>
-        </div>
-
-        <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-          {CHECKLIST.map((it) => {
-            const on = !!checkState[it.id];
-            return (
-              <div
-                key={it.id}
-                style={{
-                  border: on ? "2px solid #111" : "1px solid #e5e7eb",
-                  borderRadius: 16,
-                  padding: 12,
-                  background: "#fff",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  alignItems: "flex-start",
-                }}
-              >
-                <div style={{ display: "grid", gap: 6 }}>
-                  <div style={{ fontWeight: 1200 }}>{it.label}</div>
-                  {it.hint ? <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>{it.hint}</div> : null}
+                  <button onClick={() => presenceSet("online")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
+                    Volver
+                  </button>
                 </div>
-
-                <button
-                  onClick={() => {
-                    const next = { ...checkState, [it.id]: !on };
-                    persistChecklist(next);
-                  }}
-                  style={on ? btnPrimary : btnGhost}
-                >
-                  {on ? "Hecho" : "Marcar"}
-                </button>
               </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Recomendaciones */}
-      <div style={{ ...shellCard, padding: 14 }}>
-        <div style={{ fontWeight: 1400, fontSize: 18 }}>💡 Recomendaciones</div>
-        <div style={{ marginTop: 8, color: "#6b7280", fontWeight: 1000 }}>Generadas automáticamente según rankings del mes.</div>
-
-        <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-          {recommendations.length === 0 ? (
-            <div style={{ padding: 12, borderRadius: 16, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", fontWeight: 1000 }}>
-              Sin suficientes datos para recomendaciones.
             </div>
-          ) : (
-            recommendations.map((r, idx) => (
-              <div key={idx} style={{ padding: 12, borderRadius: 16, border: r.tone === "warn" ? "1px solid #fed7aa" : "1px solid #d1fae5", background: "#fff" }}>
-                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  <Badge tone={r.tone as any}>{r.tone === "warn" ? "OJO" : "OK"}</Badge>
-                  <div style={{ fontWeight: 1200 }}>{r.title}</div>
-                </div>
-                <div style={{ marginTop: 8, color: "#111", fontWeight: 1000 }}>{r.body}</div>
+          </div>
+
+          {/* Checklist diario (NO TOCADO) */}
+          <div style={{ ...shellCard, padding: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+              <div style={{ fontWeight: 1400, fontSize: 18 }}>✅ Checklist diario</div>
+              <div style={{ color: "#6b7280", fontWeight: 1000 }}>
+                Se reinicia a las <b>05:00</b> (hora España).
               </div>
-            ))
-          )}
-        </div>
-      </div>
+            </div>
+
+            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+              {CHECKLIST.map((it) => {
+                const on = !!checkState[it.id];
+                return (
+                  <div
+                    key={it.id}
+                    style={{
+                      border: on ? "2px solid #111" : "1px solid #e5e7eb",
+                      borderRadius: 16,
+                      padding: 12,
+                      background: "#fff",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      alignItems: "flex-start",
+                    }}
+                  >
+                    <div style={{ display: "grid", gap: 6 }}>
+                      <div style={{ fontWeight: 1200 }}>{it.label}</div>
+                      {it.hint ? <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>{it.hint}</div> : null}
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        const next = { ...checkState, [it.id]: !on };
+                        persistChecklist(next);
+                      }}
+                      style={on ? btnPrimary : btnGhost}
+                    >
+                      {on ? "Hecho" : "Marcar"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Recomendaciones */}
+          <div style={{ ...shellCard, padding: 14 }}>
+            <div style={{ fontWeight: 1400, fontSize: 18 }}>💡 Recomendaciones</div>
+            <div style={{ marginTop: 8, color: "#6b7280", fontWeight: 1000 }}>Generadas automáticamente según rankings del mes.</div>
+
+            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+              {recommendations.length === 0 ? (
+                <div style={{ padding: 12, borderRadius: 16, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", fontWeight: 1000 }}>
+                  Sin suficientes datos para recomendaciones.
+                </div>
+              ) : (
+                recommendations.map((r, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      padding: 12,
+                      borderRadius: 16,
+                      border: r.tone === "warn" ? "1px solid #fed7aa" : "1px solid #d1fae5",
+                      background: "#fff",
+                    }}
+                  >
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <Badge tone={r.tone as any}>{r.tone === "warn" ? "OJO" : "OK"}</Badge>
+                      <div style={{ fontWeight: 1200 }}>{r.title}</div>
+                    </div>
+                    <div style={{ marginTop: 8, color: "#111", fontWeight: 1000 }}>{r.body}</div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          {/* Incidencias: si ya lo tienes conectado en otro endpoint, lo conectamos después */}
+          <div style={{ ...shellCard, padding: 14 }}>
+            <div style={{ fontWeight: 1400, fontSize: 18 }}>🧾 Incidencias</div>
+            <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>Este tab lo dejamos como lo tenías. (Si quieres, conectamos aquí el endpoint real.)</div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
