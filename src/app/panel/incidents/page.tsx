@@ -58,13 +58,7 @@ export default function PanelIncidentsPage() {
       const m = monthOverride ?? month ?? null;
       const qs = m ? `?month_date=${encodeURIComponent(m)}` : "";
 
-      const r = await fetch(`/api/incidents/me${qs}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
-      const j = await r.json().catch(() => null);
-
-      if (!j?.ok) {
-        setErr(j?.error || "Error cargando incidencias");
-        return;
-      }
+      const r = await fetch(`/api/incidents/me${qs}
 
       setMonths(j.months || []);
       setMonth(j.month_date || null);
