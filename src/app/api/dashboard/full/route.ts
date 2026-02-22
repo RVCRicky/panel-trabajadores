@@ -1,811 +1,537 @@
-// src/app/panel/central/page.tsx
-"use client";
+// src/app/api/dashboard/full/route.ts
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabaseClient";
-import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
-import { Badge } from "@/components/ui/Badge";
+export const runtime = "nodejs";
 
-type PresenceState = "offline" | "online" | "pause" | "bathroom";
+function getEnv(name: string) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing env var: ${name}`);
+  return v;
+}
 
-type DashboardResp = {
-  ok: boolean;
-  error?: string;
+function bearer(req: Request) {
+  const h = req.headers.get("authorization") || "";
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  return m?.[1] || null;
+}
 
-  month_date: string | null;
-  months?: string[];
-  user: { isAdmin: boolean; worker: any | null };
+function normRole(r: any) {
+  return String(r || "").trim().toLowerCase();
+}
 
-  rankings: {
-    minutes?: any[];
-    repite_pct?: any[];
-    cliente_pct?: any[];
-    captadas?: any[];
-    eur_total?: any[];
-    eur_bonus?: any[];
-  };
+function toNum(n: any) {
+  const x = Number(n);
+  return Number.isFinite(x) ? x : 0;
+}
 
-  myEarnings: null | {
-    minutes_total: number;
-    captadas: number;
-    amount_base_eur: number;
-    amount_bonus_eur: number;
-    amount_total_eur: number;
-  };
+function safeStr(x: any) {
+  return String(x ?? "").trim();
+}
 
-  myIncidentsMonth?: { count: number; penalty_eur: number; grave: boolean };
+function uniq(arr: any[]) {
+  return Array.from(new Set(arr));
+}
 
-  teamsRanking?: any[];
-  myTeamRank?: number | null;
-  winnerTeam?: any;
-  bonusRules?: any[];
+function calcTeamScore(clientePct: number, repitePct: number) {
+  const c = toNum(clientePct);
+  const r = toNum(repitePct);
+  return Number((c + r).toFixed(2));
+}
 
-  // si tu /api/dashboard/full ya lo devuelve (por el layout), perfecto
-  myTeam?: { team_id: string; team_name: string } | null;
-
-  // opcional extra (si lo tienes)
-  teamYami?: any;
-  teamMaria?: any;
+type TeamMember = {
+  worker_id: string;
+  name: string;
+  role: string;
 };
 
-type PresenceMeResp = { ok: boolean; state: PresenceState; session_id: string | null; started_at: string | null; error?: string };
+type TeamRow = {
+  team_id: string;
+  team_name: string;
+  total_eur_month: number;
+  total_minutes: number;
+  total_captadas: number;
+  member_count: number;
+  team_cliente_pct?: number;
+  team_repite_pct?: number;
+  team_score?: number;
+  members?: TeamMember[];
+};
 
-function useIsMobile(bp = 900) {
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    const mq = window.matchMedia(`(max-width: ${bp}px)`);
-    const onChange = () => setIsMobile(mq.matches);
-    onChange();
-    mq.addEventListener?.("change", onChange);
-    return () => mq.removeEventListener?.("change", onChange);
-  }, [bp]);
-  return isMobile;
-}
-
-function fmt(n: any) {
-  return (Number(n) || 0).toLocaleString("es-ES");
-}
-function eur(n: any) {
-  return (Number(n) || 0).toLocaleString("es-ES", { style: "currency", currency: "EUR" });
-}
-function formatHMS(sec: number) {
-  const s = Math.max(0, Math.floor(sec));
-  const hh = Math.floor(s / 3600);
-  const mm = Math.floor((s % 3600) / 60);
-  const ss = s % 60;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(hh)}:${pad(mm)}:${pad(ss)}`;
-}
-function formatMonthLabel(isoMonthDate: string) {
-  const [y, m] = String(isoMonthDate || "").split("-");
-  const monthNum = Number(m);
-  const yearNum = Number(y);
-  if (!monthNum || !yearNum) return isoMonthDate;
-  const date = new Date(yearNum, monthNum - 1, 1);
-  return date.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
-}
-
-// ✅ Reset diario a las 05:00 (Europe/Madrid) en localStorage
-function dailyKeyAt5(prefix: string) {
-  const now = new Date();
-  const d = new Date(now);
-  const h = d.getHours();
-  if (h < 5) d.setDate(d.getDate() - 1);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${prefix}:${y}-${m}-${day}`;
-}
-
-type ChecklistItem = { id: string; label: string; hint?: string };
-
-const CHECKLIST: ChecklistItem[] = [
-  { id: "login", label: "Loguearse y abrir panel", hint: "Entrar (presencia) y comprobar que todo carga." },
-  { id: "greet", label: "Saludar a las tarotistas", hint: "Mensaje breve de inicio de turno." },
-  { id: "check_logins", label: "Comprobar logueos", hint: "Ver quién está online / quién falta." },
-  { id: "ask_clients", label: "Pedir lista de clientes", hint: "Asegurar captación/colas preparadas." },
-  { id: "check_incidents", label: "Comprobar incidencias", hint: "Revisar ausencias/retrasos y registrar." },
-];
-
-type Recommendation = { tone: "ok" | "warn"; title: string; body: string };
-
-// ✅ helper: buscar bono “team winner” dentro de bonus_rules si existe (si no, fallback 40€)
-function getTeamWinnerBonus(bonusRules: any[] | undefined | null) {
-  const fallback = 40;
-
-  const rules = Array.isArray(bonusRules) ? bonusRules : [];
-  if (!rules.length) return fallback;
-
-  // intentamos encontrar una regla activa para ganador de equipo
-  // (no asumimos esquema exacto; buscamos por texto)
-  const pick = rules
-    .filter((r) => r && (r.is_active === true || r.is_active == null))
-    .map((r) => {
-      const rt = String(r.ranking_type || "").toLowerCase();
-      const role = String(r.role || "").toLowerCase();
-      const pos = Number(r.position ?? 0);
-      const amount = Number(r.amount_eur ?? r.amount ?? 0);
-      const created = String(r.created_at || "");
-      return { rt, role, pos, amount, created };
-    })
-    .filter((r) => Number.isFinite(r.amount) && r.amount > 0)
-    .filter((r) => r.rt.includes("team") && (r.rt.includes("winner") || r.rt.includes("ganador") || r.rt.includes("equipo")))
-    // si vienen con position, queremos el #1
-    .sort((a, b) => {
-      const pa = a.pos || 999;
-      const pb = b.pos || 999;
-      if (pa !== pb) return pa - pb;
-      return String(b.created).localeCompare(String(a.created));
-    })[0];
-
-  return pick?.amount ? pick.amount : fallback;
-}
-
-export default function CentralPanelPage() {
-  const router = useRouter();
-  const isMobile = useIsMobile();
-
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const [data, setData] = useState<DashboardResp | null>(null);
-  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
-
-  const [pState, setPState] = useState<PresenceState>("offline");
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [startedAt, setStartedAt] = useState<string | null>(null);
-  const [elapsedSec, setElapsedSec] = useState(0);
-  const tickRef = useRef<any>(null);
-
-  const [checkState, setCheckState] = useState<Record<string, boolean>>({});
-  const checklistKey = useMemo(() => dailyKeyAt5("tc_central_checklist"), []);
-
-  const [incName, setIncName] = useState("");
-  const [incKind, setIncKind] = useState<"late" | "absence" | "other">("late");
-  const [incNotes, setIncNotes] = useState("");
-  const [incStatus, setIncStatus] = useState<null | "ok" | "err">(null);
-  const [incMsg, setIncMsg] = useState<string>("");
-
-  const isLogged = pState !== "offline";
-
-  async function getToken() {
-    const { data } = await supabase.auth.getSession();
-    return data.session?.access_token || null;
-  }
-
-  async function logout() {
-    await supabase.auth.signOut();
-    router.replace("/login");
-  }
-
-  async function loadDashboard(monthOverride?: string | null) {
-    setErr(null);
-    setLoading(true);
-    try {
-      const token = await getToken();
-      if (!token) return router.replace("/login");
-
-      const month = monthOverride ?? selectedMonth ?? null;
-      const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
-
-      const res = await fetch(`/api/dashboard/full${qs}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-      const j = (await res.json().catch(() => null)) as DashboardResp | null;
-      if (!j?.ok) {
-        setErr(j?.error || "Error dashboard");
-        return;
+function extractMemberIds(row: any): { worker_id?: string; user_id?: string } {
+  const keys = Object.keys(row || {});
+  const pick = (cands: string[]) => {
+    for (const k of cands) {
+      if (k in (row || {})) {
+        const v = safeStr((row as any)[k]);
+        if (v) return v;
       }
-
-      const role = String(j?.user?.worker?.role || "").toLowerCase();
-      if (role !== "central") {
-        router.replace("/panel");
-        return;
-      }
-
-      setData(j);
-      if (j.month_date && j.month_date !== selectedMonth) setSelectedMonth(j.month_date);
-    } catch (e: any) {
-      setErr(e?.message || "Error dashboard");
-    } finally {
-      setLoading(false);
     }
-  }
+    for (const k of keys) {
+      const lk = k.toLowerCase();
+      if (cands.some((c) => lk === c.toLowerCase())) {
+        const v = safeStr((row as any)[k]);
+        if (v) return v;
+      }
+    }
+    return "";
+  };
 
-  async function loadPresence() {
-    try {
-      const token = await getToken();
-      if (!token) return router.replace("/login");
+  // ✅ AQUÍ ESTÁ LA CLAVE:
+  // tu tabla team_members usa "tarotista_worker_id"
+  const wid = pick([
+    "worker_id",
+    "tarotista_worker_id",   // ✅ TU COLUMNA REAL
+    "tarotist_worker_id",
+    "member_worker_id",
+    "workerid",
+    "worker",
+    "member_id",
+  ]);
 
-      const res = await fetch("/api/presence/me", {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
+  const uid = pick(["user_id", "member_user_id", "userid", "user", "auth_user_id"]);
+
+  const out: any = {};
+  if (wid) out.worker_id = wid;
+  if (uid) out.user_id = uid;
+  return out;
+}
+
+function includesLoose(hay: string, needle: string) {
+  return safeStr(hay).toLowerCase().includes(safeStr(needle).toLowerCase());
+}
+
+export async function GET(req: Request) {
+  try {
+    const token = bearer(req);
+    if (!token) return NextResponse.json({ ok: false, error: "NO_TOKEN" }, { status: 401 });
+
+    const url = getEnv("NEXT_PUBLIC_SUPABASE_URL");
+    const service = getEnv("SUPABASE_SERVICE_ROLE_KEY");
+    const db = createClient(url, service, { auth: { persistSession: false } });
+
+    // auth user
+    const { data: u, error: eu } = await db.auth.getUser(token);
+    if (eu || !u?.user) return NextResponse.json({ ok: false, error: "BAD_TOKEN" }, { status: 401 });
+
+    const uid = u.user.id;
+
+    // worker
+    const { data: me } = await db
+      .from("workers")
+      .select("id, user_id, role, display_name, is_active")
+      .eq("user_id", uid)
+      .maybeSingle();
+
+    if (!me) return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
+    if (!(me as any).is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
+
+    const myWorkerId = String((me as any).id);
+    const myRole = normRole((me as any).role);
+
+    const urlObj = new URL(req.url);
+    const monthParam = urlObj.searchParams.get("month_date");
+
+    // meses disponibles
+    const { data: invoiceRows } = await db
+      .from("worker_invoices")
+      .select("month_date")
+      .order("month_date", { ascending: false })
+      .limit(36);
+
+    const months = uniq((invoiceRows || []).map((r: any) => r.month_date).filter(Boolean)) as string[];
+    const month_date = monthParam || months[0] || null;
+
+    // ✅ retrocompat: monthDate (camelCase)
+    const monthDate = month_date;
+
+    if (!month_date) {
+      return NextResponse.json({
+        ok: true,
+        month_date: null,
+        monthDate: null,
+        months: [],
+        user: { isAdmin: myRole === "admin", worker: me },
+        rankings: { minutes: [], repite_pct: [], cliente_pct: [], captadas: [], eur_total: [], eur_bonus: [] },
+        myEarnings: null,
+        myIncidentsMonth: { count: 0, penalty_eur: 0, grave: false },
+        teamsRanking: [],
+        myTeamRank: null,
+        myTeam: null,
+        winnerTeam: null,
+        bonusRules: [],
+        teamYami: null,
+        teamMaria: null,
       });
-      const j = (await res.json().catch(() => null)) as PresenceMeResp | null;
-      if (!j?.ok) return;
+    }
 
-      setPState(j.state || "offline");
-      setSessionId(j.session_id || null);
-      setStartedAt(j.started_at || null);
+    // ===============================
+    // 1) RANKINGS
+    // ===============================
+    const { data: mr, error: emr } = await db
+      .from("monthly_rankings")
+      .select("worker_id, minutes_total, captadas_total, cliente_pct, repite_pct")
+      .eq("month_date", month_date)
+      .limit(10000);
+
+    if (emr) return NextResponse.json({ ok: false, error: `monthly_rankings: ${emr.message}` }, { status: 500 });
+
+    const workerIds = uniq((mr || []).map((x: any) => String(x.worker_id)).filter(Boolean)) as string[];
+
+    const workersMap = new Map<string, { display_name: string; role: string }>();
+    if (workerIds.length) {
+      const { data: ws } = await db.from("workers").select("id, display_name, role").in("id", workerIds).limit(10000);
+      for (const w of ws || []) {
+        workersMap.set(String((w as any).id), {
+          display_name: (w as any).display_name || "—",
+          role: (w as any).role || "",
+        });
+      }
+    }
+
+    const rows = (mr || [])
+      .map((x: any) => {
+        const wid = String(x.worker_id || "");
+        const w = workersMap.get(wid);
+        const minutes_total = toNum(x.minutes_total);
+        const captadas_total = toNum(x.captadas_total);
+
+        return {
+          worker_id: wid,
+          name: w?.display_name || wid.slice(0, 8),
+          role: w?.role || "",
+          minutes: minutes_total,
+          captadas: captadas_total,
+          cliente_pct: toNum(x.cliente_pct),
+          repite_pct: toNum(x.repite_pct),
+
+          minutes_total,
+          captadas_total,
+        };
+      })
+      .filter((x: any) => x.worker_id);
+
+    const tarotistas = rows.filter((x: any) => normRole(x.role) === "tarotista");
+
+    const rankMinutes = [...tarotistas].sort((a: any, b: any) => b.minutes - a.minutes);
+    const rankCaptadas = [...tarotistas].sort((a: any, b: any) => b.captadas - a.captadas);
+    const rankCliente = [...tarotistas].sort((a: any, b: any) => b.cliente_pct - a.cliente_pct);
+    const rankRepite = [...tarotistas].sort((a: any, b: any) => b.repite_pct - a.repite_pct);
+
+    // ===============================
+    // 2) FACTURAS (€)
+    // ===============================
+    const { data: invoices } = await db
+      .from("worker_invoices")
+      .select("worker_id, total_eur, bonuses_eur")
+      .eq("month_date", month_date);
+
+    const invoiceMap = new Map<string, any>();
+    for (const inv of invoices || []) invoiceMap.set(String((inv as any).worker_id), inv);
+
+    const rankEurTotal = [...tarotistas]
+      .map((t: any) => ({ worker_id: t.worker_id, name: t.name, eur_total: toNum(invoiceMap.get(t.worker_id)?.total_eur) }))
+      .sort((a: any, b: any) => b.eur_total - a.eur_total);
+
+    const rankEurBonus = [...tarotistas]
+      .map((t: any) => ({ worker_id: t.worker_id, name: t.name, eur_bonus: toNum(invoiceMap.get(t.worker_id)?.bonuses_eur) }))
+      .sort((a: any, b: any) => b.eur_bonus - a.eur_bonus);
+
+    // ===============================
+    // 3) MIS GANANCIAS
+    // ===============================
+    const myInvoice = invoiceMap.get(myWorkerId);
+    const myRankRow = rows.find((r: any) => r.worker_id === myWorkerId);
+
+    const myEarnings =
+      myRole === "tarotista"
+        ? {
+            minutes_total: toNum(myRankRow?.minutes_total),
+            captadas: toNum(myRankRow?.captadas_total),
+            amount_base_eur: 0,
+            amount_bonus_eur: toNum(myInvoice?.bonuses_eur),
+            amount_total_eur: toNum(myInvoice?.total_eur),
+          }
+        : { minutes_total: 0, captadas: 0, amount_base_eur: 0, amount_bonus_eur: 0, amount_total_eur: 0 };
+
+    // ===============================
+    // 4) INCIDENCIAS
+    // ===============================
+    let myIncidentsMonth = { count: 0, penalty_eur: 0, grave: false };
+    try {
+      const { data: incs } = await db
+        .from("shift_incidents")
+        .select("id, kind, status, penalty_eur")
+        .eq("worker_id", myWorkerId)
+        .eq("month_date", month_date)
+        .eq("status", "unjustified")
+        .limit(5000);
+
+      if (Array.isArray(incs)) {
+        const count = incs.length;
+        const penalty = incs.reduce((sum, x: any) => sum + toNum(x?.penalty_eur), 0);
+        const hasAbsence = incs.some((x: any) => String(x?.kind || "").toLowerCase() === "absence");
+        myIncidentsMonth = { count, penalty_eur: Number(penalty.toFixed(2)), grave: count >= 5 || hasAbsence };
+      }
     } catch {}
-  }
 
-  async function presenceLogin() {
-    setErr(null);
+    // ===============================
+    // 5) BONUS RULES
+    // ===============================
+    let bonusRules: any[] = [];
     try {
-      const token = await getToken();
-      if (!token) return router.replace("/login");
-      if (isLogged) return;
-
-      const res = await fetch("/api/presence/login", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-      const j = await res.json().catch(() => null);
-      if (!j?.ok) return setErr(j?.error || "Error login presencia");
-      await loadPresence();
-    } catch (e: any) {
-      setErr(e?.message || "Error login presencia");
-    }
-  }
-
-  async function presenceSet(state: PresenceState) {
-    setErr(null);
-    try {
-      const token = await getToken();
-      if (!token) return router.replace("/login");
-      if (!isLogged) return;
-
-      const res = await fetch("/api/presence/state", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ state }),
-        cache: "no-store",
-      });
-      const j = await res.json().catch(() => null);
-      if (!j?.ok) return setErr(j?.error || "Error cambio estado");
-      await loadPresence();
-    } catch (e: any) {
-      setErr(e?.message || "Error cambio estado");
-    }
-  }
-
-  async function presenceLogout() {
-    setErr(null);
-    try {
-      const token = await getToken();
-      if (!token) return router.replace("/login");
-      if (!isLogged) return;
-
-      const res = await fetch("/api/presence/logout", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-      const j = await res.json().catch(() => null);
-      if (!j?.ok) return setErr(j?.error || "Error logout presencia");
-      await loadPresence();
-    } catch (e: any) {
-      setErr(e?.message || "Error logout presencia");
-    }
-  }
-
-  useEffect(() => {
-    loadDashboard(null);
-    loadPresence();
-
-    try {
-      const raw = localStorage.getItem(checklistKey);
-      if (raw) setCheckState(JSON.parse(raw));
-      else setCheckState({});
+      const { data: br } = await db
+        .from("bonus_rules")
+        .select("ranking_type, position, role, amount_eur, created_at, is_active")
+        .order("created_at", { ascending: false })
+        .limit(5000);
+      if (Array.isArray(br)) bonusRules = br;
     } catch {
-      setCheckState({});
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!selectedMonth) return;
-    if (!data) return;
-    if (data.month_date === selectedMonth) return;
-    loadDashboard(selectedMonth);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedMonth]);
-
-  useEffect(() => {
-    if (tickRef.current) clearInterval(tickRef.current);
-
-    if (!startedAt || pState === "offline") {
-      setElapsedSec(0);
-      return;
+      bonusRules = [];
     }
 
-    const startMs = new Date(startedAt).getTime();
-    const update = () => setElapsedSec(Math.max(0, Math.floor((Date.now() - startMs) / 1000)));
-    update();
+    // ===============================
+    // 6) EQUIPOS (fallback REAL)
+    // ===============================
+    let teamsRanking: TeamRow[] = [];
+    let myTeamRank: number | null = null;
+    let winnerTeam: any = null;
+    let myTeam: { team_id: string; team_name: string } | null = null;
+    let teamYami: TeamRow | null = null;
+    let teamMaria: TeamRow | null = null;
 
-    tickRef.current = setInterval(update, 1000);
-    return () => tickRef.current && clearInterval(tickRef.current);
-  }, [startedAt, pState]);
-
-  function persistChecklist(next: Record<string, boolean>) {
-    setCheckState(next);
+    // a) mapa teams id -> name
+    let teamsRows: any[] = [];
     try {
-      localStorage.setItem(checklistKey, JSON.stringify(next));
+      const { data, error } = await (db as any).from("teams").select("*").limit(5000);
+      if (!error && Array.isArray(data)) teamsRows = data;
+    } catch {
+      teamsRows = [];
+    }
+
+    const teamNameMap = new Map<string, string>();
+    for (const t of teamsRows || []) {
+      const id = safeStr(t?.id || t?.team_id || t?.uuid);
+      if (!id) continue;
+      const name = safeStr(t?.team_name || t?.name || t?.display_name || t?.title) || `Equipo ${id.slice(0, 6)}`;
+      teamNameMap.set(id, name);
+    }
+
+    // b) miembros por equipo desde team_members
+    const teamMembersMap = new Map<string, TeamMember[]>();
+    try {
+      const { data: memAll, error } = await (db as any).from("team_members").select("*").limit(20000);
+      if (!error && Array.isArray(memAll) && memAll.length > 0) {
+        for (const r of memAll) {
+          const tid = safeStr(r?.team_id || r?.team || r?.id_team);
+          if (!tid) continue;
+
+          const ids = extractMemberIds(r);
+          const wid = ids.worker_id ? String(ids.worker_id) : "";
+          if (!wid) continue;
+
+          const w = workersMap.get(wid);
+          const name = w?.display_name || wid.slice(0, 8);
+          const role = w?.role || "";
+
+          const arr = teamMembersMap.get(tid) || [];
+          arr.push({ worker_id: wid, name, role });
+          teamMembersMap.set(tid, arr);
+        }
+      }
     } catch {}
-  }
 
-  const me = data?.user?.worker || null;
-  const months = data?.months || [];
-  const monthLabel = selectedMonth ? formatMonthLabel(selectedMonth) : data?.month_date ? formatMonthLabel(data.month_date) : "—";
-
-  const stateTone = pState === "online" ? "ok" : pState === "pause" || pState === "bathroom" ? "warn" : "neutral";
-  const stateText = pState === "online" ? "ONLINE" : pState === "pause" ? "PAUSA" : pState === "bathroom" ? "BAÑO" : "OFFLINE";
-
-  const btnBase: React.CSSProperties = {
-    padding: 12,
-    borderRadius: 14,
-    border: "1px solid #e5e7eb",
-    fontWeight: 1100,
-    cursor: "pointer",
-    width: isMobile ? "100%" : "auto",
-    background: "#fff",
-    color: "#111",
-  };
-  const btnPrimary: React.CSSProperties = { ...btnBase, background: "#111", border: "1px solid #111", color: "#fff" };
-  const btnGhost: React.CSSProperties = { ...btnBase };
-
-  const shellCard: React.CSSProperties = {
-    borderRadius: 18,
-    border: "1px solid #e5e7eb",
-    background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
-    boxShadow: "0 12px 45px rgba(0,0,0,0.08)",
-  };
-
-  // ✅ BONO EN VIVO: si el equipo del central va #1 ahora mismo
-  const bonusEstimate = useMemo(() => {
-    const bonus = getTeamWinnerBonus(data?.bonusRules);
-
-    const teams = Array.isArray(data?.teamsRanking) ? data!.teamsRanking! : [];
-    const winnerId = String(data?.winnerTeam?.team_id || "");
-
-    if (!winnerId) return 0;
-
-    // 1) si el backend devuelve myTeam (a veces no para central), úsalo
-    let myTeamId = String(data?.myTeam?.team_id || "");
-
-    // 2) si no hay myTeamId, lo deducimos por nombre del central:
-    //    “Yami” => “Equipo Yami”
-    if (!myTeamId && me?.display_name && teams.length) {
-      const meName = String(me.display_name || "").toLowerCase();
-      const found = teams.find((t: any) => String(t?.team_name || "").toLowerCase().includes(meName));
-      if (found?.team_id) myTeamId = String(found.team_id);
+    // c) mi team por membresía
+    for (const [tid, members] of teamMembersMap.entries()) {
+      if (members.some((m) => String(m.worker_id) === String(myWorkerId))) {
+        myTeam = { team_id: tid, team_name: teamNameMap.get(tid) || `Equipo ${tid.slice(0, 6)}` };
+        break;
+      }
     }
 
-    // si no podemos deducir equipo, no inventamos
-    if (!myTeamId) return 0;
-
-    return myTeamId === winnerId ? bonus : 0;
-  }, [data?.bonusRules, data?.winnerTeam, data?.teamsRanking, data?.myTeam, me?.display_name]);
-
-  const incCount = data?.myIncidentsMonth?.count ?? null;
-  const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
-
-  const bigActionLabel = pState === "offline" ? "Entrar" : "Salir";
-  const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
-
-  async function submitIncident() {
-    setIncStatus(null);
-    setIncMsg("");
+    // d) intentamos tabla team_monthly_results (si existe y tiene datos)
+    let tmrRows: any[] = [];
     try {
-      const token = await getToken();
-      if (!token) return router.replace("/login");
+      const { data, error } = await (db as any).from("team_monthly_results").select("*").eq("month_date", month_date).limit(2000);
+      if (!error && Array.isArray(data)) tmrRows = data;
+    } catch {
+      tmrRows = [];
+    }
 
-      const res = await fetch("/api/incidents/create", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          target_name: incName.trim(),
-          kind: incKind,
-          notes: incNotes.trim(),
-        }),
-      });
+    // e) fallback real desde monthly_rankings + invoices
+    const buildTeamsFromRankings = (): TeamRow[] => {
+      const mrMap = new Map<string, any>();
+      for (const r of rows) mrMap.set(String(r.worker_id), r);
 
-      const j = await res.json().catch(() => null);
+      const out: TeamRow[] = [];
 
-      if (!res.ok || !j?.ok) {
-        setIncStatus("err");
-        setIncMsg(j?.error || `No se pudo crear (status ${res.status})`);
-        return;
+      for (const [team_id, members] of teamMembersMap.entries()) {
+        const team_name = teamNameMap.get(team_id) || `Equipo ${team_id.slice(0, 6)}`;
+
+        let total_minutes = 0;
+        let total_captadas = 0;
+        let total_eur_month = 0;
+
+        let wCli = 0;
+        let wRep = 0;
+        let wSum = 0;
+
+        let avgCliSum = 0;
+        let avgRepSum = 0;
+        let avgN = 0;
+
+        for (const m of members) {
+          const r = mrMap.get(String(m.worker_id));
+          const minutes = toNum(r?.minutes_total ?? r?.minutes);
+          const captadas = toNum(r?.captadas_total ?? r?.captadas);
+
+          total_minutes += minutes;
+          total_captadas += captadas;
+          total_eur_month += toNum(invoiceMap.get(String(m.worker_id))?.total_eur);
+
+          const cli = toNum(r?.cliente_pct);
+          const rep = toNum(r?.repite_pct);
+
+          if (minutes > 0) {
+            wCli += cli * minutes;
+            wRep += rep * minutes;
+            wSum += minutes;
+          }
+
+          avgCliSum += cli;
+          avgRepSum += rep;
+          avgN += 1;
+        }
+
+        const team_cliente_pct = wSum > 0 ? Number((wCli / wSum).toFixed(2)) : avgN > 0 ? Number((avgCliSum / avgN).toFixed(2)) : 0;
+        const team_repite_pct = wSum > 0 ? Number((wRep / wSum).toFixed(2)) : avgN > 0 ? Number((avgRepSum / avgN).toFixed(2)) : 0;
+        const team_score = calcTeamScore(team_cliente_pct, team_repite_pct);
+
+        out.push({
+          team_id,
+          team_name,
+          total_eur_month: Number(total_eur_month.toFixed(2)),
+          total_minutes: Number(total_minutes.toFixed(2)),
+          total_captadas: Number(total_captadas.toFixed(2)),
+          member_count: members.length,
+          team_cliente_pct,
+          team_repite_pct,
+          team_score,
+          members,
+        });
       }
 
-      setIncStatus("ok");
-      setIncMsg("Incidencia registrada ✅");
-      setIncName("");
-      setIncNotes("");
+      out.sort((a, b) => toNum(b.team_score) - toNum(a.team_score));
+      return out;
+    };
 
-      await loadDashboard(selectedMonth);
-    } catch (e: any) {
-      setIncStatus("err");
-      setIncMsg(e?.message || "Error creando incidencia");
+    let normalized: TeamRow[] = [];
+
+    if (Array.isArray(tmrRows) && tmrRows.length > 0) {
+      normalized = (tmrRows || [])
+        .map((r: any) => {
+          const team_id = safeStr(r?.team_id || r?.team || r?.id);
+          if (!team_id) return null;
+
+          const team_name = teamNameMap.get(team_id) || `Equipo ${team_id.slice(0, 6)}`;
+
+          const total_minutes = toNum(r?.total_minutes ?? r?.minutes_total ?? r?.minutes);
+          const total_captadas = toNum(r?.total_captadas ?? r?.captadas_total ?? r?.captadas);
+          const total_eur_month = toNum(r?.total_eur_month ?? r?.eur_total ?? r?.total_eur);
+
+          const team_cliente_pct = toNum(r?.team_cliente_pct ?? r?.cliente_pct ?? r?.clientes_pct);
+          const team_repite_pct = toNum(r?.team_repite_pct ?? r?.repite_pct ?? r?.repite_percent);
+
+          const team_score = calcTeamScore(team_cliente_pct, team_repite_pct);
+          const members = teamMembersMap.get(team_id) || [];
+
+          return {
+            team_id,
+            team_name,
+            total_eur_month,
+            total_minutes,
+            total_captadas,
+            member_count: members.length,
+            team_cliente_pct,
+            team_repite_pct,
+            team_score,
+            members,
+          } as TeamRow;
+        })
+        .filter(Boolean) as TeamRow[];
+      normalized.sort((a, b) => toNum(b.team_score) - toNum(a.team_score));
+    } else {
+      normalized = buildTeamsFromRankings();
     }
+
+    if (myRole === "central") {
+      teamsRanking = normalized.slice(0, 10);
+
+      if (myTeam?.team_id) {
+        const idx = teamsRanking.findIndex((t) => t.team_id === myTeam!.team_id);
+        myTeamRank = idx === -1 ? null : idx + 1;
+      }
+
+      const win = teamsRanking[0] || null;
+      winnerTeam = win
+        ? {
+            team_id: win.team_id,
+            team_name: win.team_name,
+            total_minutes: win.total_minutes,
+            total_captadas: win.total_captadas,
+            total_eur_month: win.total_eur_month,
+            team_score: win.team_score,
+          }
+        : null;
+    }
+
+    // teamYami / teamMaria
+    const findTeamByName = (needle: string) => {
+      for (const [tid, name] of teamNameMap.entries()) {
+        if (includesLoose(name, needle)) return tid;
+      }
+      return null;
+    };
+
+    const yamiId = findTeamByName("yami");
+    const mariaId = findTeamByName("maria");
+
+    const normalizedMap = new Map<string, TeamRow>();
+    for (const t of normalized) normalizedMap.set(t.team_id, t);
+
+    if (yamiId && normalizedMap.get(yamiId)) teamYami = normalizedMap.get(yamiId)!;
+    if (mariaId && normalizedMap.get(mariaId)) teamMaria = normalizedMap.get(mariaId)!;
+
+    return NextResponse.json({
+      ok: true,
+      month_date,
+      monthDate,
+
+      months,
+      user: { isAdmin: myRole === "admin", worker: me },
+
+      rankings: {
+        minutes: rankMinutes,
+        repite_pct: rankRepite,
+        cliente_pct: rankCliente,
+        captadas: rankCaptadas,
+        eur_total: rankEurTotal,
+        eur_bonus: rankEurBonus,
+      },
+
+      myEarnings,
+      myIncidentsMonth,
+
+      teamsRanking,
+      myTeamRank,
+      myTeam,
+      winnerTeam,
+      bonusRules,
+
+      teamYami,
+      teamMaria,
+    });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
   }
-
-  const tabBar: React.CSSProperties = {
-    display: "flex",
-    gap: 10,
-    flexWrap: "wrap",
-    alignItems: "center",
-  };
-
-  const tabBtn = (active: boolean): React.CSSProperties => ({
-    padding: "10px 12px",
-    borderRadius: 999,
-    border: active ? "1px solid #111" : "1px solid #e5e7eb",
-    background: active ? "#111" : "#fff",
-    color: active ? "#fff" : "#111",
-    fontWeight: 1100,
-    cursor: "pointer",
-  });
-
-  const [tab, setTab] = useState<"dashboard" | "incidents">("dashboard");
-
-  // Recomendaciones “inteligentes”
-  const recommendations: Recommendation[] = useMemo(() => {
-    const out: Recommendation[] = [];
-    const cap = (data?.rankings?.captadas || []) as any[];
-    const cli = (data?.rankings?.cliente_pct || []) as any[];
-    const rep = (data?.rankings?.repite_pct || []) as any[];
-
-    const topCap = cap[0];
-    const topCli = cli[0];
-    const topRep = rep[0];
-
-    const lowCli = [...cli].reverse()[0];
-    const lowRep = [...rep].reverse()[0];
-
-    if (topCap?.name) {
-      out.push({ tone: "ok", title: "Captación fuerte", body: `${topCap.name} está captando mucho últimamente. Si está disponible, pásale más llamadas para aprovechar el momento.` });
-    }
-    if (topCli?.name) {
-      out.push({ tone: "ok", title: "Clientes nuevos (muy bien)", body: `${topCli.name} tiene un %Clientes muy alto. Ideal para primeras consultas y picos de demanda.` });
-    }
-    if (topRep?.name) {
-      out.push({ tone: "ok", title: "Fidelización excelente", body: `${topRep.name} está fidelizando muy bien (%Repite). Si quieres mejorar repetición, priorízale llamadas de seguimiento.` });
-    }
-    if (lowCli?.name) {
-      out.push({ tone: "warn", title: "Ojo con %Clientes", body: `${lowCli.name} está baja en %Clientes. Revisa si necesita más llamadas de primera consulta o ajustar el enfoque.` });
-    }
-    if (lowRep?.name) {
-      out.push({ tone: "warn", title: "Ojo con %Repite", body: `${lowRep.name} está baja en %Repite. Quizá conviene reforzar cierres y seguimiento.` });
-    }
-
-    return [...out].sort(() => Math.random() - 0.5).slice(0, 4);
-  }, [data?.rankings?.captadas, data?.rankings?.cliente_pct, data?.rankings?.repite_pct]);
-
-  const teams = data?.teamsRanking || [];
-  const hasTeams = Array.isArray(teams) && teams.length >= 2;
-
-  return (
-    <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: 1100 }}>
-      <div style={{ ...shellCard, padding: 14 }}>
-        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr auto", gap: 12, alignItems: "center" }}>
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <div style={{ fontWeight: 1400, fontSize: 18, lineHeight: 1 }}>Central</div>
-              <Badge tone={stateTone as any}>{stateText}</Badge>
-              <div style={{ fontWeight: 1400 }}>{formatHMS(elapsedSec)}</div>
-
-              {me?.display_name ? (
-                <div style={{ color: "#6b7280", fontWeight: 900 }}>
-                  {me.display_name} · Central
-                </div>
-              ) : null}
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "420px 1fr", gap: 10, alignItems: "end" }}>
-              <div style={{ display: "grid", gap: 6 }}>
-                <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Mes</div>
-                <select
-                  value={selectedMonth || data?.month_date || ""}
-                  onChange={(e) => setSelectedMonth(e.target.value || null)}
-                  style={{ padding: 12, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 1100, width: "100%" }}
-                  disabled={loading || months.length === 0}
-                >
-                  {months.length === 0 ? (
-                    <option value="">{data?.month_date || "—"}</option>
-                  ) : (
-                    months.map((m) => (
-                      <option key={m} value={m}>
-                        {formatMonthLabel(m)}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </div>
-
-              {!isMobile ? <div style={{ color: "#6b7280", fontWeight: 1100, textTransform: "capitalize" }}>{monthLabel}</div> : null}
-            </div>
-
-            <div style={tabBar}>
-              <button onClick={() => setTab("dashboard")} style={tabBtn(tab === "dashboard")}>
-                Dashboard
-              </button>
-              <button onClick={() => setTab("incidents")} style={tabBtn(tab === "incidents")}>
-                Incidencias
-              </button>
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gap: 10, justifyItems: isMobile ? "stretch" : "end" }}>
-            <button onClick={() => loadDashboard(selectedMonth)} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}>
-              {loading ? "Actualizando…" : "Actualizar"}
-            </button>
-            <button onClick={logout} style={btnPrimary}>
-              Cerrar sesión
-            </button>
-          </div>
-        </div>
-
-        {err ? (
-          <div style={{ marginTop: 12, padding: 12, borderRadius: 14, border: "1px solid #ffcccc", background: "#fff3f3", fontWeight: 900 }}>
-            {err}
-          </div>
-        ) : null}
-      </div>
-
-      {tab === "dashboard" ? (
-        <>
-          <div style={{ ...shellCard, padding: 14, border: "1px solid #111" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-              <div style={{ fontWeight: 1300, fontSize: 18 }}>🏆 Equipos (GLOBAL)</div>
-              <div style={{ color: "#6b7280", fontWeight: 1000 }}>
-                Score basado en <b>%Clientes + %Repite</b>
-              </div>
-            </div>
-
-            {!hasTeams ? (
-              <div style={{ marginTop: 12, padding: 12, borderRadius: 16, border: "1px solid #e5e7eb", background: "#fff" }}>
-                <div style={{ fontWeight: 1200 }}>Sin datos de equipos para este mes.</div>
-              </div>
-            ) : null}
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
-            <Card>
-              <CardTitle>Estado</CardTitle>
-              <CardValue>
-                <Badge tone={stateTone as any}>{stateText}</Badge>
-              </CardValue>
-              <CardHint>{sessionId ? <>Sesión: <b>{sessionId.slice(0, 8)}…</b></> : "—"}</CardHint>
-            </Card>
-
-            <Card>
-              <CardTitle>Tiempo logueado</CardTitle>
-              <CardValue>{formatHMS(elapsedSec)}</CardValue>
-              <CardHint>Se actualiza en tiempo real.</CardHint>
-            </Card>
-
-            <Card>
-              <CardTitle>Bono estimado</CardTitle>
-              <CardValue>{eur(bonusEstimate)}</CardValue>
-              <CardHint>Se calcula al momento: si tu equipo va 1º ahora mismo.</CardHint>
-            </Card>
-
-            <Card>
-              <CardTitle>Incidencias (mes)</CardTitle>
-              <CardValue>{incCount == null ? "—" : fmt(incCount)}</CardValue>
-              <CardHint>
-                Penalización: <b>{incPenalty == null ? "—" : eur(incPenalty)}</b>
-              </CardHint>
-            </Card>
-          </div>
-
-          <div style={{ ...shellCard, padding: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontWeight: 1400, fontSize: 18 }}>🕒 Control horario</div>
-                <div style={{ color: "#6b7280", fontWeight: 1000, marginTop: 4 }}>
-                  {pState === "offline" ? "Pulsa “Entrar” para iniciar tu turno." : "Gestiona tu estado durante el turno."}
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <Badge tone={stateTone as any}>{stateText}</Badge>
-                <div style={{ fontWeight: 1400, fontSize: 16 }}>{formatHMS(elapsedSec)}</div>
-              </div>
-            </div>
-
-            <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
-              <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-                <div style={{ fontWeight: 1200 }}>Sesión</div>
-                <div style={{ marginTop: 6, color: "#6b7280" }}>{sessionId ? <b>{sessionId}</b> : "—"}</div>
-                <div style={{ marginTop: 6, color: "#6b7280" }}>
-                  Inicio: <b>{startedAt ? new Date(startedAt).toLocaleString("es-ES") : "—"}</b>
-                </div>
-              </div>
-
-              <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-                <div style={{ fontWeight: 1200 }}>Acciones</div>
-
-                <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-                  <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
-                    {bigActionLabel}
-                  </button>
-
-                  <button onClick={loadPresence} style={btnGhost}>
-                    Refrescar
-                  </button>
-
-                  <button onClick={() => presenceSet("pause")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-                    Pausa
-                  </button>
-
-                  <button onClick={() => presenceSet("bathroom")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-                    Baño
-                  </button>
-
-                  <button onClick={() => presenceSet("online")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-                    Volver
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div style={{ ...shellCard, padding: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
-              <div style={{ fontWeight: 1400, fontSize: 18 }}>✅ Checklist diario</div>
-              <div style={{ color: "#6b7280", fontWeight: 1000 }}>
-                Se reinicia a las <b>05:00</b> (hora España).
-              </div>
-            </div>
-
-            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              {CHECKLIST.map((it) => {
-                const on = !!checkState[it.id];
-                return (
-                  <div
-                    key={it.id}
-                    style={{
-                      border: on ? "2px solid #111" : "1px solid #e5e7eb",
-                      borderRadius: 16,
-                      padding: 12,
-                      background: "#fff",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      gap: 12,
-                      alignItems: "flex-start",
-                    }}
-                  >
-                    <div style={{ display: "grid", gap: 6 }}>
-                      <div style={{ fontWeight: 1200 }}>{it.label}</div>
-                      {it.hint ? <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>{it.hint}</div> : null}
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        const next = { ...checkState, [it.id]: !on };
-                        persistChecklist(next);
-                      }}
-                      style={on ? btnPrimary : btnGhost}
-                    >
-                      {on ? "Hecho" : "Marcar"}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div style={{ ...shellCard, padding: 14 }}>
-            <div style={{ fontWeight: 1400, fontSize: 18 }}>💡 Recomendaciones</div>
-            <div style={{ marginTop: 8, color: "#6b7280", fontWeight: 1000 }}>
-              Generadas automáticamente según rankings del mes.
-            </div>
-
-            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              {recommendations.length === 0 ? (
-                <div style={{ padding: 12, borderRadius: 16, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280", fontWeight: 1000 }}>
-                  Sin suficientes datos para recomendaciones.
-                </div>
-              ) : (
-                recommendations.map((r, idx) => (
-                  <div
-                    key={idx}
-                    style={{
-                      padding: 12,
-                      borderRadius: 16,
-                      border: r.tone === "warn" ? "1px solid #fed7aa" : "1px solid #d1fae5",
-                      background: "#fff",
-                    }}
-                  >
-                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                      <Badge tone={r.tone as any}>{r.tone === "warn" ? "OJO" : "OK"}</Badge>
-                      <div style={{ fontWeight: 1200 }}>{r.title}</div>
-                    </div>
-                    <div style={{ marginTop: 8, color: "#111", fontWeight: 1000 }}>{r.body}</div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </>
-      ) : (
-        <>
-          <div style={{ ...shellCard, padding: 14 }}>
-            <div style={{ fontWeight: 1400, fontSize: 18 }}>🧾 Registrar incidencia a tarotista</div>
-            <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>
-              Marca cuando una tarotista no conecta a la hora u otras incidencias.
-            </div>
-
-            <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 220px", gap: 12 }}>
-              <div style={{ display: "grid", gap: 10 }}>
-                <div style={{ display: "grid", gap: 6 }}>
-                  <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Tarotista (nombre)</div>
-                  <input
-                    value={incName}
-                    onChange={(e) => setIncName(e.target.value)}
-                    placeholder="Ej: Carmelina"
-                    style={{ padding: 12, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 1100 }}
-                  />
-                </div>
-
-                <div style={{ display: "grid", gap: 6 }}>
-                  <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Tipo</div>
-                  <select
-                    value={incKind}
-                    onChange={(e) => setIncKind(e.target.value as any)}
-                    style={{ padding: 12, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 1100 }}
-                  >
-                    <option value="late">Retraso / No conecta</option>
-                    <option value="absence">Ausencia</option>
-                    <option value="other">Otro</option>
-                  </select>
-                </div>
-
-                <div style={{ display: "grid", gap: 6 }}>
-                  <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Notas</div>
-                  <textarea
-                    value={incNotes}
-                    onChange={(e) => setIncNotes(e.target.value)}
-                    placeholder="Detalles (hora, qué pasó, etc.)"
-                    rows={4}
-                    style={{ padding: 12, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 1000, resize: "vertical" }}
-                  />
-                </div>
-              </div>
-
-              <div style={{ display: "grid", gap: 10, alignContent: "start" }}>
-                <button onClick={submitIncident} disabled={!incName.trim()} style={!incName.trim() ? { ...btnPrimary, opacity: 0.5, cursor: "not-allowed" } : btnPrimary}>
-                  Registrar
-                </button>
-
-                <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>
-                  Nota: este botón llama a <b>/api/incidents/create</b>.
-                </div>
-
-                {incStatus ? (
-                  <div
-                    style={{
-                      padding: 12,
-                      borderRadius: 14,
-                      border: incStatus === "ok" ? "1px solid #d1fae5" : "1px solid #ffcccc",
-                      background: "#fff",
-                      fontWeight: 1100,
-                      color: incStatus === "ok" ? "#065f46" : "#991b1b",
-                    }}
-                  >
-                    {incMsg}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  );
 }
