@@ -1,7 +1,7 @@
 // src/app/panel/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
@@ -146,12 +146,18 @@ export default function PanelPage() {
 
   const [data, setData] = useState<DashboardResp | null>(null);
 
-  async function getToken() {
+  const monthParam = useMemo(() => qs.get("month_date") || "", [qs]);
+
+  const monthQuery = useMemo(() => {
+    return monthParam ? `?month_date=${encodeURIComponent(monthParam)}` : "";
+  }, [monthParam]);
+
+  const getToken = useCallback(async () => {
     const { data } = await supabase.auth.getSession();
     return data.session?.access_token || null;
-  }
+  }, []);
 
-  // ✅ REDIRECCIÓN INMEDIATA POR ROL (NO depende de dashboard/full)
+  // ✅ REDIRECCIÓN INMEDIATA POR ROL (lint-safe)
   useEffect(() => {
     let alive = true;
 
@@ -162,9 +168,6 @@ export default function PanelPage() {
           router.replace("/login");
           return;
         }
-
-        const month = qs.get("month_date");
-        const targetQs = month ? `?month_date=${encodeURIComponent(month)}` : "";
 
         const meRes = await fetch("/api/me", {
           headers: { Authorization: `Bearer ${token}` },
@@ -177,12 +180,12 @@ export default function PanelPage() {
         const role = String(mj?.worker?.role || "").toLowerCase();
 
         if (role === "central") {
-          router.replace(`/panel/central${targetQs}`);
+          router.replace(`/panel/central${monthQuery}`);
           return;
         }
 
         if (role === "admin") {
-          router.replace(`/panel/admin${targetQs}`);
+          router.replace(`/panel/admin${monthQuery}`);
           return;
         }
 
@@ -195,10 +198,9 @@ export default function PanelPage() {
     return () => {
       alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [getToken, monthQuery, router]);
 
-  async function load() {
+  const load = useCallback(async () => {
     setErr(null);
     setLoading(true);
 
@@ -209,10 +211,7 @@ export default function PanelPage() {
         return;
       }
 
-      const month = qs.get("month_date");
-      const q = month ? `?month_date=${encodeURIComponent(month)}` : "";
-
-      const res = await fetch(`/api/dashboard/full${q}`, {
+      const res = await fetch(`/api/dashboard/full${monthQuery}`, {
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
       });
@@ -229,18 +228,12 @@ export default function PanelPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [getToken, monthQuery, router]);
 
+  // primera carga
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // si cambias el mes desde el layout, cambia la query y recargamos solo datos
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qs?.get("month_date")]);
+  }, [load]);
 
   const me = data?.user?.worker || null;
   const myRole = String(me?.role || "").toLowerCase();
@@ -248,12 +241,10 @@ export default function PanelPage() {
   const isCentral = myRole === "central";
   const isAdmin = myRole === "admin";
 
-  // Tarotistas: no permitir rankType eur_*
   useEffect(() => {
     if (!isTarot) return;
     if (rankType === "eur_total" || rankType === "eur_bonus") setRankType("minutes");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTarot]);
+  }, [isTarot, rankType]);
 
   const ranks = (data?.rankings as any)?.[rankType] || [];
 
@@ -296,7 +287,6 @@ export default function PanelPage() {
     color: "#111",
   };
 
-  // —— MOBILE: rankings as cards
   const RankCards = ({ list, k }: { list: any[]; k: RankKey }) => {
     return (
       <div style={{ display: "grid", gap: 10 }}>
@@ -514,7 +504,6 @@ export default function PanelPage() {
       {/* TAROTISTA / ADMIN */}
       {!isCentral ? (
         <>
-          {/* KPIs */}
           <div
             style={{
               display: "grid",
@@ -567,7 +556,6 @@ export default function PanelPage() {
             </Card>
           </div>
 
-          {/* Top 3 */}
           <div style={{ ...shellCard, padding: 14 }}>
             <div style={{ fontWeight: 1300, fontSize: 16 }}>Top 3 del mes</div>
             <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))", gap: 12 }}>
@@ -577,7 +565,6 @@ export default function PanelPage() {
             </div>
           </div>
 
-          {/* Ranking */}
           <div style={{ ...shellCard, padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
               <div style={{ fontWeight: 1300, fontSize: 16 }}>Ranking</div>
@@ -605,7 +592,6 @@ export default function PanelPage() {
                 <option value="repite_pct">Repite %</option>
                 <option value="cliente_pct">Clientes %</option>
 
-                {/* admin puede mirar € si quiere */}
                 {isAdmin ? <option value="eur_total">€ Total</option> : null}
                 {isAdmin ? <option value="eur_bonus">€ Bonus</option> : null}
               </select>
