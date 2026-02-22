@@ -33,23 +33,6 @@ function medal(pos: number) {
 
 type RankKey = "minutes" | "repite_pct" | "cliente_pct" | "captadas" | "eur_total" | "eur_bonus";
 
-type TeamMember = { worker_id: string; name: string };
-
-type TeamRow = {
-  team_id: string;
-  team_name: string;
-  total_eur_month: number;
-  total_minutes: number;
-  total_captadas: number;
-  member_count: number;
-
-  team_cliente_pct?: number;
-  team_repite_pct?: number;
-  team_score?: number;
-
-  members?: TeamMember[];
-};
-
 type DashboardResp = {
   ok: boolean;
   error?: string;
@@ -74,29 +57,6 @@ type DashboardResp = {
     amount_bonus_eur: number;
     amount_total_eur: number;
   };
-
-  teamsRanking?: TeamRow[];
-  myTeamRank?: number | null;
-
-  winnerTeam: null | {
-    team_id: string;
-    team_name: string;
-    central_user_id?: string | null;
-    central_name: string | null;
-    total_minutes: number;
-    total_captadas: number;
-    total_eur_month?: number;
-    team_score?: number;
-  };
-
-  bonusRules: Array<{
-    ranking_type: string;
-    position: number;
-    role: string;
-    amount_eur: number;
-    created_at?: string;
-    is_active?: boolean;
-  }>;
 
   myIncidentsMonth?: {
     count: number;
@@ -172,11 +132,11 @@ export default function PanelPage() {
   const [elapsedSec, setElapsedSec] = useState(0);
   const tickRef = useRef<any>(null);
 
-  const isLogged = pState !== "offline";
-
   const [panelMe, setPanelMe] = useState<PanelMeResp | null>(null);
 
   const [redirectTo, setRedirectTo] = useState<string | null>(null);
+
+  const isLogged = pState !== "offline";
 
   async function getToken() {
     const { data } = await supabase.auth.getSession();
@@ -202,7 +162,7 @@ export default function PanelPage() {
       setPState((j.state as PresenceState) || "offline");
       setSessionId(j.session_id || null);
       setStartedAt(j.started_at || null);
-    } catch (e) {}
+    } catch {}
   }
 
   async function loadPanelMe() {
@@ -219,7 +179,7 @@ export default function PanelPage() {
       if (!j?.ok) return;
 
       setPanelMe(j);
-    } catch (e) {}
+    } catch {}
   }
 
   async function load(monthOverride?: string | null) {
@@ -255,7 +215,7 @@ export default function PanelPage() {
 
       const role = String(j?.user?.worker?.role || "").toLowerCase();
 
-      // ✅ 3 paneles separados (tarotista se queda aquí)
+      // ✅ Routing por rol (3 paneles separados)
       if (role === "central") {
         setRedirectTo("/panel/central");
         return;
@@ -265,6 +225,7 @@ export default function PanelPage() {
         return;
       }
 
+      // Tarotista
       if (role === "tarotista") {
         await loadPresence();
         await loadPanelMe();
@@ -345,12 +306,12 @@ export default function PanelPage() {
     router.replace("/login");
   }
 
+  // ===== Hooks SIEMPRE arriba (sin returns antes) =====
   useEffect(() => {
     load(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ Ejecuta redirección por rol cuando ya lo sabemos
   useEffect(() => {
     if (!redirectTo) return;
     router.replace(redirectTo);
@@ -385,33 +346,12 @@ export default function PanelPage() {
   const myRole = String(me?.role || "").toLowerCase();
   const isTarot = myRole === "tarotista";
 
-  // ✅ Si es central o admin, NO renderizamos el dashboard de tarotistas
-  if (redirectTo) {
-    const shellCard: React.CSSProperties = {
-      borderRadius: 18,
-      border: "1px solid #e5e7eb",
-      background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
-      boxShadow: "0 12px 45px rgba(0,0,0,0.08)",
-    };
-
-    return (
-      <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: 1100 }}>
-        <div style={{ ...shellCard, padding: 16 }}>
-          <div style={{ fontWeight: 1400, fontSize: 18 }}>Redirigiendo…</div>
-          <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>
-            Entrando en tu panel: <b>{redirectTo}</b>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Tarotistas: no permitir rankType eur_*
+  // ✅ Este hook estaba “debajo del return”, y eso rompía React.
   useEffect(() => {
     if (!isTarot) return;
     if (rankType === "eur_total" || rankType === "eur_bonus") setRankType("minutes");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTarot, rankType]);
+  }, [isTarot]);
 
   const ranks = (data?.rankings as any)?.[rankType] || [];
 
@@ -439,10 +379,8 @@ export default function PanelPage() {
     return "";
   }
 
-  const stateTone =
-    pState === "online" ? "ok" : pState === "pause" || pState === "bathroom" ? "warn" : "neutral";
-  const stateText =
-    pState === "online" ? "ONLINE" : pState === "pause" ? "PAUSA" : pState === "bathroom" ? "BAÑO" : "OFFLINE";
+  const stateTone = pState === "online" ? "ok" : pState === "pause" || pState === "bathroom" ? "warn" : "neutral";
+  const stateText = pState === "online" ? "ONLINE" : pState === "pause" ? "PAUSA" : pState === "bathroom" ? "BAÑO" : "OFFLINE";
 
   const minutesTotal = data?.myEarnings?.minutes_total ?? null;
   const captadasTotal = data?.myEarnings?.captadas ?? null;
@@ -468,7 +406,6 @@ export default function PanelPage() {
   const bigActionLabel = pState === "offline" ? "Entrar" : "Salir";
   const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
 
-  // Styles
   const shellCard: React.CSSProperties = {
     borderRadius: 18,
     border: "1px solid #e5e7eb",
@@ -496,12 +433,10 @@ export default function PanelPage() {
 
   const btnGhost: React.CSSProperties = { ...btnBase };
 
-  // Incidents summary
   const incCount = data?.myIncidentsMonth?.count ?? null;
   const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
   const incGrave = !!data?.myIncidentsMonth?.grave;
 
-  // —— MOBILE: rankings as cards
   const RankCards = ({ list, k }: { list: any[]; k: RankKey }) => {
     return (
       <div style={{ display: "grid", gap: 10 }}>
@@ -540,7 +475,6 @@ export default function PanelPage() {
     );
   };
 
-  // —— Top3 cards
   const Top3Block = ({ k }: { k: RankKey }) => {
     const list = top3For(k);
     return (
@@ -576,6 +510,20 @@ export default function PanelPage() {
     );
   };
 
+  // ✅ Render (sin hooks debajo)
+  if (redirectTo) {
+    return (
+      <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: 1100 }}>
+        <div style={{ ...shellCard, padding: 16 }}>
+          <div style={{ fontWeight: 1400, fontSize: 18 }}>Redirigiendo…</div>
+          <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 1000 }}>
+            Entrando en tu panel: <b>{redirectTo}</b>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: 1100 }}>
       {/* ===== HEADER ===== */}
@@ -602,14 +550,7 @@ export default function PanelPage() {
               ) : null}
             </div>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: isMobile ? "1fr" : "420px 1fr",
-                gap: 10,
-                alignItems: "end",
-              }}
-            >
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "420px 1fr", gap: 10, alignItems: "end" }}>
               <div style={{ display: "grid", gap: 6 }}>
                 <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Mes</div>
                 <select
@@ -638,9 +579,7 @@ export default function PanelPage() {
               </div>
 
               {!isMobile ? (
-                <div style={{ color: "#6b7280", fontWeight: 1100, textTransform: "capitalize" }}>
-                  {monthLabel}
-                </div>
+                <div style={{ color: "#6b7280", fontWeight: 1100, textTransform: "capitalize" }}>{monthLabel}</div>
               ) : null}
             </div>
           </div>
@@ -661,29 +600,14 @@ export default function PanelPage() {
         </div>
 
         {err ? (
-          <div
-            style={{
-              marginTop: 12,
-              padding: 12,
-              borderRadius: 14,
-              border: "1px solid #ffcccc",
-              background: "#fff3f3",
-              fontWeight: 900,
-            }}
-          >
+          <div style={{ marginTop: 12, padding: 12, borderRadius: 14, border: "1px solid #ffcccc", background: "#fff3f3", fontWeight: 900 }}>
             {err}
           </div>
         ) : null}
       </div>
 
-      {/* ===== KPIs ===== */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(240px, 1fr))",
-          gap: 12,
-        }}
-      >
+      {/* ===== KPIs (Tarotista) ===== */}
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
         <Card>
           <CardTitle>Estado</CardTitle>
           <CardValue>
@@ -702,8 +626,7 @@ export default function PanelPage() {
           <CardTitle>Total € del mes</CardTitle>
           <CardValue>{totalEurOfficial === null ? "—" : eur(totalEurOfficial)}</CardValue>
           <CardHint>
-            Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas:{" "}
-            <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
+            Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas: <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
           </CardHint>
         </Card>
 
@@ -729,67 +652,69 @@ export default function PanelPage() {
       </div>
 
       {/* ===== Control horario ===== */}
-      <div style={{ ...shellCard, padding: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontWeight: 1400, fontSize: 18 }}>🕒 Control horario</div>
-            <div style={{ color: "#6b7280", fontWeight: 1000, marginTop: 4 }}>{helpText}</div>
-          </div>
+      {isTarot ? (
+        <div style={{ ...shellCard, padding: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontWeight: 1400, fontSize: 18 }}>🕒 Control horario</div>
+              <div style={{ color: "#6b7280", fontWeight: 1000, marginTop: 4 }}>{helpText}</div>
+            </div>
 
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <Badge tone={stateTone as any}>{stateText}</Badge>
-            <div style={{ fontWeight: 1400, fontSize: 16 }}>{formatHMS(elapsedSec)}</div>
-          </div>
-        </div>
-
-        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-            <div style={{ fontWeight: 1200 }}>Sesión</div>
-            <div style={{ marginTop: 6, color: "#6b7280" }}>{sessionId ? <b>{sessionId}</b> : "—"}</div>
-            <div style={{ marginTop: 6, color: "#6b7280" }}>
-              Inicio: <b>{startedAt ? new Date(startedAt).toLocaleString("es-ES") : "—"}</b>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <Badge tone={stateTone as any}>{stateText}</Badge>
+              <div style={{ fontWeight: 1400, fontSize: 16 }}>{formatHMS(elapsedSec)}</div>
             </div>
           </div>
 
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-            <div style={{ fontWeight: 1200 }}>Acciones</div>
+          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
+            <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
+              <div style={{ fontWeight: 1200 }}>Sesión</div>
+              <div style={{ marginTop: 6, color: "#6b7280" }}>{sessionId ? <b>{sessionId}</b> : "—"}</div>
+              <div style={{ marginTop: 6, color: "#6b7280" }}>
+                Inicio: <b>{startedAt ? new Date(startedAt).toLocaleString("es-ES") : "—"}</b>
+              </div>
+            </div>
 
-            <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-              <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
-                {bigActionLabel}
-              </button>
+            <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
+              <div style={{ fontWeight: 1200 }}>Acciones</div>
 
-              <button onClick={loadPresence} style={btnGhost}>
-                Refrescar
-              </button>
+              <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+                <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
+                  {bigActionLabel}
+                </button>
 
-              <button
-                onClick={() => presenceSet("pause")}
-                disabled={!isLogged}
-                style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
-              >
-                Pausa
-              </button>
+                <button onClick={loadPresence} style={btnGhost}>
+                  Refrescar
+                </button>
 
-              <button
-                onClick={() => presenceSet("bathroom")}
-                disabled={!isLogged}
-                style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
-              >
-                Baño
-              </button>
+                <button
+                  onClick={() => presenceSet("pause")}
+                  disabled={!isLogged}
+                  style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
+                >
+                  Pausa
+                </button>
 
-              <button
-                onClick={() => presenceSet("online")}
-                disabled={!isLogged}
-                style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
-              >
-                Volver
-              </button>
+                <button
+                  onClick={() => presenceSet("bathroom")}
+                  disabled={!isLogged}
+                  style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
+                >
+                  Baño
+                </button>
+
+                <button
+                  onClick={() => presenceSet("online")}
+                  disabled={!isLogged}
+                  style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
+                >
+                  Volver
+                </button>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      ) : null}
 
       {/* ===== Top 3 ===== */}
       <div style={{ ...shellCard, padding: 14 }}>
@@ -850,7 +775,7 @@ export default function PanelPage() {
                   const pos = idx + 1;
                   const isMeRow = me?.display_name === r.name;
                   return (
-                    <tr key={r.worker_id} style={{ background: isMeRow ? "#eef6ff" : "transparent", fontWeight: isMeRow ? 1100 : 500 }}>
+                    <tr key={r.worker_id || `${idx}`} style={{ background: isMeRow ? "#eef6ff" : "transparent", fontWeight: isMeRow ? 1100 : 500 }}>
                       <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
                         {medal(pos)} {pos}
                       </td>
