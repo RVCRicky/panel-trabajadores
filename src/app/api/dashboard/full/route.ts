@@ -97,8 +97,16 @@ function extractMemberIds(row: any): { worker_id?: string; user_id?: string } {
   return out;
 }
 
+function fold(s: string) {
+  // quita tildes/acentos: María -> Maria
+  return safeStr(s)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
 function includesLoose(hay: string, needle: string) {
-  return safeStr(hay).toLowerCase().includes(safeStr(needle).toLowerCase());
+  return fold(hay).includes(fold(needle));
 }
 
 export async function GET(req: Request) {
