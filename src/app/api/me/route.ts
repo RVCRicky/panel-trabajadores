@@ -18,9 +18,13 @@ function bearerToken(req: Request) {
   return h.slice(7).trim() || null;
 }
 
+function isMissingColumnErr(err: any, col: string) {
+  const msg = String(err?.message || "");
+  return msg.toLowerCase().includes(`column workers.${col}`.toLowerCase()) && msg.toLowerCase().includes("does not exist");
+}
+
 export async function GET(req: Request) {
   try {
-    // ✅ Acepta ambas convenciones (SUPABASE_* y NEXT_PUBLIC_*)
     const SUPABASE_URL = getEnvAny(["SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"]);
     const SUPABASE_ANON_KEY = getEnvAny(["SUPABASE_ANON_KEY", "NEXT_PUBLIC_SUPABASE_ANON_KEY"]);
     const SUPABASE_SERVICE_ROLE_KEY = getEnvAny(["SUPABASE_SERVICE_ROLE_KEY"]);
@@ -47,27 +51,55 @@ export async function GET(req: Request) {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
-    const { data: worker, error: werr } = await supa
+    // Intento A: esquema con worker_id
+    let worker: any = null;
+
+    const selWithWorkerId = "id, worker_id, user_id, display_name, role, is_active, created_at, updated_at";
+    const selNoWorkerId = "id, user_id, display_name, role, is_active, created_at, updated_at";
+
+    const a = await supa
       .from("workers")
-      .select("id, worker_id, user_id, display_name, role, is_active, created_at, updated_at")
+      .select(selWithWorkerId)
       .eq("user_id", user.id)
       .maybeSingle();
 
-    if (werr) throw werr;
+    if (a.error) {
+      // Si falla porque NO existe workers.worker_id, reintentamos sin esa columna
+      if (isMissingColumnErr(a.error, "worker_id")) {
+        const b = await supa
+          .from("workers")
+          .select(selNoWorkerId)
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        if (b.error) throw b.error;
+        worker = b.data || null;
+      } else {
+        throw a.error;
+      }
+    } else {
+      worker = a.data || null;
+    }
 
     const role = String(worker?.role || "").toLowerCase();
     const isAdmin = role === "admin";
 
-    // ✅ Retro-compatible
+    // ✅ worker_uuid = id unificado para el resto del sistema
+    // Si existe worker_id, usamos ese. Si no, usamos id.
+    const worker_uuid = (worker?.worker_id ?? worker?.id) || null;
+
     return NextResponse.json({
       ok: true,
       isAdmin,
+      worker_uuid,
+      // mantenemos worker tal cual (con o sin worker_id)
       worker: worker || null,
       user: {
         id: user.id,
         email: user.email || null,
         isAdmin,
         worker: worker || null,
+        worker_uuid,
       },
     });
   } catch (e: any) {
