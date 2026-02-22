@@ -5,6 +5,17 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
+type WorkerRole = "admin" | "central" | "tarotista";
+
+async function readJsonSafe(res: Response) {
+  const text = await res.text().catch(() => "");
+  try {
+    return { json: text ? JSON.parse(text) : null, text };
+  } catch {
+    return { json: null, text };
+  }
+}
+
 export default function LoginPage() {
   const router = useRouter();
 
@@ -14,10 +25,48 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
+  // ✅ Si ya hay sesión, validamos /api/me antes de redirigir
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) router.replace("/panel");
-    });
+    let alive = true;
+
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data.session?.access_token;
+        if (!token) return;
+
+        const res = await fetch("/api/me", {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+
+        const { json, text } = await readJsonSafe(res);
+
+        if (!alive) return;
+
+        if (!res.ok || !json?.ok || !json?.worker || !json.worker?.is_active) {
+          await supabase.auth.signOut();
+          setMsg(
+            `Sesión detectada pero inválida para panel.\n` +
+              `GET /api/me -> ${res.status}\n` +
+              `${json?.error ? `Error: ${json.error}\n` : ""}` +
+              `${!json ? `Respuesta: ${text.slice(0, 200)}\n` : ""}` +
+              `Inicia sesión de nuevo.`
+          );
+          return;
+        }
+
+        const role = String(json.worker.role || "").toLowerCase() as WorkerRole;
+        if (role === "admin") router.replace("/admin/panel");
+        else router.replace("/panel");
+      } catch {
+        // si falla algo, nos quedamos en login
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
   }, [router]);
 
   async function onLogin(e: React.FormEvent) {
@@ -32,13 +81,62 @@ export default function LoginPage() {
       });
 
       if (error) {
-        setMsg(error.message);
+        setMsg(`Login error: ${error.message}`);
         return;
       }
 
-      router.replace("/panel");
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+
+      if (!token) {
+        setMsg("No se pudo crear sesión (sin token). Intenta de nuevo.");
+        await supabase.auth.signOut();
+        return;
+      }
+
+      const res = await fetch("/api/me", {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+
+      const { json, text } = await readJsonSafe(res);
+
+      if (!res.ok) {
+        await supabase.auth.signOut();
+        setMsg(
+          `No puedo validar tu acceso al panel.\n` +
+            `GET /api/me -> ${res.status}\n` +
+            `${json?.error ? `Error: ${json.error}\n` : ""}` +
+            `${!json ? `Respuesta: ${text.slice(0, 200)}\n` : ""}`
+        );
+        return;
+      }
+
+      if (!json?.ok || !json?.worker) {
+        await supabase.auth.signOut();
+        setMsg(
+          `No puedo validar tu worker.\n` +
+            `GET /api/me -> ${res.status}\n` +
+            `${json?.error ? `Error: ${json.error}\n` : ""}` +
+            `${!json ? `Respuesta: ${text.slice(0, 200)}\n` : ""}`
+        );
+        return;
+      }
+
+      if (!json.worker.is_active) {
+        await supabase.auth.signOut();
+        setMsg("Tu usuario está inactivo. Contacta con administración.");
+        return;
+      }
+
+      const role = String(json.worker.role || "").toLowerCase() as WorkerRole;
+      if (role === "admin") router.replace("/admin/panel");
+      else router.replace("/panel");
     } catch (err: any) {
       setMsg(err?.message || "Error inesperado");
+      try {
+        await supabase.auth.signOut();
+      } catch {}
     } finally {
       setLoading(false);
     }
@@ -78,25 +176,13 @@ export default function LoginPage() {
     >
       <div style={{ width: "100%", maxWidth: 440 }}>
         <div style={{ display: "grid", gap: 10, marginBottom: 14, textAlign: "center" }}>
-          <div
-            style={{
-              display: "inline-flex",
-              justifyContent: "center",
-              alignItems: "center",
-              gap: 8,
-              fontWeight: 900,
-              color: "#111",
-            }}
-          >
+          <div style={{ display: "inline-flex", justifyContent: "center", alignItems: "center", gap: 8, fontWeight: 900, color: "#111" }}>
             <span style={{ border: "1px solid #111", borderRadius: 999, padding: "6px 10px" }}>🔒 Acceso interno</span>
           </div>
 
-          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 1200, letterSpacing: -0.4 }}>
-            Panel de Trabajadores
-          </h1>
-
+          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 1200, letterSpacing: -0.4 }}>Panel de Trabajadores</h1>
           <p style={{ margin: 0, color: "#6b7280", fontWeight: 700 }}>
-            Entra con tu email y contraseña para ver tu panel, facturas y incidencias.
+            Entra con tu email y contraseña para ver tu panel, facturas e incidencias.
           </p>
         </div>
 
@@ -112,28 +198,12 @@ export default function LoginPage() {
           <form onSubmit={onLogin} style={{ display: "grid", gap: 12 }}>
             <label style={{ display: "grid", gap: 6 }}>
               <span style={{ fontWeight: 900, color: "#111" }}>Email</span>
-              <input
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                type="email"
-                placeholder="tu@email.com"
-                required
-                autoComplete="email"
-                style={inputStyle}
-              />
+              <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="tu@email.com" required autoComplete="email" style={inputStyle} />
             </label>
 
             <label style={{ display: "grid", gap: 6 }}>
               <span style={{ fontWeight: 900, color: "#111" }}>Contraseña</span>
-              <input
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                type="password"
-                placeholder="••••••••"
-                required
-                autoComplete="current-password"
-                style={inputStyle}
-              />
+              <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="••••••••" required autoComplete="current-password" style={inputStyle} />
             </label>
 
             <button type="submit" disabled={loading} style={btnStyle}>
@@ -141,14 +211,19 @@ export default function LoginPage() {
             </button>
 
             {msg ? (
-              <div style={{ padding: 12, borderRadius: 12, background: "#fff3f3", border: "1px solid #ffcccc", fontWeight: 800 }}>
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 12,
+                  background: "#fff3f3",
+                  border: "1px solid #ffcccc",
+                  fontWeight: 800,
+                  whiteSpace: "pre-wrap",
+                }}
+              >
                 {msg}
               </div>
             ) : null}
-
-            <div style={{ color: "#6b7280", fontWeight: 700, fontSize: 13, textAlign: "center", marginTop: 4 }}>
-              Si no puedes entrar, avisa a administración para resetear tu acceso.
-            </div>
           </form>
         </div>
       </div>
