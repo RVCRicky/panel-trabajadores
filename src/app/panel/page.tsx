@@ -561,11 +561,13 @@ export default function PanelPage() {
               )}
             </select>
           </div>
-        </div>
+                </div>
       </div>
 
       {err ? (
-        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div>
+        <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>
+          {err}
+        </div>
       ) : null}
 
       {/* ===== Equipos (si central) ===== */}
