@@ -1,7 +1,7 @@
 // src/app/panel/page.tsx
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
@@ -146,61 +146,12 @@ export default function PanelPage() {
 
   const [data, setData] = useState<DashboardResp | null>(null);
 
-  const monthParam = useMemo(() => qs.get("month_date") || "", [qs]);
-
-  const monthQuery = useMemo(() => {
-    return monthParam ? `?month_date=${encodeURIComponent(monthParam)}` : "";
-  }, [monthParam]);
-
-  const getToken = useCallback(async () => {
+  async function getToken() {
     const { data } = await supabase.auth.getSession();
     return data.session?.access_token || null;
-  }, []);
+  }
 
-  // ✅ REDIRECCIÓN INMEDIATA POR ROL (lint-safe)
-  useEffect(() => {
-    let alive = true;
-
-    (async () => {
-      try {
-        const token = await getToken();
-        if (!token) {
-          router.replace("/login");
-          return;
-        }
-
-        const meRes = await fetch("/api/me", {
-          headers: { Authorization: `Bearer ${token}` },
-          cache: "no-store",
-        });
-
-        const mj = await meRes.json().catch(() => null);
-        if (!alive) return;
-
-        const role = String(mj?.worker?.role || "").toLowerCase();
-
-        if (role === "central") {
-          router.replace(`/panel/central${monthQuery}`);
-          return;
-        }
-
-        if (role === "admin") {
-          router.replace(`/panel/admin${monthQuery}`);
-          return;
-        }
-
-        // tarotista -> se queda en /panel
-      } catch {
-        // si falla, no hacemos nada; load() manejará lo demás
-      }
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [getToken, monthQuery, router]);
-
-  const load = useCallback(async () => {
+  async function load() {
     setErr(null);
     setLoading(true);
 
@@ -211,7 +162,10 @@ export default function PanelPage() {
         return;
       }
 
-      const res = await fetch(`/api/dashboard/full${monthQuery}`, {
+      const month = qs.get("month_date");
+      const q = month ? `?month_date=${encodeURIComponent(month)}` : "";
+
+      const res = await fetch(`/api/dashboard/full${q}`, {
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
       });
@@ -222,18 +176,41 @@ export default function PanelPage() {
         return;
       }
 
+      // ✅ REDIRECCIÓN POR ROL (SIN ROMPER TU ARCHIVO)
+      const role = String(j?.user?.worker?.role || "").toLowerCase();
+
+      // Mantener el mes al redirigir
+      const targetQs = month ? `?month_date=${encodeURIComponent(month)}` : "";
+
+      if (role === "central") {
+        router.replace(`/panel/central${targetQs}`);
+        return;
+      }
+      if (role === "admin") {
+        // Si tienes panel admin, lo mandamos allí
+        router.replace(`/panel/admin${targetQs}`);
+        return;
+      }
+
+      // tarotista -> se queda aquí
       setData(j);
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
     } finally {
       setLoading(false);
     }
-  }, [getToken, monthQuery, router]);
+  }
 
-  // primera carga
   useEffect(() => {
     load();
-  }, [load]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // si cambias el mes desde el layout, cambia la query y recargamos solo datos
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qs?.get("month_date")]);
 
   const me = data?.user?.worker || null;
   const myRole = String(me?.role || "").toLowerCase();
@@ -241,10 +218,12 @@ export default function PanelPage() {
   const isCentral = myRole === "central";
   const isAdmin = myRole === "admin";
 
+  // Tarotistas: no permitir rankType eur_*
   useEffect(() => {
     if (!isTarot) return;
     if (rankType === "eur_total" || rankType === "eur_bonus") setRankType("minutes");
-  }, [isTarot, rankType]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTarot]);
 
   const ranks = (data?.rankings as any)?.[rankType] || [];
 
@@ -287,6 +266,7 @@ export default function PanelPage() {
     color: "#111",
   };
 
+  // —— MOBILE: rankings as cards
   const RankCards = ({ list, k }: { list: any[]; k: RankKey }) => {
     return (
       <div style={{ display: "grid", gap: 10 }}>
@@ -504,6 +484,7 @@ export default function PanelPage() {
       {/* TAROTISTA / ADMIN */}
       {!isCentral ? (
         <>
+          {/* KPIs */}
           <div
             style={{
               display: "grid",
@@ -556,6 +537,7 @@ export default function PanelPage() {
             </Card>
           </div>
 
+          {/* Top 3 */}
           <div style={{ ...shellCard, padding: 14 }}>
             <div style={{ fontWeight: 1300, fontSize: 16 }}>Top 3 del mes</div>
             <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))", gap: 12 }}>
@@ -565,6 +547,7 @@ export default function PanelPage() {
             </div>
           </div>
 
+          {/* Ranking */}
           <div style={{ ...shellCard, padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
               <div style={{ fontWeight: 1300, fontSize: 16 }}>Ranking</div>
@@ -592,6 +575,7 @@ export default function PanelPage() {
                 <option value="repite_pct">Repite %</option>
                 <option value="cliente_pct">Clientes %</option>
 
+                {/* admin puede mirar € si quiere */}
                 {isAdmin ? <option value="eur_total">€ Total</option> : null}
                 {isAdmin ? <option value="eur_bonus">€ Bonus</option> : null}
               </select>
