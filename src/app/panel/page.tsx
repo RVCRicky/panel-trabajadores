@@ -1,48 +1,4 @@
-
-    try {
-      const token = await getToken();
-      if (!token) {
-        router.replace("/login");
-        return;
-      }
-
-      const res = await fetch("/api/presence/me", {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-
-      const j = await res.json().catch(() => null);
-      if (!j?.ok) return;
-
-      setPState((j.state as PresenceState) || "offline");
-      setSessionId(j.session_id || null);
-      setStartedAt(j.started_at || null);
-    } catch {}
-  }
-
-  async function loadPanelMe() {
-    try {
-      const token = await getToken();
-      if (!token) return;
-
-      const res = await fetch("/api/panel/me", {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-
-      const j = (await res.json().catch(() => null)) as PanelMeResp | null;
-      if (!j?.ok) return;
-
-      setPanelMe(j);
-    } catch {}
-  }
-
-  async function load(monthOverride?: string | null) {
-    setErr(null);
-    setLoading(true);
-
-    try {
-      const token = await getToken();// src/app/panel/page.tsx
+// src/app/panel/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -246,7 +202,7 @@ export default function PanelPage() {
       setPState((j.state as PresenceState) || "offline");
       setSessionId(j.session_id || null);
       setStartedAt(j.started_at || null);
-    } catch {}
+    } catch (e) {}
   }
 
   async function loadPanelMe() {
@@ -263,7 +219,7 @@ export default function PanelPage() {
       if (!j?.ok) return;
 
       setPanelMe(j);
-    } catch {}
+    } catch (e) {}
   }
 
   async function load(monthOverride?: string | null) {
@@ -299,17 +255,16 @@ export default function PanelPage() {
 
       const role = String(j?.user?.worker?.role || "").toLowerCase();
 
-      // ✅ Routing por rol (3 paneles separados)
+      // ✅ 3 paneles separados (tarotista se queda aquí)
       if (role === "central") {
         setRedirectTo("/panel/central");
-        return; // no cargamos presence/panelMe aquí, lo hará el panel central
+        return;
       }
       if (role === "admin") {
         setRedirectTo("/panel/admin");
         return;
       }
 
-      // Tarotista: se queda en este dashboard
       if (role === "tarotista") {
         await loadPresence();
         await loadPanelMe();
@@ -395,7 +350,7 @@ export default function PanelPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ ejecuta la redirección por rol cuando ya lo sabemos
+  // ✅ Ejecuta redirección por rol cuando ya lo sabemos
   useEffect(() => {
     if (!redirectTo) return;
     router.replace(redirectTo);
@@ -456,7 +411,7 @@ export default function PanelPage() {
     if (!isTarot) return;
     if (rankType === "eur_total" || rankType === "eur_bonus") setRankType("minutes");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTarot]);
+  }, [isTarot, rankType]);
 
   const ranks = (data?.rankings as any)?.[rankType] || [];
 
@@ -484,8 +439,10 @@ export default function PanelPage() {
     return "";
   }
 
-  const stateTone = pState === "online" ? "ok" : pState === "pause" || pState === "bathroom" ? "warn" : "neutral";
-  const stateText = pState === "online" ? "ONLINE" : pState === "pause" ? "PAUSA" : pState === "bathroom" ? "BAÑO" : "OFFLINE";
+  const stateTone =
+    pState === "online" ? "ok" : pState === "pause" || pState === "bathroom" ? "warn" : "neutral";
+  const stateText =
+    pState === "online" ? "ONLINE" : pState === "pause" ? "PAUSA" : pState === "bathroom" ? "BAÑO" : "OFFLINE";
 
   const minutesTotal = data?.myEarnings?.minutes_total ?? null;
   const captadasTotal = data?.myEarnings?.captadas ?? null;
@@ -553,12 +510,12 @@ export default function PanelPage() {
         ) : (
           list.map((r: any, idx: number) => {
             const pos = idx + 1;
-            const isMe = me?.display_name === r.name;
+            const isMeRow = me?.display_name === r.name;
             return (
               <div
                 key={r.worker_id || `${k}-${idx}`}
                 style={{
-                  border: isMe ? "2px solid #111" : "1px solid #e5e7eb",
+                  border: isMeRow ? "2px solid #111" : "1px solid #e5e7eb",
                   borderRadius: 16,
                   padding: 12,
                   background: "#fff",
@@ -573,7 +530,7 @@ export default function PanelPage() {
                 </div>
                 <div style={{ marginTop: 6, color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
                   {labelRanking(k)}
-                  {isMe ? " · (Tú)" : ""}
+                  {isMeRow ? " · (Tú)" : ""}
                 </div>
               </div>
             );
@@ -583,7 +540,7 @@ export default function PanelPage() {
     );
   };
 
-  // —— Top3 cards (same for mobile/desktop)
+  // —— Top3 cards
   const Top3Block = ({ k }: { k: RankKey }) => {
     const list = top3For(k);
     return (
@@ -621,7 +578,7 @@ export default function PanelPage() {
 
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: 1100 }}>
-      {/* ===== HEADER compact + semáforo + mes + acciones ===== */}
+      {/* ===== HEADER ===== */}
       <div style={{ ...shellCard, padding: 14 }}>
         <div
           style={{
@@ -645,7 +602,14 @@ export default function PanelPage() {
               ) : null}
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "420px 1fr", gap: 10, alignItems: "end" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: isMobile ? "1fr" : "420px 1fr",
+                gap: 10,
+                alignItems: "end",
+              }}
+            >
               <div style={{ display: "grid", gap: 6 }}>
                 <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Mes</div>
                 <select
@@ -674,7 +638,9 @@ export default function PanelPage() {
               </div>
 
               {!isMobile ? (
-                <div style={{ color: "#6b7280", fontWeight: 1100, textTransform: "capitalize" }}>{monthLabel}</div>
+                <div style={{ color: "#6b7280", fontWeight: 1100, textTransform: "capitalize" }}>
+                  {monthLabel}
+                </div>
               ) : null}
             </div>
           </div>
@@ -695,14 +661,29 @@ export default function PanelPage() {
         </div>
 
         {err ? (
-          <div style={{ marginTop: 12, padding: 12, borderRadius: 14, border: "1px solid #ffcccc", background: "#fff3f3", fontWeight: 900 }}>
+          <div
+            style={{
+              marginTop: 12,
+              padding: 12,
+              borderRadius: 14,
+              border: "1px solid #ffcccc",
+              background: "#fff3f3",
+              fontWeight: 900,
+            }}
+          >
             {err}
           </div>
         ) : null}
       </div>
 
-      {/* ===== KPIs (Tarotista) ===== */}
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+      {/* ===== KPIs ===== */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(240px, 1fr))",
+          gap: 12,
+        }}
+      >
         <Card>
           <CardTitle>Estado</CardTitle>
           <CardValue>
@@ -721,7 +702,8 @@ export default function PanelPage() {
           <CardTitle>Total € del mes</CardTitle>
           <CardValue>{totalEurOfficial === null ? "—" : eur(totalEurOfficial)}</CardValue>
           <CardHint>
-            Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas: <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
+            Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas:{" "}
+            <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
           </CardHint>
         </Card>
 
@@ -747,57 +729,67 @@ export default function PanelPage() {
       </div>
 
       {/* ===== Control horario ===== */}
-      {me?.role === "tarotista" ? (
-        <div style={{ ...shellCard, padding: 14 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <div>
-              <div style={{ fontWeight: 1400, fontSize: 18 }}>🕒 Control horario</div>
-              <div style={{ color: "#6b7280", fontWeight: 1000, marginTop: 4 }}>{helpText}</div>
-            </div>
+      <div style={{ ...shellCard, padding: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontWeight: 1400, fontSize: 18 }}>🕒 Control horario</div>
+            <div style={{ color: "#6b7280", fontWeight: 1000, marginTop: 4 }}>{helpText}</div>
+          </div>
 
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <Badge tone={stateTone as any}>{stateText}</Badge>
-              <div style={{ fontWeight: 1400, fontSize: 16 }}>{formatHMS(elapsedSec)}</div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <Badge tone={stateTone as any}>{stateText}</Badge>
+            <div style={{ fontWeight: 1400, fontSize: 16 }}>{formatHMS(elapsedSec)}</div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
+          <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
+            <div style={{ fontWeight: 1200 }}>Sesión</div>
+            <div style={{ marginTop: 6, color: "#6b7280" }}>{sessionId ? <b>{sessionId}</b> : "—"}</div>
+            <div style={{ marginTop: 6, color: "#6b7280" }}>
+              Inicio: <b>{startedAt ? new Date(startedAt).toLocaleString("es-ES") : "—"}</b>
             </div>
           </div>
 
-          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
-            <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-              <div style={{ fontWeight: 1200 }}>Sesión</div>
-              <div style={{ marginTop: 6, color: "#6b7280" }}>{sessionId ? <b>{sessionId}</b> : "—"}</div>
-              <div style={{ marginTop: 6, color: "#6b7280" }}>
-                Inicio: <b>{startedAt ? new Date(startedAt).toLocaleString("es-ES") : "—"}</b>
-              </div>
-            </div>
+          <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
+            <div style={{ fontWeight: 1200 }}>Acciones</div>
 
-            <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-              <div style={{ fontWeight: 1200 }}>Acciones</div>
+            <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+              <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
+                {bigActionLabel}
+              </button>
 
-              <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-                <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
-                  {bigActionLabel}
-                </button>
+              <button onClick={loadPresence} style={btnGhost}>
+                Refrescar
+              </button>
 
-                <button onClick={loadPresence} style={btnGhost}>
-                  Refrescar
-                </button>
+              <button
+                onClick={() => presenceSet("pause")}
+                disabled={!isLogged}
+                style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
+              >
+                Pausa
+              </button>
 
-                <button onClick={() => presenceSet("pause")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-                  Pausa
-                </button>
+              <button
+                onClick={() => presenceSet("bathroom")}
+                disabled={!isLogged}
+                style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
+              >
+                Baño
+              </button>
 
-                <button onClick={() => presenceSet("bathroom")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-                  Baño
-                </button>
-
-                <button onClick={() => presenceSet("online")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-                  Volver
-                </button>
-              </div>
+              <button
+                onClick={() => presenceSet("online")}
+                disabled={!isLogged}
+                style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
+              >
+                Volver
+              </button>
             </div>
           </div>
         </div>
-      ) : null}
+      </div>
 
       {/* ===== Top 3 ===== */}
       <div style={{ ...shellCard, padding: 14 }}>
@@ -856,9 +848,9 @@ export default function PanelPage() {
               <tbody>
                 {(ranks as any[]).map((r: any, idx: number) => {
                   const pos = idx + 1;
-                  const isMe = me?.display_name === r.name;
+                  const isMeRow = me?.display_name === r.name;
                   return (
-                    <tr key={r.worker_id} style={{ background: isMe ? "#eef6ff" : "transparent", fontWeight: isMe ? 1100 : 500 }}>
+                    <tr key={r.worker_id} style={{ background: isMeRow ? "#eef6ff" : "transparent", fontWeight: isMeRow ? 1100 : 500 }}>
                       <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
                         {medal(pos)} {pos}
                       </td>
