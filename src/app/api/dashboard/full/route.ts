@@ -67,13 +67,12 @@ type TeamRow = {
 };
 
 async function safeEqFirst(adb: any, table: string, selectCols: string, candidates: Array<{ col: string; val: any }>) {
-  // Intenta eq con columnas distintas (por si tu tabla usa central_worker_id, central_user_id, etc.)
   for (const c of candidates) {
     try {
       const { data, error } = await adb.from(table).select(selectCols).eq(c.col, c.val).limit(1);
       if (!error && Array.isArray(data) && data[0]) return data[0];
-    } catch (e) {
-      // si la columna no existe, supabase devuelve error -> seguimos probando
+    } catch {
+      // si la columna no existe o falla, probamos la siguiente
     }
   }
   return null;
@@ -88,31 +87,34 @@ export async function GET(req: Request) {
     const service = getEnv("SUPABASE_SERVICE_ROLE_KEY");
     const db = createClient(url, service, { auth: { persistSession: false } });
 
+    // ✅ FIX TS: usar adb:any en TODAS las queries para evitar "instantiation deep"
+    const adb: any = db as any;
+
     // auth user
-    const { data: u, error: eu } = await db.auth.getUser(token);
+    const { data: u, error: eu } = await adb.auth.getUser(token);
     if (eu || !u?.user) return NextResponse.json({ ok: false, error: "BAD_TOKEN" }, { status: 401 });
 
     const uid = u.user.id;
 
     // worker
-    const { data: me } = await db
+    const { data: me } = await adb
       .from("workers")
       .select("id, user_id, role, display_name, is_active")
       .eq("user_id", uid)
       .maybeSingle();
 
     if (!me) return NextResponse.json({ ok: false, error: "NO_WORKER" }, { status: 403 });
-    if (!(me as any).is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
+    if (!me.is_active) return NextResponse.json({ ok: false, error: "INACTIVE" }, { status: 403 });
 
-    const myWorkerId = String((me as any).id);
-    const myRole = normRole((me as any).role);
+    const myWorkerId = String(me.id);
+    const myRole = normRole(me.role);
 
     // month param
     const urlObj = new URL(req.url);
     const monthParam = urlObj.searchParams.get("month_date");
 
     // meses disponibles (FUENTE: worker_invoices)
-    const { data: invoiceRows } = await db
+    const { data: invoiceRows } = await adb
       .from("worker_invoices")
       .select("month_date")
       .order("month_date", { ascending: false })
@@ -127,14 +129,7 @@ export async function GET(req: Request) {
         month_date: null,
         months: [],
         user: { isAdmin: myRole === "admin", worker: me },
-        rankings: {
-          minutes: [],
-          repite_pct: [],
-          cliente_pct: [],
-          captadas: [],
-          eur_total: [],
-          eur_bonus: [],
-        },
+        rankings: { minutes: [], repite_pct: [], cliente_pct: [], captadas: [], eur_total: [], eur_bonus: [] },
         myEarnings: null,
         myIncidentsMonth: { count: 0, penalty_eur: 0, grave: false },
         teamsRanking: [],
@@ -147,7 +142,7 @@ export async function GET(req: Request) {
     // ===============================
     // 1) RANKINGS (monthly_rankings)
     // ===============================
-    const { data: mr } = await db
+    const { data: mr } = await adb
       .from("monthly_rankings")
       .select(
         `
@@ -188,13 +183,13 @@ export async function GET(req: Request) {
     // ===============================
     // 2) FACTURAS (FUENTE REAL DE €)
     // ===============================
-    const { data: invoices } = await db
+    const { data: invoices } = await adb
       .from("worker_invoices")
       .select("worker_id, total_eur, bonuses_eur")
       .eq("month_date", month_date);
 
     const invoiceMap = new Map<string, any>();
-    for (const inv of invoices || []) invoiceMap.set(String((inv as any).worker_id), inv);
+    for (const inv of invoices || []) invoiceMap.set(String(inv.worker_id), inv);
 
     const rankEurTotal = [...tarotistas]
       .map((t) => ({
@@ -218,7 +213,7 @@ export async function GET(req: Request) {
     const myInvoice = invoiceMap.get(myWorkerId);
     const myRankRow = rows.find((r) => r.worker_id === myWorkerId);
 
-    const myEarnings =
+    const myEarnings: any =
       myRole === "tarotista"
         ? {
             minutes_total: toNum(myRankRow?.minutes),
@@ -241,7 +236,7 @@ export async function GET(req: Request) {
     let myIncidentsMonth = { count: 0, penalty_eur: 0, grave: false };
 
     try {
-      const { data: incs } = await db
+      const { data: incs } = await adb
         .from("shift_incidents")
         .select("id, kind, status, penalty_eur")
         .eq("worker_id", myWorkerId)
@@ -261,21 +256,21 @@ export async function GET(req: Request) {
           grave,
         };
       }
-    } catch (e) {}
+    } catch {}
 
     // ===============================
     // 5) BONUS RULES
     // ===============================
     let bonusRules: any[] = [];
     try {
-      const { data: br } = await db
+      const { data: br } = await adb
         .from("bonus_rules")
         .select("ranking_type, position, role, amount_eur, created_at, is_active")
         .order("created_at", { ascending: false })
         .limit(5000);
 
       if (Array.isArray(br)) bonusRules = br;
-    } catch (e) {
+    } catch {
       bonusRules = [];
     }
 
@@ -287,21 +282,12 @@ export async function GET(req: Request) {
     let winnerTeam: any = null;
 
     if (myRole === "central") {
-      // ⚠️ Evita el bug TS (instantiation deep)
-      const adb: any = db as any;
-
       // a) resultados mensuales por equipo
-      // intentamos traer lo necesario, pero si tu tabla tiene nombres distintos, usamos select("*")
       let tmrRows: any[] = [];
       try {
-        const { data, error } = await adb
-          .from("team_monthly_results")
-          .select("*")
-          .eq("month_date", month_date)
-          .limit(200);
-
+        const { data, error } = await adb.from("team_monthly_results").select("*").eq("month_date", month_date).limit(200);
         if (!error && Array.isArray(data)) tmrRows = data;
-      } catch (e) {
+      } catch {
         tmrRows = [];
       }
 
@@ -310,7 +296,7 @@ export async function GET(req: Request) {
       try {
         const { data, error } = await adb.from("teams").select("*").limit(2000);
         if (!error && Array.isArray(data)) teamsRows = data;
-      } catch (e) {
+      } catch {
         teamsRows = [];
       }
 
@@ -330,7 +316,6 @@ export async function GET(req: Request) {
 
           const team_name = teamNameMap.get(team_id) || `Equipo ${team_id.slice(0, 6)}`;
 
-          // Intentos de nombres comunes (si no existe el campo, toNum(undefined)=0)
           const total_minutes = toNum(r?.total_minutes ?? r?.minutes_total ?? r?.minutes);
           const total_captadas = toNum(r?.total_captadas ?? r?.captadas_total ?? r?.captadas);
           const total_eur_month = toNum(r?.total_eur_month ?? r?.eur_total ?? r?.total_eur);
@@ -356,8 +341,6 @@ export async function GET(req: Request) {
         .filter(Boolean) as TeamRow[];
 
       normalized.sort((a, b) => toNum(b.team_score) - toNum(a.team_score));
-
-      // Top 10, y en UI normalmente mostrarás 2
       teamsRanking = normalized.slice(0, 10);
 
       // d) members para top 2 (team_members + workers)
@@ -388,12 +371,11 @@ export async function GET(req: Request) {
             });
           }
         }
-      } catch (e) {
+      } catch {
         // ignore
       }
 
-      // e) mi equipo (central): intentamos sacar team_id desde tabla teams (si tiene central_user_id/central_worker_id)
-      // Si tu tabla no lo tiene, no rompe (myTeamRank queda null)
+      // e) mi equipo (central) — intentamos resolver sin romper si no existe columna
       const myTeamRow =
         (await safeEqFirst(adb, "teams", "id, team_id, name, team_name, central_user_id, central_worker_id, user_id, worker_id", [
           { col: "central_user_id", val: uid },
@@ -438,8 +420,8 @@ export async function GET(req: Request) {
 
       // h) myEarnings central: por ahora solo bono si su equipo va #1
       const centralBonus = myTeamRank === 1 ? bonusTeamWinner : 0;
-      (myEarnings as any).amount_bonus_eur = centralBonus;
-      (myEarnings as any).amount_total_eur = centralBonus;
+      myEarnings.amount_bonus_eur = centralBonus;
+      myEarnings.amount_total_eur = centralBonus;
     }
 
     return NextResponse.json({
