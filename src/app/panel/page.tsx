@@ -35,8 +35,8 @@ function norm(s: any) {
 }
 
 type RankKey = "minutes" | "repite_pct" | "cliente_pct" | "captadas" | "eur_total" | "eur_bonus";
-type TeamMember = { worker_id: string; name: string };
 
+type TeamMember = { worker_id: string; name: string };
 type TeamRow = {
   team_id: string;
   team_name: string;
@@ -100,9 +100,6 @@ type DashboardResp = {
     team_score?: number;
   };
 
-  // OJO: tu backend ahora lo manda undefined; por eso lo cargamos aparte
-  bonusRules?: BonusRule[];
-
   myIncidentsMonth?: {
     count: number;
     penalty_eur: number;
@@ -132,14 +129,6 @@ function labelRanking(k: string) {
   return k;
 }
 
-function labelRole(r: string) {
-  const key = String(r || "").toLowerCase();
-  if (key === "tarotista") return "Tarotista";
-  if (key === "central") return "Central";
-  if (key === "admin") return "Admin";
-  return r;
-}
-
 function formatHMS(sec: number) {
   const s = Math.max(0, Math.floor(sec));
   const hh = Math.floor(s / 3600);
@@ -147,16 +136,6 @@ function formatHMS(sec: number) {
   const ss = s % 60;
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${pad(hh)}:${pad(mm)}:${pad(ss)}`;
-}
-
-function formatMonthLabel(isoMonthDate: string) {
-  const [y, m] = String(isoMonthDate || "").split("-");
-  const monthNum = Number(m);
-  const yearNum = Number(y);
-  if (!monthNum || !yearNum) return isoMonthDate;
-
-  const date = new Date(yearNum, monthNum - 1, 1);
-  return date.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
 }
 
 export default function PanelPage() {
@@ -168,7 +147,6 @@ export default function PanelPage() {
   const [loading, setLoading] = useState(false);
 
   const [data, setData] = useState<DashboardResp | null>(null);
-  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   const [pState, setPState] = useState<PresenceState>("offline");
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -176,12 +154,9 @@ export default function PanelPage() {
 
   const [elapsedSec, setElapsedSec] = useState(0);
   const tickRef = useRef<any>(null);
-
   const isLogged = pState !== "offline";
 
   const [panelMe, setPanelMe] = useState<PanelMeResp | null>(null);
-
-  // ✅ NUEVO: reglas de bonos desde /api/bonus/rules
   const [bonusRules, setBonusRules] = useState<BonusRule[]>([]);
 
   async function hardLogoutToLogin() {
@@ -209,6 +184,15 @@ export default function PanelPage() {
     return fetch(url, { ...init, headers, cache: "no-store" });
   }
 
+  function getMonthFromUrl() {
+    try {
+      const u = new URL(window.location.href);
+      return u.searchParams.get("month_date");
+    } catch {
+      return null;
+    }
+  }
+
   async function loadPresence() {
     try {
       const res = await authedFetch("/api/presence/me");
@@ -223,7 +207,7 @@ export default function PanelPage() {
 
   async function loadPanelMe(monthOverride?: string | null) {
     try {
-      const month = monthOverride ?? selectedMonth ?? null;
+      const month = monthOverride ?? getMonthFromUrl();
       const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
       const res = await authedFetch(`/api/panel/me${qs}`);
       const j = (await res.json().catch(() => null)) as PanelMeResp | null;
@@ -241,12 +225,12 @@ export default function PanelPage() {
     } catch {}
   }
 
-  async function load(monthOverride?: string | null) {
+  async function load() {
     setErr(null);
     setLoading(true);
 
     try {
-      const month = monthOverride ?? selectedMonth ?? null;
+      const month = getMonthFromUrl();
       const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
 
       const res = await authedFetch(`/api/dashboard/full${qs}`);
@@ -258,15 +242,11 @@ export default function PanelPage() {
 
       setData(j);
 
-      if (j.month_date && j.month_date !== selectedMonth) {
-        setSelectedMonth(j.month_date);
-      }
-
       const role = j?.user?.worker?.role || null;
       if (role === "tarotista" || role === "central") {
         await loadPresence();
         await loadPanelMe(month);
-        await loadBonusRules(); // ✅ clave: reglas de bonos SIEMPRE
+        await loadBonusRules();
       }
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
@@ -279,11 +259,9 @@ export default function PanelPage() {
     setErr(null);
     try {
       if (isLogged) return;
-
       const res = await authedFetch("/api/presence/login", { method: "POST" });
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error login presencia");
-
       await loadPresence();
     } catch (e: any) {
       setErr(e?.message || "Error login presencia");
@@ -313,33 +291,19 @@ export default function PanelPage() {
     setErr(null);
     try {
       if (!isLogged) return;
-
       const res = await authedFetch("/api/presence/logout", { method: "POST" });
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error logout presencia");
-
       await loadPresence();
     } catch (e: any) {
       setErr(e?.message || "Error logout presencia");
     }
   }
 
-  async function logout() {
-    await hardLogoutToLogin();
-  }
-
   useEffect(() => {
-    load(null);
+    load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    if (!selectedMonth) return;
-    if (!data) return;
-    if (data.month_date === selectedMonth) return;
-    load(selectedMonth);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedMonth]);
 
   useEffect(() => {
     if (tickRef.current) clearInterval(tickRef.current);
@@ -362,14 +326,14 @@ export default function PanelPage() {
   const isCentral = myRole === "central";
   const isTarot = myRole === "tarotista";
 
-  const myWorkerId = String(me?.id || me?.worker_id || me?.workerId || "").trim();
-  const myName = String(me?.display_name || "").trim();
-
   useEffect(() => {
     if (!isTarot) return;
     if (rankType === "eur_total" || rankType === "eur_bonus") setRankType("minutes");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTarot]);
+
+  const myWorkerId = String(me?.id || me?.worker_id || "").trim();
+  const myName = String(me?.display_name || "").trim();
 
   const ranks = (data?.rankings as any)?.[rankType] || [];
 
@@ -413,14 +377,6 @@ export default function PanelPage() {
   const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
   const incGrave = !!data?.myIncidentsMonth?.grave;
 
-  const months = data?.months || [];
-  const monthLabel = selectedMonth
-    ? formatMonthLabel(selectedMonth)
-    : data?.month_date
-    ? formatMonthLabel(data.month_date)
-    : "—";
-
-  // ✅ BONOS “EN TIEMPO REAL” POR POSICIÓN (desde rankings + bonus_rules)
   const bonusProvisionalTarot = useMemo(() => {
     if (!isTarot) return 0;
     if (incGrave) return 0;
@@ -449,36 +405,17 @@ export default function PanelPage() {
       const hit = rules.find((x) => {
         if (norm(x.role) !== "tarotista") return false;
         const rt = norm(x.ranking_type);
-        // ✅ aceptamos exacto o “contiene” por si backend usa nombres tipo minutes_month
         if (!(rt === want || rt.includes(want))) return false;
         return Number(x.position) === Number(pos);
       });
       return hit ? Number(hit.amount_eur) || 0 : 0;
     };
 
-    return (
-      pick("minutes", posMinutes) +
-      pick("captadas", posCaptadas) +
-      pick("repite_pct", posRepite) +
-      pick("cliente_pct", posCliente)
-    );
+    return pick("minutes", posMinutes) + pick("captadas", posCaptadas) + pick("repite_pct", posRepite) + pick("cliente_pct", posCliente);
   }, [isTarot, incGrave, data?.rankings, bonusRules, myWorkerId, myName]);
 
-  // ✅ BONOS CONFIRMADOS (incluye bonos manuales) desde /api/panel/me
   const bonusConfirmed = Number(panelMe?.bonuses_month_eur) || 0;
-
-  // ✅ Mostramos: confirmados + provisionales
   const bonusShown = isTarot ? (incGrave ? 0 : bonusConfirmed + bonusProvisionalTarot) : null;
-
-  const helpText =
-    pState === "offline"
-      ? "Pulsa “Entrar a trabajar” para iniciar tu turno."
-      : pState === "online"
-      ? "Estás online. Si paras, usa Pausa o Baño."
-      : "Estás en pausa/baño. Cuando vuelvas, pulsa “Volver (Online)”.";
-
-  const bigActionLabel = pState === "offline" ? "Entrar a trabajar" : "Salir del turno";
-  const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
 
   const btnBase: React.CSSProperties = {
     padding: 12,
@@ -502,60 +439,21 @@ export default function PanelPage() {
     border: "1px solid #e5e7eb",
   };
 
+  const helpText =
+    pState === "offline"
+      ? "Pulsa “Entrar a trabajar” para iniciar tu turno."
+      : pState === "online"
+      ? "Estás online. Si paras, usa Pausa o Baño."
+      : "Estás en pausa/baño. Cuando vuelvas, pulsa “Volver (Online)”.";
+
+  const bigActionLabel = pState === "offline" ? "Entrar a trabajar" : "Salir del turno";
+  const bigActionFn = pState === "offline" ? presenceLogin : presenceLogout;
+
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: "100%" }}>
-      <div style={{ border: "2px solid #111", borderRadius: 18, padding: 14, background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)" }}>
-        <div style={{ display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "1fr auto", alignItems: "center" }}>
-          <div style={{ display: "grid", gap: 6 }}>
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-              <h1 style={{ margin: 0, lineHeight: 1.1, fontSize: 22, fontWeight: 1200 }}>Dashboard</h1>
-              <div style={{ color: "#6b7280", textTransform: "capitalize", fontWeight: 1000 }}>{monthLabel}</div>
-            </div>
-
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <Badge tone={stateTone as any}>{stateText}</Badge>
-              <div style={{ fontWeight: 1100, color: "#111" }}>{formatHMS(elapsedSec)}</div>
-              {me?.display_name ? (
-                <div style={{ color: "#6b7280", fontWeight: 900 }}>
-                  {me.display_name} · {labelRole(me.role || "—")}
-                </div>
-              ) : null}
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gap: 10, justifyItems: isMobile ? "stretch" : "end" }}>
-            <button onClick={() => load(selectedMonth)} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}>
-              {loading ? "Actualizando..." : "Actualizar"}
-            </button>
-            <button onClick={logout} style={btnPrimary}>
-              Cerrar sesión
-            </button>
-          </div>
-        </div>
-
-        <div style={{ marginTop: 12, display: "grid", gap: 8, width: "100%" }}>
-          <div style={{ color: "#6b7280", fontWeight: 1000 }}>Mes</div>
-          <select
-            value={selectedMonth || data?.month_date || ""}
-            onChange={(e) => setSelectedMonth(e.target.value || null)}
-            style={{ padding: 12, borderRadius: 12, border: "1px solid #e5e7eb", width: "100%", maxWidth: "100%" }}
-            disabled={loading || months.length === 0}
-          >
-            {months.length === 0 ? (
-              <option value="">{data?.month_date || "—"}</option>
-            ) : (
-              months.map((m) => (
-                <option key={m} value={m}>
-                  {formatMonthLabel(m)}
-                </option>
-              ))
-            )}
-          </select>
-        </div>
-      </div>
-
       {err ? <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div> : null}
 
+      {/* KPIs */}
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
         <Card>
           <CardTitle>Estado</CardTitle>
@@ -585,11 +483,7 @@ export default function PanelPage() {
               <CardTitle>Bonos ganados (mes)</CardTitle>
               <CardValue>{bonusShown === null ? "—" : eur(bonusShown)}</CardValue>
               <CardHint>
-                {incGrave ? (
-                  <b style={{ color: "#b91c1c" }}>Bloqueados por incidencia GRAVE</b>
-                ) : (
-                  <span style={{ color: "#6b7280", fontWeight: 900 }}>Se actualiza con tu posición actual</span>
-                )}
+                {incGrave ? <b style={{ color: "#b91c1c" }}>Bloqueados por incidencia GRAVE</b> : <span style={{ color: "#6b7280", fontWeight: 900 }}>Se actualiza con tu posición actual</span>}
               </CardHint>
             </Card>
           </>
@@ -618,12 +512,36 @@ export default function PanelPage() {
         ) : null}
       </div>
 
+      {/* Control horario */}
+      {(isTarot || isCentral) ? (
+        <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
+          <div style={{ fontWeight: 1100, marginBottom: 8 }}>🕒 Control horario</div>
+          <div style={{ color: "#666", fontWeight: 900 }}>{helpText}</div>
+
+          <div style={{ display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", marginTop: 10 }}>
+            <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
+              {bigActionLabel}
+            </button>
+
+            <button onClick={() => presenceSet("pause")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
+              Pausa
+            </button>
+
+            <button onClick={() => presenceSet("online")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
+              Volver (Online)
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Top 3 */}
       <Card>
         <CardTitle>Top 3 del mes</CardTitle>
         <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginTop: 10 }}>
           {(["minutes", "captadas", "repite_pct", "cliente_pct"] as RankKey[]).map((k) => (
             <div key={k} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
               <div style={{ fontWeight: 1000, marginBottom: 6 }}>{labelRanking(k)}</div>
+
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <tbody>
                   {top3For(k).map((r: any, idx: number) => (
@@ -649,6 +567,7 @@ export default function PanelPage() {
         </div>
       </Card>
 
+      {/* Ranking completo */}
       <Card>
         <CardTitle>Rankings (tabla completa)</CardTitle>
 
@@ -700,20 +619,10 @@ export default function PanelPage() {
         </div>
       </Card>
 
-      <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-        <div style={{ fontWeight: 1100, marginBottom: 8 }}>🕒 Control horario</div>
-        <div style={{ color: "#666", fontWeight: 900 }}>{helpText}</div>
-        <div style={{ display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", marginTop: 10 }}>
-          <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
-            {bigActionLabel}
-          </button>
-          <button onClick={() => presenceSet("pause")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-            Pausa
-          </button>
-          <button onClick={() => presenceSet("online")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-            Volver (Online)
-          </button>
-        </div>
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <button onClick={load} disabled={loading} style={{ padding: "10px 14px", borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 1000, cursor: "pointer" }}>
+          {loading ? "Actualizando..." : "Actualizar datos"}
+        </button>
       </div>
     </div>
   );
