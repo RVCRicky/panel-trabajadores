@@ -32,7 +32,6 @@ function formatMonthLabel(isoMonthDate: string) {
 
 function isoToNiceDate(iso: string | null) {
   if (!iso) return "—";
-  // Si viene YYYY-MM-DD lo mostramos en español
   try {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso;
@@ -139,7 +138,6 @@ export default function PanelIncidentsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // OJO: evitamos doble carga infinita si el backend ya nos devuelve el mismo month_date
   useEffect(() => {
     if (!month) return;
     load(month);
@@ -148,7 +146,6 @@ export default function PanelIncidentsPage() {
 
   const kpis = useMemo(() => {
     const count = items.length;
-
     const pending = items.filter((x) => String(x.status || "").toLowerCase() === "pending").length;
     const justified = items.filter((x) => String(x.status || "").toLowerCase() === "justified").length;
     const unjustified = items.filter((x) => String(x.status || "").toLowerCase() === "unjustified").length;
@@ -159,7 +156,7 @@ export default function PanelIncidentsPage() {
     return { count, pending, justified, unjustified, mins, penalty };
   }, [items]);
 
-  const card: React.CSSProperties = {
+  const cardShell: React.CSSProperties = {
     borderRadius: 18,
     border: "1px solid #e5e7eb",
     background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
@@ -187,10 +184,18 @@ export default function PanelIncidentsPage() {
     width: "100%",
   };
 
+  const mobileCard: React.CSSProperties = {
+    border: "1px solid #e5e7eb",
+    borderRadius: 16,
+    background: "#fff",
+    padding: 12,
+    boxShadow: "0 10px 30px rgba(0,0,0,0.06)",
+  };
+
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: 1160 }}>
       {/* Header premium */}
-      <div style={{ ...card, padding: 14 }}>
+      <div style={{ ...cardShell, padding: 14 }}>
         <div
           style={{
             display: "grid",
@@ -202,7 +207,7 @@ export default function PanelIncidentsPage() {
           <div style={{ display: "grid", gap: 6 }}>
             <div style={{ fontWeight: 1300, fontSize: 20, lineHeight: 1.1 }}>⚠️ Mis incidencias</div>
             <div style={{ color: "#6b7280", fontWeight: 900 }}>
-              Aquí se muestran tus incidencias del mes y la penalización total (solo cuentan las no justificadas).
+              Incidencias del mes + penalización (solo cuentan las no justificadas).
             </div>
           </div>
 
@@ -230,7 +235,7 @@ export default function PanelIncidentsPage() {
           </div>
         </div>
 
-        {/* Mes + resumen */}
+        {/* Mes + KPIs */}
         <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "420px 1fr", gap: 12 }}>
           <div style={{ display: "grid", gap: 8 }}>
             <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Mes</div>
@@ -252,7 +257,7 @@ export default function PanelIncidentsPage() {
             </select>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))", gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(4, minmax(0, 1fr))", gap: 10 }}>
             <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, background: "#fff" }}>
               <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>Incidencias</div>
               <div style={{ fontWeight: 1400, fontSize: 18, marginTop: 4 }}>{kpis.count}</div>
@@ -284,8 +289,8 @@ export default function PanelIncidentsPage() {
         </div>
       ) : null}
 
-      {/* Tabla premium */}
-      <div style={{ ...card, padding: 12 }}>
+      {/* LISTADO */}
+      <div style={{ ...cardShell, padding: 12 }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
           <div style={{ fontWeight: 1200 }}>Listado</div>
           <div style={{ color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
@@ -293,102 +298,167 @@ export default function PanelIncidentsPage() {
           </div>
         </div>
 
-        <div style={{ marginTop: 10, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 920 }}>
-            <thead>
-              <tr>
-                <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb", textAlign: "left" }}>Fecha</th>
-                <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb", textAlign: "left" }}>Tipo</th>
-                <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb", textAlign: "left" }}>Estado</th>
-                <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb", textAlign: "right" }}>Min</th>
-                <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb", textAlign: "right" }}>€</th>
-                <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb", textAlign: "left" }}>Notas</th>
-              </tr>
-            </thead>
+        {/* ✅ MÓVIL: tarjetas */}
+        {isMobile ? (
+          <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+            {items.length === 0 ? (
+              <div style={{ color: "#6b7280", fontWeight: 900 }}>No hay incidencias en este mes.</div>
+            ) : (
+              items.map((it) => {
+                const st = statusBadge(it.status);
+                const penalty = Number(it.penalty_eur) || 0;
 
-            <tbody>
-              {items.length === 0 ? (
-                <tr>
-                  <td colSpan={6} style={{ padding: 12, color: "#6b7280", fontWeight: 900 }}>
-                    No hay incidencias en este mes.
-                  </td>
-                </tr>
-              ) : (
-                items.map((it) => {
-                  const st = statusBadge(it.status);
-                  const penalty = Number(it.penalty_eur) || 0;
+                return (
+                  <div key={it.id} style={mobileCard}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                      <div style={{ fontWeight: 1300 }}>{isoToNiceDate(it.incident_date)}</div>
+                      <Badge tone={st.tone}>{st.text}</Badge>
+                    </div>
 
-                  return (
-                    <tr key={it.id}>
-                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", fontWeight: 1000 }}>
-                        {isoToNiceDate(it.incident_date)}
-                      </td>
+                    <div style={{ marginTop: 8, fontWeight: 1100 }}>{typeLabel(it)}</div>
 
-                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
-                        <div style={{ fontWeight: 1100 }}>{typeLabel(it)}</div>
-                        {it.month_date ? (
-                          <div style={{ color: "#6b7280", fontWeight: 900, fontSize: 12, marginTop: 4 }}>
-                            Mes: {formatMonthLabel(it.month_date)}
-                          </div>
-                        ) : null}
-                      </td>
+                    <div
+                      style={{
+                        marginTop: 10,
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 10,
+                      }}
+                    >
+                      <div style={{ border: "1px solid #f3f4f6", borderRadius: 12, padding: 10, background: "#fafafa" }}>
+                        <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>Minutos</div>
+                        <div style={{ fontWeight: 1400, marginTop: 2 }}>{it.minutes_late ?? "—"}</div>
+                      </div>
 
-                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
-                        <Badge tone={st.tone}>{st.text}</Badge>
-                      </td>
-
-                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", textAlign: "right", fontWeight: 1100 }}>
-                        {it.minutes_late ?? "—"}
-                      </td>
-
-                      <td
-                        style={{
-                          padding: 10,
-                          borderBottom: "1px solid #f3f4f6",
-                          textAlign: "right",
-                          fontWeight: 1300,
-                          color: penalty > 0 ? "#b91c1c" : "#111",
-                        }}
-                      >
-                        {eur(penalty)}
-                      </td>
-
-                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
-                        <div style={{ color: it.notes ? "#111" : "#6b7280", fontWeight: it.notes ? 900 : 800, whiteSpace: "pre-wrap" }}>
-                          {it.notes || "—"}
+                      <div style={{ border: "1px solid #f3f4f6", borderRadius: 12, padding: 10, background: "#fafafa" }}>
+                        <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>Penalización</div>
+                        <div style={{ fontWeight: 1500, marginTop: 2, color: penalty > 0 ? "#b91c1c" : "#111" }}>
+                          {eur(penalty)}
                         </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
+                      </div>
+                    </div>
 
-            <tfoot>
-              <tr>
-                <td colSpan={4} style={{ padding: 10, borderTop: "1px solid #e5e7eb", fontWeight: 1200, color: "#111" }}>
-                  Total penalización del mes
-                </td>
-                <td
-                  style={{
-                    padding: 10,
-                    borderTop: "1px solid #e5e7eb",
-                    textAlign: "right",
-                    fontWeight: 1500,
-                    color: totalPenalty > 0 ? "#b91c1c" : "#111",
-                  }}
-                >
-                  {eur(totalPenalty)}
-                </td>
-                <td style={{ padding: 10, borderTop: "1px solid #e5e7eb" }} />
-              </tr>
-            </tfoot>
-          </table>
-        </div>
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>Notas</div>
+                      <div style={{ marginTop: 4, fontWeight: it.notes ? 900 : 800, color: it.notes ? "#111" : "#6b7280", whiteSpace: "pre-wrap" }}>
+                        {it.notes || "—"}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
 
-        <div style={{ marginTop: 10, color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
-          * Solo cuentan las incidencias marcadas como <b>NO JUSTIFICADAS</b>. Las pendientes o justificadas no penalizan.
-        </div>
+            <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 12, marginTop: 4 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 1200 }}>
+                <span>Total penalización del mes</span>
+                <span style={{ color: totalPenalty > 0 ? "#b91c1c" : "#111" }}>{eur(totalPenalty)}</span>
+              </div>
+
+              <div style={{ marginTop: 8, color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
+                * Solo cuentan las incidencias <b>NO JUSTIFICADAS</b>.
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* ✅ DESKTOP: tabla */
+          <div style={{ marginTop: 10, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 920 }}>
+              <thead>
+                <tr>
+                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb", textAlign: "left" }}>Fecha</th>
+                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb", textAlign: "left" }}>Tipo</th>
+                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb", textAlign: "left" }}>Estado</th>
+                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb", textAlign: "right" }}>Min</th>
+                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb", textAlign: "right" }}>€</th>
+                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb", textAlign: "left" }}>Notas</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {items.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} style={{ padding: 12, color: "#6b7280", fontWeight: 900 }}>
+                      No hay incidencias en este mes.
+                    </td>
+                  </tr>
+                ) : (
+                  items.map((it) => {
+                    const st = statusBadge(it.status);
+                    const penalty = Number(it.penalty_eur) || 0;
+
+                    return (
+                      <tr key={it.id}>
+                        <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", fontWeight: 1000 }}>
+                          {isoToNiceDate(it.incident_date)}
+                        </td>
+
+                        <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
+                          <div style={{ fontWeight: 1100 }}>{typeLabel(it)}</div>
+                          {it.month_date ? (
+                            <div style={{ color: "#6b7280", fontWeight: 900, fontSize: 12, marginTop: 4 }}>
+                              Mes: {formatMonthLabel(it.month_date)}
+                            </div>
+                          ) : null}
+                        </td>
+
+                        <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
+                          <Badge tone={st.tone}>{st.text}</Badge>
+                        </td>
+
+                        <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", textAlign: "right", fontWeight: 1100 }}>
+                          {it.minutes_late ?? "—"}
+                        </td>
+
+                        <td
+                          style={{
+                            padding: 10,
+                            borderBottom: "1px solid #f3f4f6",
+                            textAlign: "right",
+                            fontWeight: 1300,
+                            color: penalty > 0 ? "#b91c1c" : "#111",
+                          }}
+                        >
+                          {eur(penalty)}
+                        </td>
+
+                        <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
+                          <div style={{ color: it.notes ? "#111" : "#6b7280", fontWeight: it.notes ? 900 : 800, whiteSpace: "pre-wrap" }}>
+                            {it.notes || "—"}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+
+              <tfoot>
+                <tr>
+                  <td colSpan={4} style={{ padding: 10, borderTop: "1px solid #e5e7eb", fontWeight: 1200, color: "#111" }}>
+                    Total penalización del mes
+                  </td>
+                  <td
+                    style={{
+                      padding: 10,
+                      borderTop: "1px solid #e5e7eb",
+                      textAlign: "right",
+                      fontWeight: 1500,
+                      color: totalPenalty > 0 ? "#b91c1c" : "#111",
+                    }}
+                  >
+                    {eur(totalPenalty)}
+                  </td>
+                  <td style={{ padding: 10, borderTop: "1px solid #e5e7eb" }} />
+                </tr>
+              </tfoot>
+            </table>
+
+            <div style={{ marginTop: 10, color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
+              * Solo cuentan las incidencias marcadas como <b>NO JUSTIFICADAS</b>.
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
