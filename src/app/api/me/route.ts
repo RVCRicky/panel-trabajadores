@@ -4,10 +4,12 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
-function getEnv(name: string) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env var: ${name}`);
-  return v;
+function getEnvAny(names: string[]) {
+  for (const n of names) {
+    const v = process.env[n];
+    if (v) return v;
+  }
+  throw new Error(`Missing env var: one of [${names.join(", ")}]`);
 }
 
 function bearerToken(req: Request) {
@@ -18,9 +20,10 @@ function bearerToken(req: Request) {
 
 export async function GET(req: Request) {
   try {
-    const SUPABASE_URL = getEnv("SUPABASE_URL");
-    const SUPABASE_ANON_KEY = getEnv("SUPABASE_ANON_KEY");
-    const SUPABASE_SERVICE_ROLE_KEY = getEnv("SUPABASE_SERVICE_ROLE_KEY");
+    // ✅ Acepta ambas convenciones (SUPABASE_* y NEXT_PUBLIC_*)
+    const SUPABASE_URL = getEnvAny(["SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"]);
+    const SUPABASE_ANON_KEY = getEnvAny(["SUPABASE_ANON_KEY", "NEXT_PUBLIC_SUPABASE_ANON_KEY"]);
+    const SUPABASE_SERVICE_ROLE_KEY = getEnvAny(["SUPABASE_SERVICE_ROLE_KEY"]);
 
     const token = bearerToken(req);
     if (!token) {
@@ -55,10 +58,7 @@ export async function GET(req: Request) {
     const role = String(worker?.role || "").toLowerCase();
     const isAdmin = role === "admin";
 
-    // ✅ Retro-compatible:
-    // - Algunos sitios esperan j.isAdmin
-    // - Otros esperan j.user.isAdmin
-    // - Otros esperan j.user.worker
+    // ✅ Retro-compatible
     return NextResponse.json({
       ok: true,
       isAdmin,
