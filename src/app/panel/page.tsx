@@ -97,8 +97,6 @@ type DashboardResp = {
     is_active?: boolean;
   }>;
 
-  // ✅ NUEVO (opcional). Si el backend lo trae, lo mostramos.
-  // Si no existe, no rompe nada.
   myIncidentsMonth?: {
     count: number;
     penalty_eur: number;
@@ -107,6 +105,15 @@ type DashboardResp = {
 };
 
 type PresenceState = "offline" | "online" | "pause" | "bathroom";
+
+type PanelMeResp = {
+  ok: boolean;
+  error?: string;
+  month_date: string;
+  invoice: null | { id: string; total_eur: number; status: string | null; updated_at: string | null };
+  penalty_month_eur: number;
+  bonuses_month_eur: number;
+};
 
 function labelRanking(k: string) {
   const key = String(k || "").toLowerCase();
@@ -150,6 +157,7 @@ export default function PanelPage() {
   const router = useRouter();
   const isMobile = useIsMobile();
 
+  // ✅ Por defecto ya NO arrancamos con eur_total para tarotistas
   const [rankType, setRankType] = useState<RankKey>("minutes");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -165,6 +173,9 @@ export default function PanelPage() {
   const tickRef = useRef<any>(null);
 
   const isLogged = pState !== "offline";
+
+  // ✅ Panel-me (bonos/total oficial)
+  const [panelMe, setPanelMe] = useState<PanelMeResp | null>(null);
 
   async function getToken() {
     const { data } = await supabase.auth.getSession();
@@ -190,6 +201,23 @@ export default function PanelPage() {
       setPState((j.state as PresenceState) || "offline");
       setSessionId(j.session_id || null);
       setStartedAt(j.started_at || null);
+    } catch {}
+  }
+
+  async function loadPanelMe() {
+    try {
+      const token = await getToken();
+      if (!token) return;
+
+      const res = await fetch("/api/panel/me", {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+
+      const j = (await res.json().catch(() => null)) as PanelMeResp | null;
+      if (!j?.ok) return;
+
+      setPanelMe(j);
     } catch {}
   }
 
@@ -227,12 +255,10 @@ export default function PanelPage() {
       const role = j?.user?.worker?.role || null;
       if (role === "tarotista" || role === "central") {
         await loadPresence();
+        await loadPanelMe(); // ✅ bonos/total oficial
       }
 
-      const r = String(role || "").toLowerCase();
-      if (r === "tarotista" && Array.isArray(j.rankings?.eur_total) && (j.rankings.eur_total?.length || 0) > 0) {
-        setRankType((prev) => (prev === "minutes" ? "eur_total" : prev));
-      }
+      // ✅ Eliminado: auto-cambiar a eur_total (ya no queremos € ranking en tarotistas)
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
     } finally {
@@ -343,6 +369,13 @@ export default function PanelPage() {
   const isCentral = myRole === "central";
   const isTarot = myRole === "tarotista";
 
+  // ✅ En tarotistas, si por algún motivo rankType quedó en eur_* lo corregimos
+  useEffect(() => {
+    if (!isTarot) return;
+    if (rankType === "eur_total" || rankType === "eur_bonus") setRankType("minutes");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTarot]);
+
   const ranks = (data?.rankings as any)?.[rankType] || [];
 
   const myRankTarot = useMemo(() => {
@@ -372,10 +405,12 @@ export default function PanelPage() {
   const stateTone = pState === "online" ? "ok" : pState === "pause" || pState === "bathroom" ? "warn" : "neutral";
   const stateText = pState === "online" ? "ONLINE" : pState === "pause" ? "PAUSA" : pState === "bathroom" ? "BAÑO" : "OFFLINE";
 
-  const totalEur = data?.myEarnings?.amount_total_eur ?? null;
-  const bonusOnly = data?.myEarnings?.amount_bonus_eur ?? null;
   const minutesTotal = data?.myEarnings?.minutes_total ?? null;
   const captadasTotal = data?.myEarnings?.captadas ?? null;
+
+  // ✅ Totales oficiales
+  const totalEurOfficial = panelMe?.invoice?.total_eur ?? null;
+  const bonusOfficial = panelMe?.bonuses_month_eur ?? null;
 
   const months = data?.months || [];
   const monthLabel = selectedMonth
@@ -412,9 +447,9 @@ export default function PanelPage() {
 
   const btnBase: React.CSSProperties = {
     padding: 12,
-    borderRadius: 12,
+    borderRadius: 14,
     border: "1px solid #111",
-    fontWeight: 900,
+    fontWeight: 1000,
     cursor: "pointer",
     width: isMobile ? "100%" : "auto",
   };
@@ -429,83 +464,118 @@ export default function PanelPage() {
     ...btnBase,
     background: "#fff",
     color: "#111",
-    border: "1px solid #ddd",
+    border: "1px solid #e5e7eb",
   };
 
-  // ✅ Resumen incidencias del mes (si backend lo trae)
   const incCount = data?.myIncidentsMonth?.count ?? null;
   const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
   const incGrave = !!data?.myIncidentsMonth?.grave;
 
+  // ✅ NAV (botones juntos)
+  const navWrap: React.CSSProperties = {
+    display: "grid",
+    gap: 10,
+    gridTemplateColumns: isMobile ? "1fr" : "1fr auto",
+    alignItems: "center",
+  };
+
+  const segmented: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: isMobile ? "1fr" : "repeat(3, auto)",
+    gap: 10,
+    alignItems: "center",
+    justifyContent: isMobile ? "stretch" : "start",
+  };
+
+  const navBtn = (active: boolean): React.CSSProperties => ({
+    ...btnBase,
+    padding: "10px 14px",
+    borderRadius: 999,
+    border: active ? "1px solid #111" : "1px solid #e5e7eb",
+    background: active ? "#111" : "#fff",
+    color: active ? "#fff" : "#111",
+    textDecoration: "none",
+    display: "inline-flex",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 8,
+    whiteSpace: "nowrap",
+  });
+
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: "100%" }}>
-      {/* ===== Header ===== */}
-      <div style={{ display: "grid", gap: 10, width: "100%" }}>
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-          <h1 style={{ margin: 0, lineHeight: 1.1 }}>Panel</h1>
-          <div style={{ color: "#6b7280", textTransform: "capitalize", fontWeight: 900 }}>{monthLabel}</div>
+      {/* ===== Header / NAV ===== */}
+      <div
+        style={{
+          border: "2px solid #111",
+          borderRadius: 18,
+          padding: 14,
+          background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
+        }}
+      >
+        <div style={navWrap}>
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+              <h1 style={{ margin: 0, lineHeight: 1.1, fontSize: 22, fontWeight: 1200 }}>Panel</h1>
+              <div style={{ color: "#6b7280", textTransform: "capitalize", fontWeight: 1000 }}>{monthLabel}</div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <Badge tone={stateTone as any}>{stateText}</Badge>
+              <div style={{ fontWeight: 1100, color: "#111" }}>{formatHMS(elapsedSec)}</div>
+              {me?.display_name ? (
+                <div style={{ color: "#6b7280", fontWeight: 900 }}>
+                  {me.display_name} · {labelRole(me.role || "—")}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10, justifyItems: isMobile ? "stretch" : "end" }}>
+            <button onClick={() => load(selectedMonth)} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}>
+              {loading ? "Actualizando..." : "Actualizar"}
+            </button>
+
+            <button onClick={logout} style={btnPrimary}>
+              Cerrar sesión
+            </button>
+          </div>
         </div>
 
-        {/* Mes */}
-        <div style={{ display: "grid", gap: 8, width: "100%" }}>
-          <div style={{ color: "#666", fontWeight: 900 }}>Mes:</div>
-          <select
-            value={selectedMonth || data?.month_date || ""}
-            onChange={(e) => setSelectedMonth(e.target.value || null)}
-            style={{
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid #ddd",
-              width: "100%",
-              maxWidth: "100%",
-            }}
-            disabled={loading || months.length === 0}
-          >
-            {months.length === 0 ? (
-              <option value="">{data?.month_date || "—"}</option>
+        <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+          <div style={segmented}>
+            <a href="/panel" style={navBtn(true)}>📊 Dashboard</a>
+
+            {/* ⚠️ Ajusta esta ruta si tu página real de facturas es otra */}
+            <a href="/panel/facturas" style={navBtn(false)}>🧾 Facturas</a>
+
+            {(isTarot || isCentral) ? (
+              <a href="/panel/incidents" style={navBtn(false)}>⚠️ Mis incidencias</a>
             ) : (
-              months.map((m) => (
-                <option key={m} value={m}>
-                  {formatMonthLabel(m)}
-                </option>
-              ))
+              <a href="/panel/incidents" style={{ ...navBtn(false), opacity: 0.4, pointerEvents: "none" }}>⚠️ Mis incidencias</a>
             )}
-          </select>
+          </div>
+
+          <div style={{ display: "grid", gap: 8, width: "100%" }}>
+            <div style={{ color: "#6b7280", fontWeight: 1000 }}>Mes</div>
+            <select
+              value={selectedMonth || data?.month_date || ""}
+              onChange={(e) => setSelectedMonth(e.target.value || null)}
+              style={{ padding: 12, borderRadius: 12, border: "1px solid #e5e7eb", width: "100%", maxWidth: "100%" }}
+              disabled={loading || months.length === 0}
+            >
+              {months.length === 0 ? (
+                <option value="">{data?.month_date || "—"}</option>
+              ) : (
+                months.map((m) => (
+                  <option key={m} value={m}>
+                    {formatMonthLabel(m)}
+                  </option>
+                ))
+              )}
+            </select>
+          </div>
         </div>
-
-        {/* Acciones */}
-        <div style={{ display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
-          <button onClick={() => load(selectedMonth)} disabled={loading} style={loading ? { ...btnGhost, opacity: 0.7, cursor: "not-allowed" } : btnGhost}>
-            {loading ? "Actualizando..." : "Actualizar"}
-          </button>
-
-          <button onClick={logout} style={btnPrimary}>
-            Cerrar sesión
-          </button>
-        </div>
-
-        {/* ✅ Botón incidencias (tarotista/central) */}
-        {(isTarot || isCentral) ? (
-          <a
-            href="/panel/incidents"
-            style={{
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid #111",
-              background: "#111",
-              color: "#fff",
-              fontWeight: 900,
-              textDecoration: "none",
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 8,
-              width: "100%",
-            }}
-          >
-            ⚠️ Mis incidencias
-          </a>
-        ) : null}
       </div>
 
       {err ? (
@@ -595,18 +665,26 @@ export default function PanelPage() {
         </Card>
 
         {isTarot ? (
-          <Card>
-            <CardTitle>Total € este mes</CardTitle>
-            <CardValue>{totalEur === null ? "—" : eur(totalEur)}</CardValue>
-            <CardHint>
-              Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas:{" "}
-              <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
-            </CardHint>
-          </Card>
+          <>
+            <Card>
+              <CardTitle>Total € del mes</CardTitle>
+              <CardValue>{totalEurOfficial === null ? "—" : eur(totalEurOfficial)}</CardValue>
+              <CardHint>
+                Minutos: <b>{minutesTotal === null ? "—" : fmt(minutesTotal)}</b> · Captadas:{" "}
+                <b>{captadasTotal === null ? "—" : fmt(captadasTotal)}</b>
+              </CardHint>
+            </Card>
+
+            <Card>
+              <CardTitle>Bonos ganados (mes)</CardTitle>
+              <CardValue>{bonusOfficial === null ? "—" : eur(bonusOfficial)}</CardValue>
+              <CardHint>Calculado desde líneas de factura (fuente oficial).</CardHint>
+            </Card>
+          </>
         ) : isCentral ? (
           <Card>
             <CardTitle>Bono del mes</CardTitle>
-            <CardValue>{bonusOnly === null ? "—" : eur(bonusOnly)}</CardValue>
+            <CardValue>{data?.myEarnings?.amount_bonus_eur == null ? "—" : eur(data.myEarnings.amount_bonus_eur)}</CardValue>
             <CardHint>Solo se muestra el bono por posición del equipo.</CardHint>
           </Card>
         ) : null}
@@ -617,13 +695,10 @@ export default function PanelPage() {
           <CardHint>{isCentral ? "Según ranking global de equipos." : "Según el ranking seleccionado abajo."}</CardHint>
         </Card>
 
-        {/* ✅ NUEVO: resumen incidencias (si existe) */}
         {(isTarot || isCentral) ? (
           <Card>
             <CardTitle>Incidencias del mes</CardTitle>
-            <CardValue>
-              {incCount == null ? "—" : `${fmt(incCount)} incidencias`}
-            </CardValue>
+            <CardValue>{incCount == null ? "—" : `${fmt(incCount)} incidencias`}</CardValue>
             <CardHint>
               Penalización: <b>{incPenalty == null ? "—" : eur(incPenalty)}</b>
               {incGrave ? (
@@ -668,14 +743,7 @@ export default function PanelPage() {
             <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 12, background: "#fff" }}>
               <div style={{ fontWeight: 1100 }}>Acciones</div>
 
-              <div
-                style={{
-                  marginTop: 10,
-                  display: "grid",
-                  gap: 10,
-                  gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
-                }}
-              >
+              <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
                 <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
                   {bigActionLabel}
                 </button>
@@ -684,27 +752,15 @@ export default function PanelPage() {
                   Refrescar
                 </button>
 
-                <button
-                  onClick={() => presenceSet("pause")}
-                  disabled={!isLogged}
-                  style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
-                >
+                <button onClick={() => presenceSet("pause")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
                   Pausa
                 </button>
 
-                <button
-                  onClick={() => presenceSet("bathroom")}
-                  disabled={!isLogged}
-                  style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
-                >
+                <button onClick={() => presenceSet("bathroom")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
                   Baño
                 </button>
 
-                <button
-                  onClick={() => presenceSet("online")}
-                  disabled={!isLogged}
-                  style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}
-                >
+                <button onClick={() => presenceSet("online")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
                   Volver (Online)
                 </button>
               </div>
@@ -721,7 +777,7 @@ export default function PanelPage() {
           {(isCentral
             ? (["minutes", "captadas"] as RankKey[])
             : isTarot
-            ? (["eur_total", "eur_bonus", "minutes", "captadas"] as RankKey[])
+            ? (["minutes", "captadas", "repite_pct", "cliente_pct"] as RankKey[]) // ✅ Tarotistas sin €
             : (["minutes", "repite_pct", "cliente_pct", "captadas"] as RankKey[])
           ).map((k) => (
             <div key={k} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
@@ -762,20 +818,14 @@ export default function PanelPage() {
           <select
             value={rankType}
             onChange={(e) => setRankType(e.target.value as RankKey)}
-            style={{
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid #ddd",
-              width: "100%",
-              maxWidth: 520,
-            }}
+            style={{ padding: 12, borderRadius: 12, border: "1px solid #ddd", width: "100%", maxWidth: 520 }}
           >
             {isTarot ? (
               <>
-                <option value="eur_total">Ranking por € Total</option>
-                <option value="eur_bonus">Ranking por € Bonus</option>
                 <option value="minutes">Ranking por Minutos</option>
                 <option value="captadas">Ranking por Captadas</option>
+                <option value="repite_pct">Ranking por Repite %</option>
+                <option value="cliente_pct">Ranking por Clientes %</option>
               </>
             ) : isCentral ? (
               <>
@@ -816,7 +866,9 @@ export default function PanelPage() {
                       {medal(pos)} {pos}
                     </td>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>{r.name}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>{valueOf(rankType, r)}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3", textAlign: "right" }}>
+                      {valueOf(rankType, r)}
+                    </td>
                   </tr>
                 );
               })}
