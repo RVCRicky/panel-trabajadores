@@ -24,10 +24,6 @@ function useIsMobile(bp = 720) {
   return isMobile;
 }
 
-function norm(s: any) {
-  return String(s || "").trim().toLowerCase();
-}
-
 function formatMonthLabel(isoMonthDate: string) {
   const [y, m] = String(isoMonthDate || "").split("-");
   const monthNum = Number(m);
@@ -57,7 +53,6 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
   const [loading, setLoading] = useState(true);
   const [fatal, setFatal] = useState<string | null>(null);
 
-  // ✅ Header state
   const [months, setMonths] = useState<string[]>([]);
   const [month, setMonth] = useState<string | null>(null);
 
@@ -65,9 +60,6 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
 
-  const isLoggedPresence = pState !== "offline";
-
-  // === Helpers auth ===
   async function hardLogoutToLogin() {
     try {
       await supabase.auth.signOut();
@@ -85,15 +77,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     return token;
   }
 
-  async function authedFetch(url: string, init?: RequestInit) {
-    const token = await getTokenOrLogout();
-    if (!token) throw new Error("NO_TOKEN");
-    const headers = new Headers(init?.headers || {});
-    headers.set("Authorization", `Bearer ${token}`);
-    return fetch(url, { ...init, headers, cache: "no-store" });
-  }
-
-  // === Bootstrap: me + months + presence ===
+  // Bootstrap
   useEffect(() => {
     let alive = true;
 
@@ -102,40 +86,36 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
         const token = await getTokenOrLogout();
         if (!token) return;
 
-        const res = await fetch("/api/me", {
+        const meRes = await fetch("/api/me", {
           headers: { Authorization: `Bearer ${token}` },
           cache: "no-store",
         });
-        const j = await res.json().catch(() => null);
+        const meJson = await meRes.json().catch(() => null);
         if (!alive) return;
 
-        if (!j?.ok || !j?.worker) {
+        if (!meJson?.ok || !meJson?.worker) {
+          await hardLogoutToLogin();
+          return;
+        }
+        if (!meJson.worker.is_active) {
           await hardLogoutToLogin();
           return;
         }
 
-        if (!j.worker.is_active) {
-          await hardLogoutToLogin();
-          return;
-        }
-
-        const r = (j.worker.role as WorkerRole) || null;
-        setName(j.worker.display_name || "");
+        const r = (meJson.worker.role as WorkerRole) || null;
+        setName(meJson.worker.display_name || "");
         setRole(r);
 
-        // ✅ months + default month (desde dashboard/full)
-        const r2 = await fetch("/api/dashboard/full", {
+        const dashRes = await fetch("/api/dashboard/full", {
           headers: { Authorization: `Bearer ${token}` },
           cache: "no-store",
         });
-        const d = await r2.json().catch(() => null);
-        if (alive && d?.ok) {
-          const mm = Array.isArray(d.months) ? d.months : [];
-          setMonths(mm);
-          setMonth(d.month_date || null);
+        const dashJson = await dashRes.json().catch(() => null);
+        if (alive && dashJson?.ok) {
+          setMonths(Array.isArray(dashJson.months) ? dashJson.months : []);
+          setMonth(dashJson.month_date || null);
         }
 
-        // ✅ presence si tarotista/central
         if (r === "tarotista" || r === "central") {
           const pr = await fetch("/api/presence/me", {
             headers: { Authorization: `Bearer ${token}` },
@@ -163,7 +143,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
-  // ✅ Tick tiempo
+  // Tick
   useEffect(() => {
     let timer: any = null;
 
@@ -180,13 +160,43 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     return () => timer && clearInterval(timer);
   }, [startedAt, pState]);
 
-  // ✅ UI helpers
   const stateTone = pState === "online" ? "ok" : pState === "pause" || pState === "bathroom" ? "warn" : "neutral";
   const stateText = pState === "online" ? "ONLINE" : pState === "pause" ? "PAUSA" : pState === "bathroom" ? "BAÑO" : "OFFLINE";
 
   const titleRole = role === "admin" ? "Admin" : role === "central" ? "Central" : "Tarotista";
-
   const canSeeIncidents = role === "tarotista" || role === "central" || role === "admin";
+
+  async function logout() {
+    await hardLogoutToLogin();
+  }
+
+  function refreshAll() {
+    window.location.reload();
+  }
+
+  function changeMonth(next: string) {
+    setMonth(next || null);
+
+    const base = pathname || "/panel";
+    const url = new URL(window.location.href);
+    if (next) url.searchParams.set("month_date", next);
+    else url.searchParams.delete("month_date");
+
+    const qs = url.searchParams.toString();
+    router.replace(qs ? `${base}?${qs}` : base);
+  }
+
+  // Si URL trae month_date, reflejarlo
+  useEffect(() => {
+    try {
+      const u = new URL(window.location.href);
+      const q = u.searchParams.get("month_date");
+      if (q && q !== month) setMonth(q);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
+
+  const monthLabel = useMemo(() => (month ? formatMonthLabel(month) : "—"), [month]);
 
   const linkStyle = (href: string) => {
     const active = pathname === href || pathname.startsWith(href + "/");
@@ -205,43 +215,6 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
       whiteSpace: "nowrap" as const,
     };
   };
-
-  async function logout() {
-    await hardLogoutToLogin();
-  }
-
-  async function refreshAll() {
-    // ✅ Simple: recarga la página (mantiene el estado consistente)
-    window.location.reload();
-  }
-
-  async function changeMonth(next: string) {
-    setMonth(next || null);
-
-    // ✅ cambia el query param month_date para que el dashboard lo lea
-    // - en /panel → /panel?month_date=YYYY-MM-01
-    // - en subrutas igual
-    const base = pathname || "/panel";
-    const url = new URL(window.location.href);
-    if (next) url.searchParams.set("month_date", next);
-    else url.searchParams.delete("month_date");
-    router.replace(base + "?" + url.searchParams.toString());
-  }
-
-  // ✅ Si la URL trae ?month_date=..., reflejarlo en el selector
-  useEffect(() => {
-    try {
-      const url = new URL(window.location.href);
-      const q = url.searchParams.get("month_date");
-      if (q && q !== month) setMonth(q);
-    } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathname]);
-
-  const monthLabel = useMemo(() => {
-    if (!month) return "—";
-    return formatMonthLabel(month);
-  }, [month]);
 
   if (loading) {
     return (
@@ -300,12 +273,20 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     );
   }
 
-  // ✅ Header PRO
+  // ✅ Header PRO (sin cosas duplicadas y sin “montarse”)
   return (
     <div style={{ minHeight: "100vh", background: "#f6f7fb" }}>
-      <div style={{ position: "sticky", top: 0, zIndex: 20, background: "rgba(246,247,251,0.85)", backdropFilter: "blur(10px)", borderBottom: "1px solid #e5e7eb" }}>
+      <div
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 20,
+          background: "rgba(246,247,251,0.88)",
+          backdropFilter: "blur(10px)",
+          borderBottom: "1px solid #e5e7eb",
+        }}
+      >
         <div style={{ maxWidth: 1160, margin: "0 auto", padding: isMobile ? "10px 10px" : "14px 14px" }}>
-          {/* Top row */}
           <div
             style={{
               borderRadius: 20,
@@ -317,9 +298,17 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
               gap: 12,
             }}
           >
-            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "auto 1fr auto", gap: 12, alignItems: "center" }}>
-              {/* Brand */}
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {/* ROW 1 */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: isMobile ? "1fr" : "auto 1fr auto",
+                gap: 12,
+                alignItems: "center",
+              }}
+            >
+              {/* Left brand */}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
                 <div
                   style={{
                     width: 46,
@@ -330,92 +319,105 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                     display: "grid",
                     placeItems: "center",
                     overflow: "hidden",
+                    flex: "0 0 auto",
                   }}
                 >
                   <Image src="/logo.png" alt="Tarot Celestial" width={46} height={46} />
                 </div>
 
-                <div style={{ lineHeight: 1.1 }}>
-                  <div style={{ fontWeight: 1300, fontSize: 16 }}>Tarot Celestial</div>
-                  <div style={{ color: "#6b7280", fontWeight: 900, marginTop: 4 }}>Panel Interno · Fichaje · Objetivos · Facturación</div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 1300, fontSize: 16, lineHeight: 1.1 }}>Tarot Celestial</div>
+                  <div style={{ color: "#6b7280", fontWeight: 900, marginTop: 4, lineHeight: 1.2 }}>
+                    Panel Interno · Fichaje · Objetivos · Facturación
+                  </div>
                 </div>
               </div>
 
-              {/* Center: month + status */}
-              <div style={{ display: "grid", gap: 8 }}>
-                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  <Badge tone={stateTone as any}>{stateText}</Badge>
-                  <div style={{ fontWeight: 1200, fontSize: 18 }}>{formatHMS(elapsedSec)}</div>
-                  <div style={{ color: "#6b7280", fontWeight: 900 }}>
-                    {titleRole}: <b style={{ color: "#111" }}>{name}</b> · <span style={{ textTransform: "capitalize" }}>{monthLabel}</span>
-                  </div>
+              {/* Center status */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: isMobile ? "flex-start" : "center",
+                  gap: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                <Badge tone={stateTone as any}>{stateText}</Badge>
+                <div style={{ fontWeight: 1200, fontSize: 18 }}>{formatHMS(elapsedSec)}</div>
+                <div style={{ color: "#6b7280", fontWeight: 900 }}>
+                  {titleRole}: <b style={{ color: "#111" }}>{name}</b>
                 </div>
+              </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr auto", gap: 10, alignItems: "center" }}>
-                  <div style={{ display: "grid", gap: 6 }}>
-                    <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>Mes</div>
-                    <select
-                      value={month || ""}
-                      onChange={(e) => changeMonth(e.target.value)}
-                      style={{
-                        width: "100%",
-                        padding: "10px 12px",
-                        borderRadius: 14,
-                        border: "1px solid #e5e7eb",
-                        fontWeight: 900,
-                        background: "#fff",
-                      }}
-                      disabled={months.length === 0}
-                    >
-                      {months.length === 0 ? <option value="">{month || "—"}</option> : null}
-                      {months.map((m) => (
-                        <option key={m} value={m}>
-                          {formatMonthLabel(m)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <button
-                    onClick={refreshAll}
+              {/* Right actions */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: isMobile ? "flex-start" : "flex-end",
+                  gap: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                {/* Mes compacto */}
+                <div style={{ display: "grid", gap: 6 }}>
+                  <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>Mes</div>
+                  <select
+                    value={month || ""}
+                    onChange={(e) => changeMonth(e.target.value)}
                     style={{
-                      padding: "12px 14px",
-                      borderRadius: 14,
-                      border: "1px solid #111",
-                      background: "#111",
-                      color: "#fff",
-                      fontWeight: 1100,
-                      cursor: "pointer",
-                      whiteSpace: "nowrap",
-                      height: 46,
-                      alignSelf: isMobile ? "stretch" : "end",
+                      width: isMobile ? "100%" : 220, // ✅ compacto
+                      padding: "9px 10px",
+                      borderRadius: 12,
+                      border: "1px solid #e5e7eb",
+                      fontWeight: 900,
+                      background: "#fff",
+                      textTransform: "capitalize",
                     }}
-                    title="Actualizar datos"
+                    disabled={months.length === 0}
+                    title={monthLabel}
                   >
-                    Actualizar
-                  </button>
+                    {months.length === 0 ? <option value="">{month || "—"}</option> : null}
+                    {months.map((m) => (
+                      <option key={m} value={m}>
+                        {formatMonthLabel(m)}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-              </div>
 
-              {/* Right: actions */}
-              <div style={{ display: "flex", gap: 10, justifyContent: isMobile ? "space-between" : "flex-end", alignItems: "center" }}>
-                {role === "admin" ? (
-                  <a href="/admin" style={{ ...linkStyle("/admin"), borderRadius: 14 }}>
-                    Ir a Admin →
-                  </a>
-                ) : null}
+                <button
+                  onClick={refreshAll}
+                  style={{
+                    padding: "11px 14px",
+                    borderRadius: 12,
+                    border: "1px solid #111",
+                    background: "#111",
+                    color: "#fff",
+                    fontWeight: 1100,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                    height: 42,
+                    alignSelf: "end",
+                  }}
+                >
+                  Actualizar
+                </button>
 
                 <button
                   onClick={logout}
                   style={{
-                    padding: "12px 14px",
-                    borderRadius: 14,
+                    padding: "11px 14px",
+                    borderRadius: 12,
                     border: "1px solid #e5e7eb",
                     background: "#fff",
                     color: "#111",
                     fontWeight: 1100,
                     cursor: "pointer",
                     whiteSpace: "nowrap",
+                    height: 42,
+                    alignSelf: "end",
                   }}
                 >
                   Cerrar sesión
@@ -423,7 +425,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
               </div>
             </div>
 
-            {/* Nav pills */}
+            {/* ROW 2 NAV */}
             <div
               style={{
                 display: "flex",
@@ -445,7 +447,9 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                   ⚠️ Mis incidencias
                 </a>
               ) : (
-                <span style={{ ...linkStyle("/panel/incidents"), opacity: 0.4, pointerEvents: "none" }}>⚠️ Mis incidencias</span>
+                <span style={{ ...linkStyle("/panel/incidents"), opacity: 0.4, pointerEvents: "none" }}>
+                  ⚠️ Mis incidencias
+                </span>
               )}
             </div>
           </div>
