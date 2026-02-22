@@ -112,7 +112,7 @@ type PanelMeResp = {
   month_date: string;
   invoice: null | { id: string; total_eur: number; status: string | null; updated_at: string | null };
   penalty_month_eur: number;
-  bonuses_month_eur: number; // ✅ aquí entran bonos ya reflejados (manuales y/o ya calculados en factura)
+  bonuses_month_eur: number; // ✅ aquí entran bonos manuales + otros ya reflejados en factura
 };
 
 function labelRanking(k: string) {
@@ -153,6 +153,10 @@ function formatMonthLabel(isoMonthDate: string) {
   return date.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
 }
 
+function norm(s: any) {
+  return String(s || "").trim().toLowerCase();
+}
+
 export default function PanelPage() {
   const router = useRouter();
   const isMobile = useIsMobile();
@@ -173,7 +177,6 @@ export default function PanelPage() {
 
   const isLogged = pState !== "offline";
 
-  // ✅ panel/me para totales oficiales (factura/bonos manuales/penalización)
   const [panelMe, setPanelMe] = useState<PanelMeResp | null>(null);
 
   async function getToken() {
@@ -257,7 +260,7 @@ export default function PanelPage() {
       const role = j?.user?.worker?.role || null;
       if (role === "tarotista" || role === "central") {
         await loadPresence();
-        await loadPanelMe(month); // ✅ mismo mes
+        await loadPanelMe(month);
       }
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
@@ -368,11 +371,15 @@ export default function PanelPage() {
   }, [startedAt, pState]);
 
   const me = data?.user?.worker || null;
-  const myRole = String(me?.role || "").toLowerCase();
+  const myRole = norm(me?.role);
   const isCentral = myRole === "central";
   const isTarot = myRole === "tarotista";
 
-  // tarotistas: no permitir rankType eur_* (no quieres que se muestre)
+  // ✅ IDs robustos (según cómo venga tu worker)
+  const myWorkerId = String(me?.id || me?.worker_id || me?.workerId || me?.worker_uuid || "").trim();
+  const myName = String(me?.display_name || "").trim();
+
+  // tarotistas: no permitir rankType eur_*
   useEffect(() => {
     if (!isTarot) return;
     if (rankType === "eur_total" || rankType === "eur_bonus") setRankType("minutes");
@@ -381,12 +388,24 @@ export default function PanelPage() {
 
   const ranks = (data?.rankings as any)?.[rankType] || [];
 
+  // ✅ Match por worker_id primero, luego por name
   const myRankTarot = useMemo(() => {
-    const myName = me?.display_name;
-    if (!myName) return null;
-    const idx = ranks.findIndex((x: any) => x.name === myName);
+    if (!isTarot) return null;
+    const list = ranks || [];
+    if (!Array.isArray(list) || list.length === 0) return null;
+
+    let idx = -1;
+
+    if (myWorkerId) {
+      idx = list.findIndex((x: any) => String(x?.worker_id || x?.workerId || x?.id || "").trim() === myWorkerId);
+    }
+
+    if (idx === -1 && myName) {
+      idx = list.findIndex((x: any) => String(x?.name || x?.worker_name || x?.display_name || "").trim() === myName);
+    }
+
     return idx === -1 ? null : idx + 1;
-  }, [me?.display_name, ranks]);
+  }, [isTarot, ranks, myWorkerId, myName]);
 
   const myRank = isCentral ? (data?.myTeamRank ?? null) : myRankTarot;
 
@@ -411,7 +430,6 @@ export default function PanelPage() {
   const minutesTotal = data?.myEarnings?.minutes_total ?? null;
   const captadasTotal = data?.myEarnings?.captadas ?? null;
 
-  // ✅ total oficial de factura
   const totalEurOfficial = panelMe?.invoice?.total_eur ?? null;
 
   const incCount = data?.myIncidentsMonth?.count ?? null;
@@ -433,9 +451,9 @@ export default function PanelPage() {
     const rules = data?.bonusRules || [];
     const r = rules.find(
       (x) =>
-        String(x.ranking_type || "").toLowerCase() === "team_winner" &&
+        norm(x.ranking_type) === "team_winner" &&
         Number(x.position) === 1 &&
-        String(x.role || "").toLowerCase() === "central" &&
+        norm(x.role) === "central" &&
         (x.is_active === undefined ? true : !!x.is_active)
     );
     return r ? Number(r.amount_eur) || 0 : 0;
@@ -473,18 +491,23 @@ export default function PanelPage() {
     border: "1px solid #e5e7eb",
   };
 
-  // ✅ BONOS PROVISIONALES (por posición actual) + alias por si tu DB usa nombres distintos
+  // ✅ Bonos PROVISIONALES: usa EXACTAMENTE tus ranking_type reales (minutes/captadas/repite_pct/cliente_pct)
   const bonusProvisionalTarot = useMemo(() => {
-    if (!isTarot) return { total: 0, breakdown: [] as Array<{ label: string; amount: number; pos: number }>, positions: {} as any };
-
-    const myName = me?.display_name;
-    if (!myName) return { total: 0, breakdown: [], positions: {} as any };
+    if (!isTarot) return { total: 0, breakdown: [] as Array<{ key: string; label: string; amount: number; pos: number }>, positions: {} as any };
 
     const rankings = (data?.rankings || {}) as any;
+    const rules = (data?.bonusRules || []).filter((r) => (r.is_active === undefined ? true : !!r.is_active));
 
-    const getPos = (k: RankKey) => {
-      const list = rankings?.[k] || [];
-      const idx = list.findIndex((x: any) => x?.name === myName);
+    // pos por rankingKey, buscando por worker_id primero
+    const getPos = (key: RankKey) => {
+      const list = rankings?.[key] || [];
+      if (!Array.isArray(list) || list.length === 0) return null;
+
+      let idx = -1;
+
+      if (myWorkerId) idx = list.findIndex((x: any) => String(x?.worker_id || x?.workerId || x?.id || "").trim() === myWorkerId);
+      if (idx === -1 && myName) idx = list.findIndex((x: any) => String(x?.name || x?.worker_name || x?.display_name || "").trim() === myName);
+
       return idx === -1 ? null : idx + 1;
     };
 
@@ -495,40 +518,20 @@ export default function PanelPage() {
       cliente_pct: getPos("cliente_pct"),
     };
 
-    const rulesRaw = (data?.bonusRules || []).filter((r) => (r.is_active === undefined ? true : !!r.is_active));
-    const norm = (s: any) => String(s || "").trim().toLowerCase().replace(/\s+/g, "_");
+    const roleOk = (r: any) => norm(r) === "tarotista";
 
-    const roleOk = (r: any) => {
-      const x = norm(r);
-      return x === "tarotista" || x === "tarotist" || x === "tarot" || x === "worker" || x === "agent";
-    };
-
-    const typeAliases: Record<string, string[]> = {
-      minutes: ["minutes", "minutos", "mins", "tarot_minutes", "tarotista_minutes", "minutes_tarot", "ranking_minutes"],
-      captadas: ["captadas", "captadas_total", "leads", "captations", "tarot_captadas", "tarotista_captadas", "captadas_tarot", "ranking_captadas"],
-      repite_pct: ["repite_pct", "repite", "repeat_pct", "repeat", "repite_porcentaje", "tarot_repite_pct", "tarotista_repite_pct", "ranking_repite_pct"],
-      cliente_pct: ["cliente_pct", "clientes_pct", "client_pct", "clientes", "cliente_porcentaje", "tarot_cliente_pct", "tarotista_cliente_pct", "ranking_cliente_pct"],
-    };
-
-    const matchRule = (rankingKey: keyof typeof typeAliases, pos: number | null) => {
+    const pick = (ranking_type: "minutes" | "captadas" | "repite_pct" | "cliente_pct", pos: number | null) => {
       if (!pos) return 0;
-      const aliases = typeAliases[rankingKey].map(norm);
-
-      const hit = rulesRaw.find((r) => {
-        const rt = norm(r.ranking_type);
-        const rr = norm(r.role);
-        return roleOk(rr) && aliases.includes(rt) && Number(r.position) === Number(pos);
-      });
-
+      const hit = rules.find((x) => roleOk(x.role) && norm(x.ranking_type) === ranking_type && Number(x.position) === Number(pos));
       return hit ? Number(hit.amount_eur) || 0 : 0;
     };
 
-    const breakdown: Array<{ label: string; amount: number; pos: number }> = [];
+    const breakdown: Array<{ key: string; label: string; amount: number; pos: number }> = [];
 
-    const add = (key: keyof typeof typeAliases, label: string) => {
+    const add = (key: "minutes" | "captadas" | "repite_pct" | "cliente_pct", label: string) => {
       const pos = (positions as any)[key] as number | null;
-      const amount = matchRule(key, pos);
-      if (pos && amount && amount > 0) breakdown.push({ label, amount, pos });
+      const amount = pick(key, pos);
+      if (pos && amount > 0) breakdown.push({ key, label, amount, pos });
     };
 
     add("minutes", "Minutos");
@@ -538,14 +541,14 @@ export default function PanelPage() {
 
     const total = breakdown.reduce((acc, x) => acc + x.amount, 0);
     return { total, breakdown, positions };
-  }, [isTarot, me?.display_name, data?.bonusRules, data?.rankings]);
+  }, [isTarot, data?.rankings, data?.bonusRules, myWorkerId, myName]);
 
-  // ✅ BONOS CONFIRMADOS (manuales o ya reflejados en factura)
+  // ✅ Bonos CONFIRMADOS (manuales o ya reflejados en factura)
   const bonusConfirmed = useMemo(() => {
     return Number(panelMe?.bonuses_month_eur) || 0;
   }, [panelMe?.bonuses_month_eur]);
 
-  // ✅ TOTAL MOSTRADO A LA TAROTISTA: confirmados + provisionales (si NO hay grave)
+  // ✅ Total mostrado a la tarotista: confirmados + provisionales (si NO grave)
   const bonusShown = useMemo(() => {
     if (!isTarot) return null;
     if (incGrave) return 0;
@@ -554,7 +557,7 @@ export default function PanelPage() {
 
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: "100%" }}>
-      {/* ===== Cabecera interna (layout ya pone nav pro) ===== */}
+      {/* ===== Cabecera ===== */}
       <div
         style={{
           border: "2px solid #111",
@@ -751,14 +754,14 @@ export default function PanelPage() {
         ) : null}
       </div>
 
-      {/* ✅ Detalle de bonos provisionales (si hay) */}
+      {/* ✅ Detalle de bonos provisionales */}
       {isTarot && !incGrave && bonusProvisionalTarot.breakdown.length > 0 ? (
         <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
           <div style={{ fontWeight: 1100, marginBottom: 8 }}>Detalle de bonos provisionales</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
             {bonusProvisionalTarot.breakdown.map((b) => (
               <span
-                key={`${b.label}-${b.pos}`}
+                key={`${b.key}-${b.pos}`}
                 style={{
                   border: "1px solid rgba(17,17,17,0.12)",
                   borderRadius: 999,
@@ -915,9 +918,11 @@ export default function PanelPage() {
             <tbody>
               {ranks.map((r: any, idx: number) => {
                 const pos = idx + 1;
-                const isMe = me?.display_name === r.name;
+                const rWid = String(r?.worker_id || r?.workerId || r?.id || "").trim();
+                const isMe = (myWorkerId && rWid && myWorkerId === rWid) || (myName && String(r?.name || "").trim() === myName);
+
                 return (
-                  <tr key={r.worker_id} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 900 : 400 }}>
+                  <tr key={r.worker_id || `${idx}`} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 900 : 400 }}>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
                       {medal(pos)} {pos}
                     </td>
