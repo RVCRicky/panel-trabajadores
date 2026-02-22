@@ -30,6 +30,9 @@ function eur(n: any) {
 function medal(pos: number) {
   return pos === 1 ? "🥇" : pos === 2 ? "🥈" : pos === 3 ? "🥉" : "";
 }
+function norm(s: any) {
+  return String(s || "").trim().toLowerCase();
+}
 
 type RankKey = "minutes" | "repite_pct" | "cliente_pct" | "captadas" | "eur_total" | "eur_bonus";
 type TeamMember = { worker_id: string; name: string };
@@ -47,6 +50,15 @@ type TeamRow = {
   team_score?: number;
 
   members?: TeamMember[];
+};
+
+type BonusRule = {
+  ranking_type: string;
+  position: number;
+  role: string;
+  amount_eur: number;
+  created_at?: string;
+  is_active?: boolean;
 };
 
 type DashboardResp = {
@@ -88,14 +100,8 @@ type DashboardResp = {
     team_score?: number;
   };
 
-  bonusRules: Array<{
-    ranking_type: string;
-    position: number;
-    role: string;
-    amount_eur: number;
-    created_at?: string;
-    is_active?: boolean;
-  }>;
+  // OJO: tu backend ahora lo manda undefined; por eso lo cargamos aparte
+  bonusRules?: BonusRule[];
 
   myIncidentsMonth?: {
     count: number;
@@ -112,7 +118,7 @@ type PanelMeResp = {
   month_date: string;
   invoice: null | { id: string; total_eur: number; status: string | null; updated_at: string | null };
   penalty_month_eur: number;
-  bonuses_month_eur: number; // ✅ aquí entran bonos manuales + otros ya reflejados en factura
+  bonuses_month_eur: number;
 };
 
 function labelRanking(k: string) {
@@ -153,10 +159,6 @@ function formatMonthLabel(isoMonthDate: string) {
   return date.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
 }
 
-function norm(s: any) {
-  return String(s || "").trim().toLowerCase();
-}
-
 export default function PanelPage() {
   const router = useRouter();
   const isMobile = useIsMobile();
@@ -179,24 +181,37 @@ export default function PanelPage() {
 
   const [panelMe, setPanelMe] = useState<PanelMeResp | null>(null);
 
-  async function getToken() {
+  // ✅ NUEVO: reglas de bonos desde /api/bonus/rules
+  const [bonusRules, setBonusRules] = useState<BonusRule[]>([]);
+
+  async function hardLogoutToLogin() {
+    try {
+      await supabase.auth.signOut();
+    } catch {}
+    router.replace("/login");
+  }
+
+  async function getTokenOrLogout() {
     const { data } = await supabase.auth.getSession();
-    return data.session?.access_token || null;
+    const token = data.session?.access_token || null;
+    if (!token) {
+      await hardLogoutToLogin();
+      return null;
+    }
+    return token;
+  }
+
+  async function authedFetch(url: string, init?: RequestInit) {
+    const token = await getTokenOrLogout();
+    if (!token) throw new Error("NO_TOKEN");
+    const headers = new Headers(init?.headers || {});
+    headers.set("Authorization", `Bearer ${token}`);
+    return fetch(url, { ...init, headers, cache: "no-store" });
   }
 
   async function loadPresence() {
     try {
-      const token = await getToken();
-      if (!token) {
-        router.replace("/login");
-        return;
-      }
-
-      const res = await fetch("/api/presence/me", {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-
+      const res = await authedFetch("/api/presence/me");
       const j = await res.json().catch(() => null);
       if (!j?.ok) return;
 
@@ -208,21 +223,21 @@ export default function PanelPage() {
 
   async function loadPanelMe(monthOverride?: string | null) {
     try {
-      const token = await getToken();
-      if (!token) return;
-
       const month = monthOverride ?? selectedMonth ?? null;
       const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
-
-      const res = await fetch(`/api/panel/me${qs}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-
+      const res = await authedFetch(`/api/panel/me${qs}`);
       const j = (await res.json().catch(() => null)) as PanelMeResp | null;
       if (!j?.ok) return;
-
       setPanelMe(j);
+    } catch {}
+  }
+
+  async function loadBonusRules() {
+    try {
+      const res = await authedFetch("/api/bonus/rules");
+      const j = await res.json().catch(() => null);
+      if (!j?.ok) return;
+      setBonusRules(Array.isArray(j.bonusRules) ? j.bonusRules : []);
     } catch {}
   }
 
@@ -231,20 +246,10 @@ export default function PanelPage() {
     setLoading(true);
 
     try {
-      const token = await getToken();
-      if (!token) {
-        router.replace("/login");
-        return;
-      }
-
       const month = monthOverride ?? selectedMonth ?? null;
       const qs = month ? `?month_date=${encodeURIComponent(month)}` : "";
 
-      const res = await fetch(`/api/dashboard/full${qs}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-
+      const res = await authedFetch(`/api/dashboard/full${qs}`);
       const j = (await res.json().catch(() => null)) as DashboardResp | null;
       if (!j?.ok) {
         setErr(j?.error || "Error dashboard");
@@ -261,6 +266,7 @@ export default function PanelPage() {
       if (role === "tarotista" || role === "central") {
         await loadPresence();
         await loadPanelMe(month);
+        await loadBonusRules(); // ✅ clave: reglas de bonos SIEMPRE
       }
     } catch (e: any) {
       setErr(e?.message || "Error dashboard");
@@ -272,16 +278,9 @@ export default function PanelPage() {
   async function presenceLogin() {
     setErr(null);
     try {
-      const token = await getToken();
-      if (!token) return router.replace("/login");
       if (isLogged) return;
 
-      const res = await fetch("/api/presence/login", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-
+      const res = await authedFetch("/api/presence/login", { method: "POST" });
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error login presencia");
 
@@ -294,17 +293,13 @@ export default function PanelPage() {
   async function presenceSet(state: PresenceState) {
     setErr(null);
     try {
-      const token = await getToken();
-      if (!token) return router.replace("/login");
       if (!isLogged) return;
 
-      const res = await fetch("/api/presence/state", {
+      const res = await authedFetch("/api/presence/state", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ state }),
-        cache: "no-store",
       });
-
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error cambio estado");
 
@@ -317,16 +312,9 @@ export default function PanelPage() {
   async function presenceLogout() {
     setErr(null);
     try {
-      const token = await getToken();
-      if (!token) return router.replace("/login");
       if (!isLogged) return;
 
-      const res = await fetch("/api/presence/logout", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-
+      const res = await authedFetch("/api/presence/logout", { method: "POST" });
       const j = await res.json().catch(() => null);
       if (!j?.ok) return setErr(j?.error || "Error logout presencia");
 
@@ -337,8 +325,7 @@ export default function PanelPage() {
   }
 
   async function logout() {
-    await supabase.auth.signOut();
-    router.replace("/login");
+    await hardLogoutToLogin();
   }
 
   useEffect(() => {
@@ -375,11 +362,9 @@ export default function PanelPage() {
   const isCentral = myRole === "central";
   const isTarot = myRole === "tarotista";
 
-  // ✅ IDs robustos (según cómo venga tu worker)
-  const myWorkerId = String(me?.id || me?.worker_id || me?.workerId || me?.worker_uuid || "").trim();
+  const myWorkerId = String(me?.id || me?.worker_id || me?.workerId || "").trim();
   const myName = String(me?.display_name || "").trim();
 
-  // tarotistas: no permitir rankType eur_*
   useEffect(() => {
     if (!isTarot) return;
     if (rankType === "eur_total" || rankType === "eur_bonus") setRankType("minutes");
@@ -388,22 +373,14 @@ export default function PanelPage() {
 
   const ranks = (data?.rankings as any)?.[rankType] || [];
 
-  // ✅ Match por worker_id primero, luego por name
   const myRankTarot = useMemo(() => {
     if (!isTarot) return null;
     const list = ranks || [];
     if (!Array.isArray(list) || list.length === 0) return null;
 
     let idx = -1;
-
-    if (myWorkerId) {
-      idx = list.findIndex((x: any) => String(x?.worker_id || x?.workerId || x?.id || "").trim() === myWorkerId);
-    }
-
-    if (idx === -1 && myName) {
-      idx = list.findIndex((x: any) => String(x?.name || x?.worker_name || x?.display_name || "").trim() === myName);
-    }
-
+    if (myWorkerId) idx = list.findIndex((x: any) => String(x?.worker_id || x?.id || "").trim() === myWorkerId);
+    if (idx === -1 && myName) idx = list.findIndex((x: any) => String(x?.name || "").trim() === myName);
     return idx === -1 ? null : idx + 1;
   }, [isTarot, ranks, myWorkerId, myName]);
 
@@ -443,21 +420,55 @@ export default function PanelPage() {
     ? formatMonthLabel(data.month_date)
     : "—";
 
-  const teams = data?.teamsRanking || [];
-  const team1 = teams[0] || null;
-  const team2 = teams[1] || null;
+  // ✅ BONOS “EN TIEMPO REAL” POR POSICIÓN (desde rankings + bonus_rules)
+  const bonusProvisionalTarot = useMemo(() => {
+    if (!isTarot) return 0;
+    if (incGrave) return 0;
 
-  const bonusTeamWinner = useMemo(() => {
-    const rules = data?.bonusRules || [];
-    const r = rules.find(
-      (x) =>
-        norm(x.ranking_type) === "team_winner" &&
-        Number(x.position) === 1 &&
-        norm(x.role) === "central" &&
-        (x.is_active === undefined ? true : !!x.is_active)
+    const rankings = (data?.rankings || {}) as any;
+    const rules = (bonusRules || []).filter((r) => (r.is_active === undefined ? true : !!r.is_active));
+
+    const getPos = (key: RankKey) => {
+      const list = rankings?.[key] || [];
+      if (!Array.isArray(list) || list.length === 0) return null;
+
+      let idx = -1;
+      if (myWorkerId) idx = list.findIndex((x: any) => String(x?.worker_id || x?.id || "").trim() === myWorkerId);
+      if (idx === -1 && myName) idx = list.findIndex((x: any) => String(x?.name || "").trim() === myName);
+      return idx === -1 ? null : idx + 1;
+    };
+
+    const posMinutes = getPos("minutes");
+    const posCaptadas = getPos("captadas");
+    const posRepite = getPos("repite_pct");
+    const posCliente = getPos("cliente_pct");
+
+    const pick = (ranking_type: "minutes" | "captadas" | "repite_pct" | "cliente_pct", pos: number | null) => {
+      if (!pos) return 0;
+      const want = norm(ranking_type);
+      const hit = rules.find((x) => {
+        if (norm(x.role) !== "tarotista") return false;
+        const rt = norm(x.ranking_type);
+        // ✅ aceptamos exacto o “contiene” por si backend usa nombres tipo minutes_month
+        if (!(rt === want || rt.includes(want))) return false;
+        return Number(x.position) === Number(pos);
+      });
+      return hit ? Number(hit.amount_eur) || 0 : 0;
+    };
+
+    return (
+      pick("minutes", posMinutes) +
+      pick("captadas", posCaptadas) +
+      pick("repite_pct", posRepite) +
+      pick("cliente_pct", posCliente)
     );
-    return r ? Number(r.amount_eur) || 0 : 0;
-  }, [data?.bonusRules]);
+  }, [isTarot, incGrave, data?.rankings, bonusRules, myWorkerId, myName]);
+
+  // ✅ BONOS CONFIRMADOS (incluye bonos manuales) desde /api/panel/me
+  const bonusConfirmed = Number(panelMe?.bonuses_month_eur) || 0;
+
+  // ✅ Mostramos: confirmados + provisionales
+  const bonusShown = isTarot ? (incGrave ? 0 : bonusConfirmed + bonusProvisionalTarot) : null;
 
   const helpText =
     pState === "offline"
@@ -491,81 +502,9 @@ export default function PanelPage() {
     border: "1px solid #e5e7eb",
   };
 
-  // ✅ Bonos PROVISIONALES: usa EXACTAMENTE tus ranking_type reales (minutes/captadas/repite_pct/cliente_pct)
-  const bonusProvisionalTarot = useMemo(() => {
-    if (!isTarot) return { total: 0, breakdown: [] as Array<{ key: string; label: string; amount: number; pos: number }>, positions: {} as any };
-
-    const rankings = (data?.rankings || {}) as any;
-    const rules = (data?.bonusRules || []).filter((r) => (r.is_active === undefined ? true : !!r.is_active));
-
-    // pos por rankingKey, buscando por worker_id primero
-    const getPos = (key: RankKey) => {
-      const list = rankings?.[key] || [];
-      if (!Array.isArray(list) || list.length === 0) return null;
-
-      let idx = -1;
-
-      if (myWorkerId) idx = list.findIndex((x: any) => String(x?.worker_id || x?.workerId || x?.id || "").trim() === myWorkerId);
-      if (idx === -1 && myName) idx = list.findIndex((x: any) => String(x?.name || x?.worker_name || x?.display_name || "").trim() === myName);
-
-      return idx === -1 ? null : idx + 1;
-    };
-
-    const positions = {
-      minutes: getPos("minutes"),
-      captadas: getPos("captadas"),
-      repite_pct: getPos("repite_pct"),
-      cliente_pct: getPos("cliente_pct"),
-    };
-
-    const roleOk = (r: any) => norm(r) === "tarotista";
-
-    const pick = (ranking_type: "minutes" | "captadas" | "repite_pct" | "cliente_pct", pos: number | null) => {
-      if (!pos) return 0;
-      const hit = rules.find((x) => roleOk(x.role) && norm(x.ranking_type) === ranking_type && Number(x.position) === Number(pos));
-      return hit ? Number(hit.amount_eur) || 0 : 0;
-    };
-
-    const breakdown: Array<{ key: string; label: string; amount: number; pos: number }> = [];
-
-    const add = (key: "minutes" | "captadas" | "repite_pct" | "cliente_pct", label: string) => {
-      const pos = (positions as any)[key] as number | null;
-      const amount = pick(key, pos);
-      if (pos && amount > 0) breakdown.push({ key, label, amount, pos });
-    };
-
-    add("minutes", "Minutos");
-    add("captadas", "Captadas");
-    add("repite_pct", "Repite %");
-    add("cliente_pct", "Clientes %");
-
-    const total = breakdown.reduce((acc, x) => acc + x.amount, 0);
-    return { total, breakdown, positions };
-  }, [isTarot, data?.rankings, data?.bonusRules, myWorkerId, myName]);
-
-  // ✅ Bonos CONFIRMADOS (manuales o ya reflejados en factura)
-  const bonusConfirmed = useMemo(() => {
-    return Number(panelMe?.bonuses_month_eur) || 0;
-  }, [panelMe?.bonuses_month_eur]);
-
-  // ✅ Total mostrado a la tarotista: confirmados + provisionales (si NO grave)
-  const bonusShown = useMemo(() => {
-    if (!isTarot) return null;
-    if (incGrave) return 0;
-    return bonusConfirmed + (bonusProvisionalTarot.total || 0);
-  }, [isTarot, incGrave, bonusConfirmed, bonusProvisionalTarot.total]);
-
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", maxWidth: "100%" }}>
-      {/* ===== Cabecera ===== */}
-      <div
-        style={{
-          border: "2px solid #111",
-          borderRadius: 18,
-          padding: 14,
-          background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
-        }}
-      >
+      <div style={{ border: "2px solid #111", borderRadius: 18, padding: 14, background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)" }}>
         <div style={{ display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "1fr auto", alignItems: "center" }}>
           <div style={{ display: "grid", gap: 6 }}>
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
@@ -617,73 +556,6 @@ export default function PanelPage() {
 
       {err ? <div style={{ padding: 10, border: "1px solid #ffcccc", background: "#fff3f3", borderRadius: 10 }}>{err}</div> : null}
 
-      {/* ===== Equipos (si central) ===== */}
-      {isCentral && teams.length > 0 ? (
-        <div style={{ border: "2px solid #111", borderRadius: 18, padding: 14, background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 1100, fontSize: 18 }}>🏆 Ranking por equipos (GLOBAL)</div>
-            <div style={{ color: "#666", fontWeight: 900 }}>
-              Criterio: <b>%Clientes + %Repite</b>
-              {bonusTeamWinner ? (
-                <>
-                  {" "}
-                  · Bono ganadora: <b>{eur(bonusTeamWinner)}</b>
-                </>
-              ) : null}
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr auto 1fr", gap: 12, alignItems: "stretch", marginTop: 12 }}>
-            {[team1, team2].map((t, idx) => {
-              const pos = idx + 1;
-              const isMine = (data?.myTeamRank || 0) === pos;
-
-              return (
-                <div key={pos} style={{ border: isMine ? "2px solid #111" : "1px solid #eaeaea", borderRadius: 16, padding: 12, background: isMine ? "#fff" : "#fcfcfc" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 1100, fontSize: 16 }}>{t ? `${medal(pos)} #${pos} ${t.team_name}` : "—"}</div>
-                    {isMine ? <span style={{ border: "1px solid #111", borderRadius: 999, padding: "4px 10px", fontWeight: 1000 }}>Tu equipo</span> : null}
-                  </div>
-
-                  <div style={{ fontSize: 34, fontWeight: 1300, marginTop: 10 }}>
-                    {t?.team_score ?? "—"} <span style={{ fontSize: 14, fontWeight: 1000, color: "#666" }}>score</span>
-                  </div>
-
-                  <div style={{ color: "#666", marginTop: 6, fontWeight: 900 }}>
-                    Clientes: <b>{t?.team_cliente_pct ?? "—"}%</b> · Repite: <b>{t?.team_repite_pct ?? "—"}%</b>
-                  </div>
-
-                  <div style={{ color: "#666", marginTop: 6 }}>
-                    Minutos: <b>{t ? fmt(t.total_minutes) : "—"}</b> · Captadas: <b>{t ? fmt(t.total_captadas) : "—"}</b>
-                  </div>
-
-                  <div style={{ marginTop: 10, fontWeight: 1000 }}>Tarotistas del equipo</div>
-                  <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {(t?.members || []).map((m) => (
-                      <span key={m.worker_id} style={{ border: "1px solid #e6e6e6", borderRadius: 999, padding: "6px 10px", fontWeight: 900, background: "#fff" }}>
-                        {m.name}
-                      </span>
-                    ))}
-                    {(t?.members || []).length === 0 ? <span style={{ color: "#999" }}>Sin tarotistas asignadas.</span> : null}
-                  </div>
-                </div>
-              );
-            })}
-
-            {!isMobile ? (
-              <div style={{ display: "grid", placeItems: "center", padding: 6 }}>
-                <div style={{ fontWeight: 1100, color: "#666" }}>VS</div>
-              </div>
-            ) : null}
-          </div>
-
-          <div style={{ marginTop: 10, color: "#666", fontWeight: 900 }}>
-            Tu equipo va: <b>{data?.myTeamRank ? `${medal(data.myTeamRank)} #${data.myTeamRank}` : "—"}</b>
-          </div>
-        </div>
-      ) : null}
-
-      {/* ===== KPIs ===== */}
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
         <Card>
           <CardTitle>Estado</CardTitle>
@@ -716,19 +588,11 @@ export default function PanelPage() {
                 {incGrave ? (
                   <b style={{ color: "#b91c1c" }}>Bloqueados por incidencia GRAVE</b>
                 ) : (
-                  <span style={{ color: "#6b7280", fontWeight: 900 }}>
-                    Confirmados: <b>{eur(bonusConfirmed)}</b> · Provisionales: <b>{eur(bonusProvisionalTarot.total)}</b>
-                  </span>
+                  <span style={{ color: "#6b7280", fontWeight: 900 }}>Se actualiza con tu posición actual</span>
                 )}
               </CardHint>
             </Card>
           </>
-        ) : isCentral ? (
-          <Card>
-            <CardTitle>Bono del mes</CardTitle>
-            <CardValue>{data?.myEarnings?.amount_bonus_eur == null ? "—" : eur(data.myEarnings.amount_bonus_eur)}</CardValue>
-            <CardHint>Solo se muestra el bono por posición del equipo.</CardHint>
-          </Card>
         ) : null}
 
         <Card>
@@ -754,100 +618,12 @@ export default function PanelPage() {
         ) : null}
       </div>
 
-      {/* ✅ Detalle de bonos provisionales */}
-      {isTarot && !incGrave && bonusProvisionalTarot.breakdown.length > 0 ? (
-        <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
-          <div style={{ fontWeight: 1100, marginBottom: 8 }}>Detalle de bonos provisionales</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-            {bonusProvisionalTarot.breakdown.map((b) => (
-              <span
-                key={`${b.key}-${b.pos}`}
-                style={{
-                  border: "1px solid rgba(17,17,17,0.12)",
-                  borderRadius: 999,
-                  padding: "8px 10px",
-                  fontWeight: 1000,
-                  background: "rgba(255,255,255,0.92)",
-                }}
-              >
-                {b.label}: <b>{medal(b.pos)} #{b.pos}</b> · <b>{eur(b.amount)}</b>
-              </span>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      {/* ===== Control horario ===== */}
-      {me?.role === "tarotista" || me?.role === "central" ? (
-        <div style={{ border: "2px solid #111", borderRadius: 18, padding: 14, background: "linear-gradient(180deg, #ffffff 0%, #fbfbfb 100%)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <div>
-              <div style={{ fontWeight: 1200, fontSize: 20 }}>🕒 Control horario</div>
-              <div style={{ color: "#666", fontWeight: 900, marginTop: 4 }}>
-                {me?.display_name || "—"} · {labelRole(me?.role || "—")} · Mes: <b>{selectedMonth || data?.month_date || "—"}</b>
-              </div>
-            </div>
-
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <Badge tone={stateTone as any}>{stateText}</Badge>
-              <div style={{ fontWeight: 1200, fontSize: 18 }}>{formatHMS(elapsedSec)}</div>
-            </div>
-          </div>
-
-          <div style={{ marginTop: 10, color: "#666", fontWeight: 900 }}>{helpText}</div>
-
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12, marginTop: 12 }}>
-            <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 12, background: "#fff" }}>
-              <div style={{ fontWeight: 1100 }}>Sesión</div>
-              <div style={{ marginTop: 6, color: "#666" }}>{sessionId ? <b>{sessionId}</b> : "—"}</div>
-              <div style={{ marginTop: 6, color: "#666" }}>
-                Inicio: <b>{startedAt ? new Date(startedAt).toLocaleString("es-ES") : "—"}</b>
-              </div>
-            </div>
-
-            <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 12, background: "#fff" }}>
-              <div style={{ fontWeight: 1100 }}>Acciones</div>
-
-              <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
-                <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
-                  {bigActionLabel}
-                </button>
-
-                <button onClick={loadPresence} style={btnGhost}>
-                  Refrescar
-                </button>
-
-                <button onClick={() => presenceSet("pause")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-                  Pausa
-                </button>
-
-                <button onClick={() => presenceSet("bathroom")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-                  Baño
-                </button>
-
-                <button onClick={() => presenceSet("online")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
-                  Volver (Online)
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {/* ===== Top 3 ===== */}
       <Card>
         <CardTitle>Top 3 del mes</CardTitle>
-
         <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginTop: 10 }}>
-          {(isCentral
-            ? (["minutes", "captadas"] as RankKey[])
-            : isTarot
-            ? (["minutes", "captadas", "repite_pct", "cliente_pct"] as RankKey[])
-            : (["minutes", "repite_pct", "cliente_pct", "captadas"] as RankKey[])
-          ).map((k) => (
+          {(["minutes", "captadas", "repite_pct", "cliente_pct"] as RankKey[]).map((k) => (
             <div key={k} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
               <div style={{ fontWeight: 1000, marginBottom: 6 }}>{labelRanking(k)}</div>
-
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <tbody>
                   {top3For(k).map((r: any, idx: number) => (
@@ -873,32 +649,15 @@ export default function PanelPage() {
         </div>
       </Card>
 
-      {/* ===== Ranking completo ===== */}
       <Card>
         <CardTitle>Rankings (tabla completa)</CardTitle>
 
         <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
           <select value={rankType} onChange={(e) => setRankType(e.target.value as RankKey)} style={{ padding: 12, borderRadius: 12, border: "1px solid #ddd", width: "100%", maxWidth: 520 }}>
-            {isTarot ? (
-              <>
-                <option value="minutes">Ranking por Minutos</option>
-                <option value="captadas">Ranking por Captadas</option>
-                <option value="repite_pct">Ranking por Repite %</option>
-                <option value="cliente_pct">Ranking por Clientes %</option>
-              </>
-            ) : isCentral ? (
-              <>
-                <option value="minutes">Ranking por Minutos</option>
-                <option value="captadas">Ranking por Captadas</option>
-              </>
-            ) : (
-              <>
-                <option value="minutes">Ranking por Minutos</option>
-                <option value="repite_pct">Ranking por Repite %</option>
-                <option value="cliente_pct">Ranking por Clientes %</option>
-                <option value="captadas">Ranking por Captadas</option>
-              </>
-            )}
+            <option value="minutes">Ranking por Minutos</option>
+            <option value="captadas">Ranking por Captadas</option>
+            <option value="repite_pct">Ranking por Repite %</option>
+            <option value="cliente_pct">Ranking por Clientes %</option>
           </select>
 
           <div style={{ color: "#666" }}>
@@ -918,11 +677,9 @@ export default function PanelPage() {
             <tbody>
               {ranks.map((r: any, idx: number) => {
                 const pos = idx + 1;
-                const rWid = String(r?.worker_id || r?.workerId || r?.id || "").trim();
-                const isMe = (myWorkerId && rWid && myWorkerId === rWid) || (myName && String(r?.name || "").trim() === myName);
-
+                const isMe = String(r?.worker_id || "").trim() === myWorkerId;
                 return (
-                  <tr key={r.worker_id || `${idx}`} style={{ background: isMe ? "#e8f4ff" : "transparent", fontWeight: isMe ? 900 : 400 }}>
+                  <tr key={r.worker_id || `${idx}`} style={{ background: isMe ? "#eef6ff" : "transparent", fontWeight: isMe ? 900 : 400 }}>
                     <td style={{ padding: 8, borderBottom: "1px solid #f3f3f3" }}>
                       {medal(pos)} {pos}
                     </td>
@@ -942,6 +699,22 @@ export default function PanelPage() {
           </table>
         </div>
       </Card>
+
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#fff" }}>
+        <div style={{ fontWeight: 1100, marginBottom: 8 }}>🕒 Control horario</div>
+        <div style={{ color: "#666", fontWeight: 900 }}>{helpText}</div>
+        <div style={{ display: "grid", gap: 10, gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", marginTop: 10 }}>
+          <button onClick={bigActionFn} style={pState === "offline" ? btnPrimary : btnGhost}>
+            {bigActionLabel}
+          </button>
+          <button onClick={() => presenceSet("pause")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
+            Pausa
+          </button>
+          <button onClick={() => presenceSet("online")} disabled={!isLogged} style={!isLogged ? { ...btnGhost, opacity: 0.5, cursor: "not-allowed" } : btnGhost}>
+            Volver (Online)
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
