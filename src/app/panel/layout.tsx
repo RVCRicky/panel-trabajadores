@@ -59,6 +59,9 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
 
+  // ✅ nuevo: mi equipo (para pintarlo en todos los paneles)
+  const [myTeam, setMyTeam] = useState<{ team_id: string; team_name: string } | null>(null);
+
   async function hardLogoutToLogin() {
     try {
       await supabase.auth.signOut();
@@ -76,16 +79,6 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     return token;
   }
 
-  function withSameQuery(nextPath: string) {
-    try {
-      const u = new URL(window.location.href);
-      const qs = u.searchParams.toString();
-      return qs ? `${nextPath}?${qs}` : nextPath;
-    } catch {
-      return nextPath;
-    }
-  }
-
   // Bootstrap
   useEffect(() => {
     let alive = true;
@@ -99,7 +92,6 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
           headers: { Authorization: `Bearer ${token}` },
           cache: "no-store",
         });
-
         const meJson = await meRes.json().catch(() => null);
         if (!alive) return;
 
@@ -116,29 +108,16 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
         setName(meJson.worker.display_name || "");
         setRole(r);
 
-        // ✅ si entran a /panel, reubicamos según rol (evita “cambia a los 2 segundos” raro)
-        // mantenemos query (?month_date=...)
-        if (pathname === "/panel") {
-          if (r === "central") {
-            router.replace(withSameQuery("/panel/central"));
-            return;
-          }
-          if (r === "admin") {
-            router.replace(withSameQuery("/panel/admin"));
-            return;
-          }
-        }
-
-        // months + month_date (para el selector del header)
+        // months + month_date + myTeam (para header global)
         const dashRes = await fetch("/api/dashboard/full", {
           headers: { Authorization: `Bearer ${token}` },
           cache: "no-store",
         });
-
         const dashJson = await dashRes.json().catch(() => null);
         if (alive && dashJson?.ok) {
           setMonths(Array.isArray(dashJson.months) ? dashJson.months : []);
           setMonth(dashJson.month_date || null);
+          setMyTeam(dashJson.myTeam || null);
         }
 
         // presence (solo tarotista/central)
@@ -167,7 +146,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router, pathname]);
+  }, [router]);
 
   // Tick
   useEffect(() => {
@@ -191,6 +170,9 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
 
   const titleRole = role === "admin" ? "Admin" : role === "central" ? "Central" : "Tarotista";
   const canSeeIncidents = role === "tarotista" || role === "central" || role === "admin";
+
+  // ✅ Dashboard dinámico por rol (evita que el central vuelva a /panel)
+  const dashHref = role === "central" ? "/panel/central" : role === "admin" ? "/panel/admin" : "/panel";
 
   async function logout() {
     await hardLogoutToLogin();
@@ -315,11 +297,9 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
     );
   }
 
-  // ✅ dashboard correcto según rol
-  const dashHref = role === "central" ? "/panel/central" : role === "admin" ? "/panel/admin" : "/panel";
-
   return (
     <div style={{ minHeight: "100vh", background: "#f6f7fb" }}>
+      {/* Sticky header */}
       <div
         style={{
           position: "sticky",
@@ -332,6 +312,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
       >
         <div style={{ maxWidth: 1160, margin: "0 auto", padding: isMobile ? "10px 10px" : "14px 14px" }}>
           <div style={{ ...shellCard, padding: isMobile ? 12 : 14, display: "grid", gap: 12 }}>
+            {/* Row A */}
             <div
               style={{
                 display: "grid",
@@ -340,6 +321,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                 alignItems: "center",
               }}
             >
+              {/* Brand */}
               <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
                 <div
                   style={{
@@ -365,6 +347,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
                 </div>
               </div>
 
+              {/* Status + TEAM BOX */}
               <div
                 style={{
                   display: "flex",
@@ -376,11 +359,64 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
               >
                 <Badge tone={stateTone as any}>{stateText}</Badge>
                 <div style={{ fontWeight: 1400, fontSize: 18 }}>{formatHMS(elapsedSec)}</div>
+
+                {/* ✅ CUADRADO DE EQUIPO (visible en TODOS los paneles) */}
+                {myTeam ? (
+                  <div
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 14,
+                      border: "2px solid #111",
+                      background: "#fff",
+                      fontWeight: 1300,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 8,
+                    }}
+                    title={myTeam.team_id}
+                  >
+                    <span>👥</span>
+                    <span style={{ textTransform: "uppercase", letterSpacing: 0.4 }}>{myTeam.team_name}</span>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 14,
+                      border: "1px solid #e5e7eb",
+                      background: "#fff",
+                      color: "#6b7280",
+                      fontWeight: 1100,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 8,
+                    }}
+                  >
+                    <span>👥</span>
+                    <span>Sin equipo</span>
+                  </div>
+                )}
+
                 {!isMobile ? <div style={{ color: "#6b7280", fontWeight: 1000, textTransform: "capitalize" }}>{monthLabel}</div> : null}
               </div>
 
-              <div style={{ display: "grid", gap: 10, justifyItems: isMobile ? "stretch" : "end" }}>
-                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "auto auto", gap: 10, alignItems: "end" }}>
+              {/* Actions */}
+              <div
+                style={{
+                  display: "grid",
+                  gap: 10,
+                  justifyItems: isMobile ? "stretch" : "end",
+                }}
+              >
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: isMobile ? "1fr 1fr" : "auto auto",
+                    gap: 10,
+                    alignItems: "end",
+                  }}
+                >
+                  {/* Mes compacto */}
                   <div style={{ display: "grid", gap: 6 }}>
                     <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Mes</div>
                     <select
@@ -419,15 +455,47 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
               </div>
             </div>
 
-            <div style={{ display: "flex", gap: 10, flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch", paddingBottom: 2 }}>
+            {/* Row B: Nav pills */}
+            <div
+              style={{
+                display: "flex",
+                gap: 10,
+                flexWrap: "nowrap",
+                overflowX: "auto",
+                WebkitOverflowScrolling: "touch",
+                paddingBottom: 2,
+              }}
+            >
               {pill(dashHref, "📊", "Dashboard")}
               {pill("/panel/invoices", "🧾", "Facturas")}
-              {canSeeIncidents ? pill("/panel/incidents", "⚠️", "Incidencias") : null}
+              {canSeeIncidents ? (
+                pill("/panel/incidents", "⚠️", "Incidencias")
+              ) : (
+                <span
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 999,
+                    border: "1px solid #e5e7eb",
+                    background: "#fff",
+                    color: "#9ca3af",
+                    fontWeight: 1100,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 8,
+                    whiteSpace: "nowrap",
+                    flex: "0 0 auto",
+                  }}
+                >
+                  ⚠️ Incidencias
+                </span>
+              )}
             </div>
           </div>
         </div>
       </div>
 
+      {/* Body */}
       <div style={{ maxWidth: 1160, margin: "0 auto", padding: isMobile ? "12px 10px" : "16px 14px" }}>{children}</div>
     </div>
   );
