@@ -48,6 +48,149 @@ function presenceText(st: PresenceState) {
   return "OFFLINE";
 }
 
+function TeamBox({
+  title,
+  team,
+}: {
+  title: string;
+  team: any | null;
+}) {
+  const shell: React.CSSProperties = {
+    borderRadius: 18,
+    border: "1px solid #e5e7eb",
+    background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
+    boxShadow: "0 12px 45px rgba(0,0,0,0.08)",
+    padding: 14,
+  };
+
+  if (!team) {
+    return (
+      <div style={shell}>
+        <div style={{ fontWeight: 1300, fontSize: 14 }}>{title}</div>
+        <div style={{ marginTop: 10, color: "#6b7280", fontWeight: 1100 }}>No hay datos de este equipo.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={shell}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ fontWeight: 1400, fontSize: 14 }}>
+          {title} · <span style={{ textTransform: "uppercase" }}>{team.team_name}</span>
+        </div>
+        {typeof team.team_score !== "undefined" ? (
+          <div
+            style={{
+              padding: "6px 10px",
+              borderRadius: 999,
+              border: "1px solid #111",
+              background: "#111",
+              color: "#fff",
+              fontWeight: 1200,
+              fontSize: 12,
+              whiteSpace: "nowrap",
+            }}
+            title="Score = Cliente% + Repite%"
+          >
+            ⭐ Score {fmt(team.team_score)}
+          </div>
+        ) : null}
+      </div>
+
+      <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 10 }}>
+        <div style={{ padding: 12, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff" }}>
+          <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Minutos</div>
+          <div style={{ fontWeight: 1400, fontSize: 18 }}>{fmt(team.total_minutes)}</div>
+        </div>
+        <div style={{ padding: 12, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff" }}>
+          <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Captadas</div>
+          <div style={{ fontWeight: 1400, fontSize: 18 }}>{fmt(team.total_captadas)}</div>
+        </div>
+
+        <div style={{ padding: 12, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff" }}>
+          <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Clientes %</div>
+          <div style={{ fontWeight: 1400, fontSize: 18 }}>{fmt(team.team_cliente_pct)}%</div>
+        </div>
+        <div style={{ padding: 12, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff" }}>
+          <div style={{ color: "#6b7280", fontWeight: 1100, fontSize: 12 }}>Repite %</div>
+          <div style={{ fontWeight: 1400, fontSize: 18 }}>{fmt(team.team_repite_pct)}%</div>
+        </div>
+      </div>
+
+      {Array.isArray(team.members) && team.members.length > 0 ? (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontWeight: 1200, marginBottom: 8 }}>Miembros</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {team.members.slice(0, 10).map((m: any) => (
+              <span
+                key={m.worker_id}
+                style={{
+                  padding: "7px 10px",
+                  borderRadius: 999,
+                  border: "1px solid #e5e7eb",
+                  background: "#fff",
+                  fontWeight: 1000,
+                  fontSize: 12,
+                }}
+                title={m.worker_id}
+              >
+                {m.name}
+              </span>
+            ))}
+            {team.members.length > 10 ? (
+              <span style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12, alignSelf: "center" }}>
+                +{team.members.length - 10} más
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Top3Block({ title, list, k }: { title: string; list: any[]; k: RankKey }) {
+  const shell: React.CSSProperties = {
+    borderRadius: 18,
+    border: "1px solid #e5e7eb",
+    background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
+    boxShadow: "0 12px 45px rgba(0,0,0,0.08)",
+    padding: 14,
+  };
+
+  return (
+    <div style={shell}>
+      <div style={{ fontWeight: 1400, fontSize: 14 }}>{title}</div>
+      <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+        {(list || []).length === 0 ? (
+          <div style={{ color: "#6b7280", fontWeight: 1100 }}>Sin datos.</div>
+        ) : (
+          (list || []).slice(0, 3).map((r: any, idx: number) => (
+            <div
+              key={r.worker_id || `${k}-${idx}`}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 14,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 10,
+                alignItems: "center",
+              }}
+            >
+              <div style={{ fontWeight: 1200 }}>
+                {medal(idx + 1)} {idx + 1}. {r.name}
+              </div>
+              <div style={{ fontWeight: 1400 }}>{valueOf(k, r)}</div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function TarotistaPage() {
   const router = useRouter();
   const qs = useSearchParams();
@@ -121,7 +264,6 @@ export default function TarotistaPage() {
 
       const role = String(j?.user?.worker?.role || "").toLowerCase();
       if (role !== "tarotista") {
-        // por seguridad: si entra aquí con otro rol, lo mandamos a su panel
         router.replace("/panel");
         return;
       }
@@ -156,14 +298,12 @@ export default function TarotistaPage() {
       const token = await getToken();
       if (!token) return router.replace("/login");
 
-      // ✅ Intento 1: endpoint estándar
       const r = await fetch("/api/presence/set", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ state: next }),
       });
 
-      // Si no existe, no rompemos: solo avisamos
       if (r.status === 404) {
         setPErr("No existe /api/presence/set. Dime cuál es tu endpoint real para cambiar estado y lo conecto.");
         return;
@@ -178,7 +318,6 @@ export default function TarotistaPage() {
       setPState(next);
       setPStartedAt(j.started_at || null);
 
-      // refrescar presence/me por si tu backend recalcula
       await loadPresence(token);
     } catch (e: any) {
       setPErr(e?.message || "Error cambiando presencia");
@@ -245,7 +384,11 @@ export default function TarotistaPage() {
   const minutesTotal = data?.myEarnings?.minutes_total ?? null;
   const captadasTotal = data?.myEarnings?.captadas ?? null;
   const totalEur = data?.myEarnings?.amount_total_eur ?? null;
-  const bonusEur = data?.myEarnings?.amount_bonus_eur ?? null;
+
+  // ✅ bonos arreglados (del backend nuevo)
+  const bonusDynamic = data?.myBonusDynamic ?? data?.myEarnings?.amount_bonus_eur ?? null;
+  const bonusInvoice = data?.myBonusInvoice ?? data?.myEarnings?.amount_bonus_invoice_eur ?? null;
+  const bonusBreakdown: any[] = Array.isArray(data?.myBonusBreakdown) ? data.myBonusBreakdown : [];
 
   const incCount = data?.myIncidentsMonth?.count ?? null;
   const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
@@ -256,6 +399,14 @@ export default function TarotistaPage() {
     const myId = String(me?.id || "");
     return list.filter((m: any) => String(m?.from_worker_id || "") === myId);
   }, [data?.internalMessages, me?.id]);
+
+  const teamYami = data?.teamYami ?? null;
+  const teamMaria = data?.teamMaria ?? null;
+
+  const top3Minutes = Array.isArray(data?.rankings?.minutes) ? data.rankings.minutes.slice(0, 3) : [];
+  const top3Captadas = Array.isArray(data?.rankings?.captadas) ? data.rankings.captadas.slice(0, 3) : [];
+  const top3Cliente = Array.isArray(data?.rankings?.cliente_pct) ? data.rankings.cliente_pct.slice(0, 3) : [];
+  const top3Repite = Array.isArray(data?.rankings?.repite_pct) ? data.rankings.repite_pct.slice(0, 3) : [];
 
   const shellCard: React.CSSProperties = {
     borderRadius: 18,
@@ -301,6 +452,20 @@ export default function TarotistaPage() {
           {err}
         </div>
       ) : null}
+
+      {/* ✅ EQUIPOS (2 CUADRADOS) */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 }}>
+        <TeamBox title="Equipo 1" team={teamYami} />
+        <TeamBox title="Equipo 2" team={teamMaria} />
+      </div>
+
+      {/* ✅ TOP 3 */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+        <Top3Block title="Top 3 · Minutos" list={top3Minutes} k="minutes" />
+        <Top3Block title="Top 3 · Captadas" list={top3Captadas} k="captadas" />
+        <Top3Block title="Top 3 · Clientes %" list={top3Cliente} k="cliente_pct" />
+        <Top3Block title="Top 3 · Repite %" list={top3Repite} k="repite_pct" />
+      </div>
 
       {/* PRESENCIA / LOGUEO */}
       <div style={{ ...shellCard, padding: 14 }}>
@@ -366,9 +531,22 @@ export default function TarotistaPage() {
         </Card>
 
         <Card>
-          <CardTitle>Bonos</CardTitle>
-          <CardValue>{bonusEur == null ? "—" : eur(bonusEur)}</CardValue>
-          <CardHint>{incGrave ? <b style={{ color: "#b91c1c" }}>GRAVE: sin bonos</b> : "Según reglas"}</CardHint>
+          <CardTitle>Bonos (dinámico)</CardTitle>
+          <CardValue>{bonusDynamic == null ? "—" : eur(bonusDynamic)}</CardValue>
+          <CardHint>
+            {incGrave ? (
+              <b style={{ color: "#b91c1c" }}>GRAVE: sin bonos</b>
+            ) : (
+              <>
+                Según reglas.{" "}
+                {bonusInvoice != null ? (
+                  <span style={{ color: "#6b7280" }}>
+                    (Factura: <b>{eur(bonusInvoice)}</b>)
+                  </span>
+                ) : null}
+              </>
+            )}
+          </CardHint>
         </Card>
 
         <Card>
@@ -384,6 +562,63 @@ export default function TarotistaPage() {
           <CardValue>{myRank ? `${medal(myRank)} #${myRank}` : "—"}</CardValue>
           <CardHint>{labelRanking(rankType)}</CardHint>
         </Card>
+      </div>
+
+      {/* ✅ DETALLE DE BONOS */}
+      <div style={{ ...shellCard, padding: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ fontWeight: 1300, fontSize: 16 }}>Bonos · Detalle</div>
+          <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>
+            Total: <b>{bonusDynamic == null ? "—" : eur(bonusDynamic)}</b>
+          </div>
+        </div>
+
+        {incGrave ? (
+          <div style={{ marginTop: 10, padding: 12, borderRadius: 14, border: "1px solid #ffcccc", background: "#fff3f3", fontWeight: 1100 }}>
+            ⚠️ Este mes tienes una incidencia <b>grave</b>. Por norma: <b>sin bonos</b>.
+          </div>
+        ) : null}
+
+        <div style={{ marginTop: 10 }}>
+          {bonusBreakdown.length === 0 ? (
+            <div style={{ color: "#6b7280", fontWeight: 1000 }}>No hay desglose (o no has entrado en posiciones con bono).</div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {bonusBreakdown.map((b: any, i: number) => (
+                <div
+                  key={i}
+                  style={{
+                    padding: 12,
+                    borderRadius: 14,
+                    border: "1px solid #e5e7eb",
+                    background: "#fff",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                  }}
+                >
+                  <div style={{ fontWeight: 1100 }}>
+                    {b.reason || b.ranking_type}{" "}
+                    {b.position ? (
+                      <span style={{ color: "#6b7280", fontWeight: 900 }}>
+                        · Pos <b>#{b.position}</b>
+                      </span>
+                    ) : null}
+                  </div>
+                  <div style={{ fontWeight: 1400 }}>{eur(b.amount_eur)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {bonusInvoice != null ? (
+          <div style={{ marginTop: 10, color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
+            * “Factura” es lo que tengas guardado en <b>worker_invoices.bonuses_eur</b>. El “Dinámico” sale de <b>bonus_rules</b> + tu posición real.
+          </div>
+        ) : null}
       </div>
 
       {/* NOTIFICACIONES */}
@@ -471,7 +706,7 @@ export default function TarotistaPage() {
         </div>
 
         <div style={{ marginTop: 10, color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
-          * Mostrando Top 10. (Si quieres, lo hacemos Top 50 con paginación bonita).
+          * Mostrando Top 10.
         </div>
       </div>
 
@@ -480,11 +715,7 @@ export default function TarotistaPage() {
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <div style={{ fontWeight: 1300, fontSize: 16 }}>Enviar lista de clientes al Central</div>
           <div style={{ color: "#6b7280", fontWeight: 1000, fontSize: 12 }}>
-            {data?.pendingInternalCount ? (
-              <b>{fmt(data.pendingInternalCount)} pendientes</b>
-            ) : (
-              <span>Sin pendientes</span>
-            )}
+            {data?.pendingInternalCount ? <b>{fmt(data.pendingInternalCount)} pendientes</b> : <span>Sin pendientes</span>}
           </div>
         </div>
 
