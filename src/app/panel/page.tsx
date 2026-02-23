@@ -1,11 +1,10 @@
 // src/app/panel/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
-import { Badge } from "@/components/ui/Badge";
 
 function useIsMobile(bp = 900) {
   const [isMobile, setIsMobile] = useState(false);
@@ -124,17 +123,6 @@ function labelRanking(k: string) {
   return k;
 }
 
-function pickRuleAmount(rules: any[], ranking_type: string, role: string, position = 1) {
-  const hit = (rules || []).find(
-    (x: any) =>
-      String(x?.ranking_type || "").toLowerCase() === String(ranking_type).toLowerCase() &&
-      String(x?.role || "").toLowerCase() === String(role).toLowerCase() &&
-      Number(x?.position) === Number(position) &&
-      (x?.is_active === undefined ? true : !!x?.is_active)
-  );
-  return hit ? Number(hit.amount_eur) || 0 : 0;
-}
-
 export default function PanelPage() {
   const router = useRouter();
   const qs = useSearchParams();
@@ -190,7 +178,6 @@ export default function PanelPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // si cambias el mes desde el layout, cambia la query y recargamos solo datos
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -201,6 +188,31 @@ export default function PanelPage() {
   const isTarot = myRole === "tarotista";
   const isCentral = myRole === "central";
   const isAdmin = myRole === "admin";
+
+  // ✅ Calcula ranks y myRank ANTES de cualquier return condicional (evita React #300)
+  const ranks = (data?.rankings as any)?.[rankType] || [];
+
+  const myRank = useMemo(() => {
+    const myName = me?.display_name;
+    if (!myName) return null;
+    const idx = (ranks || []).findIndex((x: any) => x.name === myName);
+    return idx === -1 ? null : idx + 1;
+  }, [me?.display_name, ranks]);
+
+  function top3For(k: RankKey) {
+    const list = (data?.rankings as any)?.[k] || [];
+    return (list || []).slice(0, 3);
+  }
+
+  function valueOf(k: RankKey, r: any) {
+    if (k === "minutes") return fmt(r.minutes);
+    if (k === "captadas") return fmt(r.captadas);
+    if (k === "repite_pct") return `${r.repite_pct} %`;
+    if (k === "cliente_pct") return `${r.cliente_pct} %`;
+    if (k === "eur_total") return eur(r.eur_total);
+    if (k === "eur_bonus") return eur(r.eur_bonus);
+    return "";
+  }
 
   // ✅ REDIRECT: central/admin no deben quedarse en /panel
   useEffect(() => {
@@ -239,45 +251,11 @@ export default function PanelPage() {
     );
   }
 
-  const ranks = (data?.rankings as any)?.[rankType] || [];
-
-  const myRank = useMemo(() => {
-    const myName = me?.display_name;
-    if (!myName) return null;
-    const idx = (ranks || []).findIndex((x: any) => x.name === myName);
-    return idx === -1 ? null : idx + 1;
-  }, [me?.display_name, ranks]);
-
-  function top3For(k: RankKey) {
-    const list = (data?.rankings as any)?.[k] || [];
-    return (list || []).slice(0, 3);
-  }
-
-  function valueOf(k: RankKey, r: any) {
-    if (k === "minutes") return fmt(r.minutes);
-    if (k === "captadas") return fmt(r.captadas);
-    if (k === "repite_pct") return `${r.repite_pct} %`;
-    if (k === "cliente_pct") return `${r.cliente_pct} %`;
-    if (k === "eur_total") return eur(r.eur_total);
-    if (k === "eur_bonus") return eur(r.eur_bonus);
-    return "";
-  }
-
   const shellCard: React.CSSProperties = {
     borderRadius: 18,
     border: "1px solid #e5e7eb",
     background: "linear-gradient(180deg, #ffffff 0%, #fafafa 100%)",
     boxShadow: "0 12px 45px rgba(0,0,0,0.08)",
-  };
-
-  const btnGhost: React.CSSProperties = {
-    padding: 12,
-    borderRadius: 14,
-    border: "1px solid #e5e7eb",
-    fontWeight: 1100,
-    cursor: "pointer",
-    background: "#fff",
-    color: "#111",
   };
 
   // —— MOBILE: rankings as cards
