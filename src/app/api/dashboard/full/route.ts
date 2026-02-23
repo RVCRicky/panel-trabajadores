@@ -501,7 +501,50 @@ export async function GET(req: Request) {
 
     if (yamiId && normalizedMap.get(yamiId)) teamYami = normalizedMap.get(yamiId)!;
     if (mariaId && normalizedMap.get(mariaId)) teamMaria = normalizedMap.get(mariaId)!;
+    // ===============================
+// 7) INTERNAL CHAT + NOTIFICATIONS
+// ===============================
 
+let internalMessages: any[] = [];
+let pendingInternalCount = 0;
+let notifications: string[] = [];
+
+try {
+  const { data: msgs } = await db
+    .from("internal_shift_messages")
+    .select("*")
+    .eq("shift_date", month_date)
+    .order("created_at", { ascending: false })
+    .limit(5000);
+
+  internalMessages = msgs || [];
+
+  if (myRole === "central") {
+    pendingInternalCount = internalMessages.filter((m: any) => !m.is_checked).length;
+  }
+
+  if (myRole === "tarotista") {
+    pendingInternalCount = internalMessages.filter(
+      (m: any) => m.from_worker_id === myWorkerId && m.is_checked
+    ).length;
+  }
+} catch {
+  internalMessages = [];
+  pendingInternalCount = 0;
+}
+
+// Notificaciones dinámicas
+if (pendingInternalCount > 0) {
+  notifications.push("Tienes mensajes internos pendientes.");
+}
+
+if (myIncidentsMonth.count > 0) {
+  notifications.push("Tienes incidencias sin justificar.");
+}
+
+if (myRole === "tarotista" && toNum(myEarnings?.minutes_total) === 0) {
+  notifications.push("Aún no has generado minutos este mes.");
+}
     return NextResponse.json({
       ok: true,
       month_date,
@@ -530,6 +573,10 @@ export async function GET(req: Request) {
 
       teamYami,
       teamMaria,
+
+      internalMessages,
+      pendingInternalCount,
+      notifications,
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
