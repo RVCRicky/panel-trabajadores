@@ -39,6 +39,15 @@ function calcTeamScore(clientePct: number, repitePct: number) {
   return Number((c + r).toFixed(2));
 }
 
+// ✅ FIX: comparar strings sin acentos (María vs maria)
+function fold(s: string) {
+  return safeStr(s)
+    .toLowerCase()
+    .normalize("NFD")
+    // quitar acentos/diacríticos (compatible Node)
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
 type TeamMember = {
   worker_id: string;
   name: string;
@@ -77,7 +86,8 @@ function extractMemberIds(row: any): { worker_id?: string; user_id?: string } {
     return "";
   };
 
-  // ✅ tu tabla team_members usa "tarotista_worker_id"
+  // ✅ AQUÍ ESTÁ LA CLAVE:
+  // tu tabla team_members usa "tarotista_worker_id"
   const wid = pick([
     "worker_id",
     "tarotista_worker_id", // ✅ TU COLUMNA REAL
@@ -97,26 +107,8 @@ function extractMemberIds(row: any): { worker_id?: string; user_id?: string } {
 }
 
 function includesLoose(hay: string, needle: string) {
-  return safeStr(hay).toLowerCase().includes(safeStr(needle).toLowerCase());
-}
-
-function posInList(list: any[], workerId: string): number | null {
-  const idx = (list || []).findIndex((x: any) => String(x?.worker_id || "") === String(workerId));
-  return idx === -1 ? null : idx + 1;
-}
-
-function normalizeRankingType(rt: string) {
-  const k = safeStr(rt).toLowerCase();
-  if (k === "minutes_total" || k === "minutes") return "minutes";
-  if (k === "captadas_total" || k === "captadas") return "captadas";
-  if (k === "cliente" || k === "cliente_pct" || k === "clientes_pct") return "cliente_pct";
-  if (k === "repite" || k === "repite_pct" || k === "repite_percent") return "repite_pct";
-  if (k === "team_winner" || k === "team_win") return "team_winner";
-  return k;
-}
-
-function isRuleActive(x: any) {
-  return x?.is_active === undefined ? true : !!x?.is_active;
+  // ✅ FIX sin acentos
+  return fold(hay).includes(fold(needle));
 }
 
 export async function GET(req: Request) {
@@ -151,11 +143,7 @@ export async function GET(req: Request) {
     const monthParam = urlObj.searchParams.get("month_date");
 
     // meses disponibles
-    const { data: invoiceRows } = await db
-      .from("worker_invoices")
-      .select("month_date")
-      .order("month_date", { ascending: false })
-      .limit(36);
+    const { data: invoiceRows } = await db.from("worker_invoices").select("month_date").order("month_date", { ascending: false }).limit(36);
 
     const months = uniq((invoiceRows || []).map((r: any) => r.month_date).filter(Boolean)) as string[];
     const month_date = monthParam || months[0] || null;
@@ -180,13 +168,6 @@ export async function GET(req: Request) {
         bonusRules: [],
         teamYami: null,
         teamMaria: null,
-
-        // nuevos
-        myBonusDynamic: 0,
-        myBonusInvoice: 0,
-        myBonusBreakdown: [],
-        myPositions: { minutes: null, captadas: null, cliente_pct: null, repite_pct: null },
-        myCentralTeamBonusDynamic: 0,
       });
     }
 
@@ -246,10 +227,7 @@ export async function GET(req: Request) {
     // ===============================
     // 2) FACTURAS (€)
     // ===============================
-    const { data: invoices } = await db
-      .from("worker_invoices")
-      .select("worker_id, total_eur, bonuses_eur, penalties_eur")
-      .eq("month_date", month_date);
+    const { data: invoices } = await db.from("worker_invoices").select("worker_id, total_eur, bonuses_eur").eq("month_date", month_date);
 
     const invoiceMap = new Map<string, any>();
     for (const inv of invoices || []) invoiceMap.set(String((inv as any).worker_id), inv);
@@ -263,12 +241,12 @@ export async function GET(req: Request) {
       .sort((a: any, b: any) => b.eur_bonus - a.eur_bonus);
 
     // ===============================
-    // 3) MIS GANANCIAS (base)
+    // 3) MIS GANANCIAS
     // ===============================
     const myInvoice = invoiceMap.get(myWorkerId);
     const myRankRow = rows.find((r: any) => r.worker_id === myWorkerId);
 
-    const myEarningsBase =
+    const myEarnings =
       myRole === "tarotista"
         ? {
             minutes_total: toNum(myRankRow?.minutes_total),
@@ -428,10 +406,8 @@ export async function GET(req: Request) {
           avgN += 1;
         }
 
-        const team_cliente_pct =
-          wSum > 0 ? Number((wCli / wSum).toFixed(2)) : avgN > 0 ? Number((avgCliSum / avgN).toFixed(2)) : 0;
-        const team_repite_pct =
-          wSum > 0 ? Number((wRep / wSum).toFixed(2)) : avgN > 0 ? Number((avgRepSum / avgN).toFixed(2)) : 0;
+        const team_cliente_pct = wSum > 0 ? Number((wCli / wSum).toFixed(2)) : avgN > 0 ? Number((avgCliSum / avgN).toFixed(2)) : 0;
+        const team_repite_pct = wSum > 0 ? Number((wRep / wSum).toFixed(2)) : avgN > 0 ? Number((avgRepSum / avgN).toFixed(2)) : 0;
         const team_score = calcTeamScore(team_cliente_pct, team_repite_pct);
 
         out.push({
@@ -491,7 +467,28 @@ export async function GET(req: Request) {
       normalized = buildTeamsFromRankings();
     }
 
-    // teamYami / teamMaria
+    if (myRole === "central") {
+      teamsRanking = normalized.slice(0, 10);
+
+      if (myTeam?.team_id) {
+        const idx = teamsRanking.findIndex((t) => t.team_id === myTeam!.team_id);
+        myTeamRank = idx === -1 ? null : idx + 1;
+      }
+
+      const win = teamsRanking[0] || null;
+      winnerTeam = win
+        ? {
+            team_id: win.team_id,
+            team_name: win.team_name,
+            total_minutes: win.total_minutes,
+            total_captadas: win.total_captadas,
+            total_eur_month: win.total_eur_month,
+            team_score: win.team_score,
+          }
+        : null;
+    }
+
+    // teamYami / teamMaria (✅ ahora sin acentos)
     const findTeamByName = (needle: string) => {
       for (const [tid, name] of teamNameMap.entries()) {
         if (includesLoose(name, needle)) return tid;
@@ -507,146 +504,6 @@ export async function GET(req: Request) {
 
     if (yamiId && normalizedMap.get(yamiId)) teamYami = normalizedMap.get(yamiId)!;
     if (mariaId && normalizedMap.get(mariaId)) teamMaria = normalizedMap.get(mariaId)!;
-
-    // ✅ myTeamRank SIEMPRE se calcula sobre "normalized" entero
-    if (myTeam?.team_id) {
-      const idxAll = normalized.findIndex((t) => t.team_id === myTeam!.team_id);
-      myTeamRank = idxAll === -1 ? null : idxAll + 1;
-    }
-
-    if (myRole === "central") {
-      teamsRanking = normalized.slice(0, 10);
-      const win = normalized[0] || null;
-      winnerTeam = win
-        ? {
-            team_id: win.team_id,
-            team_name: win.team_name,
-            total_minutes: win.total_minutes,
-            total_captadas: win.total_captadas,
-            total_eur_month: win.total_eur_month,
-            team_score: win.team_score,
-          }
-        : null;
-    }
-
-    // ===============================
-    // 7) BONOS DINÁMICOS (ARREGLADO)
-    // ===============================
-    const myPositions = {
-      minutes: posInList(rankMinutes, myWorkerId),
-      captadas: posInList(rankCaptadas, myWorkerId),
-      cliente_pct: posInList(rankCliente, myWorkerId),
-      repite_pct: posInList(rankRepite, myWorkerId),
-    };
-
-    const myBonusInvoice = toNum(myInvoice?.bonuses_eur);
-
-    let myBonusDynamic = 0;
-    const myBonusBreakdown: Array<{
-      ranking_type: string;
-      position: number;
-      amount_eur: number;
-      reason: string;
-    }> = [];
-
-    // Tarotista: bonus por rankings individuales
-    if (myRole === "tarotista") {
-      for (const rule of bonusRules || []) {
-        if (!isRuleActive(rule)) continue;
-
-        const ruleRole = normRole(rule?.role);
-        if (ruleRole !== "tarotista") continue;
-
-        const rt = normalizeRankingType(rule?.ranking_type);
-        const pos = Number(rule?.position);
-
-        if (!Number.isFinite(pos) || pos <= 0) continue;
-
-        if (rt === "minutes" && myPositions.minutes === pos) {
-          const amt = toNum(rule?.amount_eur);
-          if (amt > 0) {
-            myBonusDynamic += amt;
-            myBonusBreakdown.push({ ranking_type: "minutes", position: pos, amount_eur: amt, reason: "Posición en Minutos" });
-          }
-        }
-
-        if (rt === "captadas" && myPositions.captadas === pos) {
-          const amt = toNum(rule?.amount_eur);
-          if (amt > 0) {
-            myBonusDynamic += amt;
-            myBonusBreakdown.push({ ranking_type: "captadas", position: pos, amount_eur: amt, reason: "Posición en Captadas" });
-          }
-        }
-
-        if (rt === "cliente_pct" && myPositions.cliente_pct === pos) {
-          const amt = toNum(rule?.amount_eur);
-          if (amt > 0) {
-            myBonusDynamic += amt;
-            myBonusBreakdown.push({ ranking_type: "cliente_pct", position: pos, amount_eur: amt, reason: "Posición en Clientes %" });
-          }
-        }
-
-        if (rt === "repite_pct" && myPositions.repite_pct === pos) {
-          const amt = toNum(rule?.amount_eur);
-          if (amt > 0) {
-            myBonusDynamic += amt;
-            myBonusBreakdown.push({ ranking_type: "repite_pct", position: pos, amount_eur: amt, reason: "Posición en Repite %" });
-          }
-        }
-      }
-    }
-
-    // Central: bonus si su equipo va #1
-    let myCentralTeamBonusDynamic = 0;
-    if (myRole === "central") {
-      const isWinnerTeam = myTeamRank === 1;
-      if (isWinnerTeam) {
-        for (const rule of bonusRules || []) {
-          if (!isRuleActive(rule)) continue;
-          const ruleRole = normRole(rule?.role);
-          if (ruleRole !== "central") continue;
-
-          const rt = normalizeRankingType(rule?.ranking_type);
-          const pos = Number(rule?.position);
-
-          // tu tabla tiene team_winner / team_win (lo normalizo a team_winner)
-          if (rt === "team_winner" && pos === 1) {
-            const amt = toNum(rule?.amount_eur);
-            if (amt > 0) myCentralTeamBonusDynamic += amt;
-          }
-        }
-      }
-    }
-
-    // Si hay incidencia grave: sin bonos (tarotista)
-    if (myRole === "tarotista" && myIncidentsMonth.grave) {
-      myBonusDynamic = 0;
-      myBonusBreakdown.length = 0;
-      myBonusBreakdown.push({
-        ranking_type: "blocked",
-        position: 0,
-        amount_eur: 0,
-        reason: "Incidencia grave: sin bonos",
-      });
-    }
-
-    // ✅ myEarnings final (lo que pinta el panel)
-    const myEarnings =
-      myRole === "tarotista"
-        ? {
-            ...myEarningsBase,
-            // bono real en UI: dinámico (arreglado)
-            amount_bonus_eur: Number(toNum(myBonusDynamic).toFixed(2)),
-            // por si quieres comparar:
-            amount_bonus_invoice_eur: Number(toNum(myBonusInvoice).toFixed(2)),
-          }
-        : myRole === "central"
-        ? {
-            ...myEarningsBase,
-            amount_bonus_eur: Number(toNum(myCentralTeamBonusDynamic).toFixed(2)),
-            amount_bonus_invoice_eur: Number(toNum(myBonusInvoice).toFixed(2)),
-          }
-        : myEarningsBase;
 
     return NextResponse.json({
       ok: true,
@@ -676,13 +533,6 @@ export async function GET(req: Request) {
 
       teamYami,
       teamMaria,
-
-      // ✅ NUEVO: BONOS ARREGLADOS + DEBUG BONITO
-      myBonusDynamic: Number(toNum(myBonusDynamic).toFixed(2)),
-      myBonusInvoice: Number(toNum(myBonusInvoice).toFixed(2)),
-      myBonusBreakdown,
-      myPositions,
-      myCentralTeamBonusDynamic: Number(toNum(myCentralTeamBonusDynamic).toFixed(2)),
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "SERVER_ERROR" }, { status: 500 });
