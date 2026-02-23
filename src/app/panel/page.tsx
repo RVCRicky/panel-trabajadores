@@ -70,7 +70,7 @@ export default function PanelEntry() {
         const role = String(j.worker.role || "").toLowerCase();
 
         if (role === "admin") {
-          // ✅ ahora mismo tu admin está en /admin (estable). Evita /admin/panel (no existe)
+          // ✅ admin estable (tu dashboard actual)
           router.replace(`/admin${q}`);
           return;
         }
@@ -80,10 +80,8 @@ export default function PanelEntry() {
           return;
         }
 
-        // tarotista: quedarse en /panel (este archivo es solo entrada)
-        // ✅ Si tu tarotista realmente debería ir a otra ruta (ej: /panel/tarotista),
-        // me lo dices y lo cambio.
-        setMsg("Cargando tu panel…");
+        // ✅ tarotista -> su panel real
+        router.replace(`/panel/tarotista${q}`);
       } catch (e: any) {
         if (!alive) return;
         setMsg(e?.message || "Error abriendo el panel.");
