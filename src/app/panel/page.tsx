@@ -1,4 +1,3 @@
-// src/app/panel/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -55,6 +54,15 @@ async function readJsonSafe(res: Response) {
   } catch {
     return { json: null, text };
   }
+}
+
+// ✅ comparar strings sin acentos (María vs maria)
+function fold(s: string) {
+  return String(s ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 }
 
 export default function PanelTarotistaPage() {
@@ -157,7 +165,7 @@ export default function PanelTarotistaPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qs?.get("month_date")]);
 
-  // ✅ Esta es la parte importante: usar tus endpoints reales + fallback por 405
+  // ✅ CONECTADO A TUS ROUTES REALES (POST)
   async function setPresence(next: PresenceState) {
     setPErr(null);
     setPLoading(true);
@@ -166,49 +174,42 @@ export default function PanelTarotistaPage() {
       const token = await getToken();
       if (!token) return router.replace("/login");
 
-      // mapping real
-      const doRequest = async (method: "POST" | "GET", url: string, body?: any) => {
-        const opts: RequestInit = {
-          method,
+      const doPost = async (url: string, body: any) => {
+        return fetch(url, {
+          method: "POST",
           headers: {
+            "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          cache: "no-store",
-        };
-        if (method === "POST") {
-          (opts.headers as any)["Content-Type"] = "application/json";
-          opts.body = JSON.stringify(body || {});
-        }
-        return fetch(url, opts);
+          body: JSON.stringify(body || {}),
+        });
       };
 
-      let r: Response | null = null;
+      let r: Response;
 
       if (next === "online") {
-        r = await doRequest("POST", "/api/presence/login", {});
+        r = await doPost("/api/presence/login", {});
       } else if (next === "offline") {
-        r = await doRequest("POST", "/api/presence/logout", {});
+        r = await doPost("/api/presence/logout", {});
       } else {
-        // pause / bathroom -> state
-        // Intento 1: POST JSON
-        r = await doRequest("POST", "/api/presence/state", { state: next });
-
-        // ✅ si tu route.ts de state solo tiene GET, esto evita el 405
-        if (r.status === 405) {
-          r = await doRequest("GET", `/api/presence/state?state=${encodeURIComponent(next)}`);
-        }
+        // pause / bathroom (state)
+        r = await doPost("/api/presence/state", { state: next });
       }
 
       const { json, text } = await readJsonSafe(r);
       if (!r.ok || !json?.ok) {
-        setPErr(json?.error || `Error cambiando estado (HTTP ${r.status}): ${text.slice(0, 200)}`);
+        const code = json?.error || "";
+        if (code === "NO_ACTIVE_SESSION") {
+          setPErr("No tienes sesión activa. Pulsa primero ✅ ONLINE y luego ya podrás PAUSA/BAÑO.");
+          return;
+        }
+        setPErr(code ? `Error: ${code}` : `Error (HTTP ${r.status}): ${text.slice(0, 200)}`);
         return;
       }
 
-      // refrescar presence/me
+      // ✅ refrescar desde /api/presence/me (es la fuente buena de started_at/state)
       await loadPresence(token);
       setPState(next);
-      setPStartedAt(json?.started_at || null);
     } catch (e: any) {
       setPErr(e?.message || "Error cambiando presencia");
     } finally {
@@ -242,8 +243,18 @@ export default function PanelTarotistaPage() {
   const incPenalty = data?.myIncidentsMonth?.penalty_eur ?? null;
   const incGrave = !!data?.myIncidentsMonth?.grave;
 
+  // equipos (ya vienen del full route)
   const teamYami = data?.teamYami || null;
   const teamMaria = data?.teamMaria || null;
+
+  // fallback extra por si en algún momento te viene como "María" y no cuadra:
+  const forceTeamName = (t: any, wanted: "yami" | "maria") => {
+    if (!t) return t;
+    const name = String(t.team_name || "");
+    if (wanted === "maria" && fold(name).includes("maria")) return t;
+    if (wanted === "yami" && fold(name).includes("yami")) return t;
+    return t;
+  };
 
   const shellCard: React.CSSProperties = {
     borderRadius: 18,
@@ -334,8 +345,8 @@ export default function PanelTarotistaPage() {
 
       {/* EQUIPOS FIJOS */}
       <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
-        <TeamBox title="Equipo 1" t={teamYami} />
-        <TeamBox title="Equipo 2" t={teamMaria} />
+        <TeamBox title="Equipo 1" t={forceTeamName(teamYami, "yami")} />
+        <TeamBox title="Equipo 2" t={forceTeamName(teamMaria, "maria")} />
       </div>
 
       {/* PRESENCIA / LOGUEO */}
@@ -505,6 +516,13 @@ export default function PanelTarotistaPage() {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Botón refresh rápido */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <button style={btnGhost} onClick={() => load()}>
+          🔄 Refrescar
+        </button>
       </div>
     </div>
   );
