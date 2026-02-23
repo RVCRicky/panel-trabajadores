@@ -5,8 +5,6 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
-type WorkerRole = "admin" | "central" | "tarotista";
-
 async function readJsonSafe(res: Response) {
   const text = await res.text().catch(() => "");
   try {
@@ -56,9 +54,8 @@ export default function LoginPage() {
           return;
         }
 
-        const role = String(json.worker.role || "").toLowerCase() as WorkerRole;
-        if (role === "admin") router.replace("/admin/panel");
-        else router.replace("/panel");
+        // ✅ Punto único de entrada: /panel (ahí se decide el rol y se redirige)
+        router.replace("/panel");
       } catch {
         // si falla algo, nos quedamos en login
       }
@@ -129,9 +126,8 @@ export default function LoginPage() {
         return;
       }
 
-      const role = String(json.worker.role || "").toLowerCase() as WorkerRole;
-      if (role === "admin") router.replace("/admin/panel");
-      else router.replace("/panel");
+      // ✅ Punto único de entrada: /panel (ahí se decide el rol y se redirige)
+      router.replace("/panel");
     } catch (err: any) {
       setMsg(err?.message || "Error inesperado");
       try {
@@ -198,12 +194,28 @@ export default function LoginPage() {
           <form onSubmit={onLogin} style={{ display: "grid", gap: 12 }}>
             <label style={{ display: "grid", gap: 6 }}>
               <span style={{ fontWeight: 900, color: "#111" }}>Email</span>
-              <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="tu@email.com" required autoComplete="email" style={inputStyle} />
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                type="email"
+                placeholder="tu@email.com"
+                required
+                autoComplete="email"
+                style={inputStyle}
+              />
             </label>
 
             <label style={{ display: "grid", gap: 6 }}>
               <span style={{ fontWeight: 900, color: "#111" }}>Contraseña</span>
-              <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="••••••••" required autoComplete="current-password" style={inputStyle} />
+              <input
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                type="password"
+                placeholder="••••••••"
+                required
+                autoComplete="current-password"
+                style={inputStyle}
+              />
             </label>
 
             <button type="submit" disabled={loading} style={btnStyle}>
