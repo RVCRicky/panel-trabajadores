@@ -1,47 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
-import { Card, CardHint, CardTitle, CardValue } from "@/components/ui/Card";
-
-function useIsMobile(bp = 900) {
-  const [isMobile, setIsMobile] = useState(false);
-
-  useEffect(() => {
-    const mq = window.matchMedia(`(max-width: ${bp}px)`);
-    const onChange = () => setIsMobile(mq.matches);
-    onChange();
-    mq.addEventListener?.("change", onChange);
-    return () => mq.removeEventListener?.("change", onChange);
-  }, [bp]);
-
-  return isMobile;
-}
-
-function fmt(n: any) {
-  return (Number(n) || 0).toLocaleString("es-ES");
-}
-
-function eur(n: any) {
-  return (Number(n) || 0).toLocaleString("es-ES", {
-    style: "currency",
-    currency: "EUR",
-  });
-}
-
-function medal(pos: number) {
-  return pos === 1 ? "🥇" : pos === 2 ? "🥈" : pos === 3 ? "🥉" : "";
-}
+import { Card, CardTitle, CardValue, CardHint } from "@/components/ui/Card";
 
 export default function TarotistaDashboard() {
   const router = useRouter();
   const qs = useSearchParams();
-  const isMobile = useIsMobile();
 
-  const [data, setData] = useState<any | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
 
   async function getToken() {
     const { data } = await supabase.auth.getSession();
@@ -49,139 +20,133 @@ export default function TarotistaDashboard() {
   }
 
   async function load() {
-    try {
-      const token = await getToken();
-      if (!token) {
-        router.replace("/login");
-        return;
-      }
+    const token = await getToken();
+    if (!token) return router.replace("/login");
 
-      const month = qs.get("month_date");
-      const q = month ? `?month_date=${encodeURIComponent(month)}` : "";
+    const month = qs.get("month_date");
+    const q = month ? `?month_date=${month}` : "";
 
-      const res = await fetch(`/api/dashboard/full${q}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
+    const res = await fetch(`/api/dashboard/full${q}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
 
-      const j = await res.json().catch(() => null);
+    const j = await res.json();
+    setData(j);
+    setLoading(false);
+  }
 
-      if (!j?.ok) {
-        setErr(j?.error || "Error cargando dashboard");
-        return;
-      }
+  async function sendMessage() {
+    if (!message.trim()) return;
+    setSending(true);
 
-      const role = String(j.user?.worker?.role || "").toLowerCase();
+    const token = await getToken();
 
-      // 🔐 Seguridad extra
-      if (role !== "tarotista") {
-        router.replace("/panel");
-        return;
-      }
+    await fetch("/api/internal/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ content: message }),
+    });
 
-      setData(j);
-    } catch (e: any) {
-      setErr(e?.message || "Error inesperado");
-    } finally {
-      setLoading(false);
-    }
+    setMessage("");
+    setSending(false);
+    load();
   }
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line
   }, []);
 
-  const me = data?.user?.worker || null;
-  const rankings = data?.rankings?.minutes || [];
+  if (loading) return <div style={{ padding: 20 }}>Cargando panel...</div>;
 
-  const myRank = useMemo(() => {
-    if (!me?.display_name) return null;
-    const idx = rankings.findIndex((r: any) => r.name === me.display_name);
-    return idx === -1 ? null : idx + 1;
-  }, [rankings, me?.display_name]);
-
-  if (loading) {
-    return (
-      <div style={{ minHeight: "60vh", display: "grid", placeItems: "center" }}>
-        <div style={{ fontWeight: 1200, color: "#6b7280" }}>
-          Cargando tu panel…
-        </div>
-      </div>
-    );
-  }
-
-  if (err) {
-    return (
-      <div style={{ padding: 20, color: "#b91c1c", fontWeight: 1100 }}>
-        {err}
-      </div>
-    );
-  }
+  const me = data.user.worker;
 
   return (
-    <div style={{ display: "grid", gap: 14, width: "100%" }}>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: isMobile
-            ? "repeat(2, minmax(0, 1fr))"
-            : "repeat(auto-fit, minmax(240px, 1fr))",
-          gap: 12,
-        }}
-      >
+    <div style={{ display: "grid", gap: 16 }}>
+      
+      {/* KPIs */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 12 }}>
         <Card>
           <CardTitle>Minutos</CardTitle>
-          <CardValue>{fmt(data?.myEarnings?.minutes_total)}</CardValue>
-          <CardHint>Acumulados del mes</CardHint>
+          <CardValue>{data.myEarnings?.minutes_total || 0}</CardValue>
+          <CardHint>Mes actual</CardHint>
         </Card>
 
         <Card>
           <CardTitle>Captadas</CardTitle>
-          <CardValue>{fmt(data?.myEarnings?.captadas)}</CardValue>
-          <CardHint>Acumuladas del mes</CardHint>
+          <CardValue>{data.myEarnings?.captadas || 0}</CardValue>
         </Card>
 
         <Card>
           <CardTitle>Total €</CardTitle>
-          <CardValue>{eur(data?.myEarnings?.amount_total_eur)}</CardValue>
-          <CardHint>Factura oficial</CardHint>
+          <CardValue>{data.myEarnings?.amount_total_eur || 0} €</CardValue>
         </Card>
 
         <Card>
-          <CardTitle>Mi posición</CardTitle>
-          <CardValue>
-            {myRank ? `${medal(myRank)} #${myRank}` : "—"}
-          </CardValue>
-          <CardHint>Ranking por minutos</CardHint>
+          <CardTitle>Bonos</CardTitle>
+          <CardValue>{data.myEarnings?.amount_bonus_eur || 0} €</CardValue>
         </Card>
       </div>
 
-      <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
-        <div style={{ fontWeight: 1200, marginBottom: 8 }}>
-          Ranking del mes
-        </div>
-
-        <div style={{ display: "grid", gap: 8 }}>
-          {rankings.slice(0, 10).map((r: any, idx: number) => (
-            <div
-              key={idx}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                padding: "8px 12px",
-                borderRadius: 12,
-                background: me?.display_name === r.name ? "#eef6ff" : "#fafafa",
-              }}
-            >
-              <div>
-                {medal(idx + 1)} {idx + 1}. {r.name}
-              </div>
-              <div style={{ fontWeight: 1200 }}>{fmt(r.minutes)}</div>
+      {/* Notificaciones */}
+      {data.notifications?.length > 0 && (
+        <Card>
+          <CardTitle>Notificaciones</CardTitle>
+          {data.notifications.map((n: string, i: number) => (
+            <div key={i} style={{ padding: 6, color: "#b91c1c", fontWeight: 600 }}>
+              • {n}
             </div>
           ))}
-        </div>
-      </div>
+        </Card>
+      )}
+
+      {/* Chat inicio turno */}
+      <Card>
+        <CardTitle>Enviar lista de clientes al central</CardTitle>
+
+        <textarea
+          style={{ width: "100%", padding: 12, borderRadius: 10, border: "1px solid #ddd" }}
+          rows={4}
+          placeholder="Ej: María - 17:00, Laura - 17:20..."
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+        />
+
+        <button
+          onClick={sendMessage}
+          disabled={sending}
+          style={{
+            marginTop: 10,
+            padding: 10,
+            borderRadius: 8,
+            border: "none",
+            background: "#111",
+            color: "#fff",
+            fontWeight: 600,
+          }}
+        >
+          {sending ? "Enviando..." : "Enviar al central"}
+        </button>
+      </Card>
+
+      {/* Mensajes confirmados */}
+      <Card>
+        <CardTitle>Estado de mensajes</CardTitle>
+
+        {data.internalMessages
+          .filter((m: any) => m.from_worker_id === me.id)
+          .map((m: any) => (
+            <div key={m.id} style={{ padding: 8 }}>
+              <div>{m.content}</div>
+              <div style={{ fontSize: 12, color: m.is_checked ? "green" : "orange" }}>
+                {m.is_checked ? "✔ Confirmado por central" : "Pendiente"}
+              </div>
+            </div>
+          ))}
+      </Card>
     </div>
   );
 }
