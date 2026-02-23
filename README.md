@@ -10,7 +10,7 @@ npm run dev
 yarn dev
 # oraaaa
 pnpm dev
-# or
+# oraa
 bun dev
 ```aaaaaa
 
